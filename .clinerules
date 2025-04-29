@@ -1,0 +1,49 @@
+# Cline Project Rules
+
+## Git Workflow Requirements
+
+1. Always perform a `git add` operation after completing a task or making significant changes.
+2. Always follow with a `git commit` using a meaningful commit message.
+3. All commit messages MUST:
+   - Start with an appropriate emoji that represents the type of change
+   - Provide a clear, concise description of the changes made
+   - Use present tense (e.g., "Add feature" not "Added feature")
+
+## Emoji Guide for Commit Messages
+
+- 🎉 `:tada:` - Initial commit, project milestones, or major release
+- ✨ `:sparkles:` - New feature or enhancement
+- 🐛 `:bug:` - Bug fix
+- 🔧 `:wrench:` - Configuration changes
+- 📝 `:memo:` - Documentation updates
+- 🚧 `:construction:` - Work in progress
+- ♻️ `:recycle:` - Refactoring code
+- 🔥 `:fire:` - Removing code or files
+- 🧪 `:test_tube:` - Adding or updating tests
+- 💄 `:lipstick:` - UI/style/design updates
+- 🚀 `:rocket:` - Performance improvements
+- 🔒 `:lock:` - Security improvements
+- ⬆️ `:arrow_up:` - Upgrading dependencies
+- ⬇️ `:arrow_down:` - Downgrading dependencies
+- 🔀 `:twisted_rightwards_arrows:` - Merging branches
+
+## Examples
+
+```
+git add .
+git commit -m "✨ Add granular synthesis parameters"
+```
+
+```
+git add src/lib.rs
+git commit -m "🐛 Fix buffer initialization in granulator engine"
+```
+
+```
+git add memory-bank/
+git commit -m "📝 Update memory bank with latest architecture decisions"
+```
+
+## Importance
+
+This consistent approach helps maintain a clear project history and makes it easier to track the evolution of the project across memory resets. The emoji prefix provides immediate visual identification of the commit type, making the Git log more scannable and informative.

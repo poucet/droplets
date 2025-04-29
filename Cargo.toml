@@ -10,6 +10,9 @@ license = "MIT"
 [lib]
 crate-type = ["cdylib"]
 
+[workspace]
+members = ["xtask"]
+
 [dependencies]
 # Main NIH-plug framework
 nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["standalone"] }
@@ -20,6 +23,9 @@ nih_plug_iced = { git = "https://github.com/robbert-vdh/nih-plug.git" }
 # Core dependencies for the plugin
 atomic_float = "0.1"
 rand = "0.8"
+
+[features]
+standalone = []
 
 [profile.release]
 lto = "thin"

@@ -1,0 +1,17 @@
+[package]
+name = "Granular"
+version = "0.1.0"
+description = "A granular synthesis audio plugin built with Rust and nih-plug"
+homepage = "https://your-website-here.com"
+author = "Simply Chris"
+license = "MIT"
+
+[dependencies]
+
+[targets]
+vst3 = { path = "target/release/granular.vst3" }
+clap = { path = "target/release/granular.clap" }
+standalone = { path = "target/release/granular" }
+
+[macos]
+bundle_identifier = "com.simply-chris.granular"
