@@ -1,0 +1,26 @@
+[package]
+name = "granular"
+version = "0.1.0"
+edition = "2021"
+authors = ["Simply Chris"]
+description = "A granular synthesis audio plugin built with Rust and nih-plug"
+license = "MIT"
+
+# Build dynamic library for VST/CLAP plugin
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# Main NIH-plug framework
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["standalone"] }
+
+# Iced GUI integration
+nih_plug_iced = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+
+# Core dependencies for the plugin
+atomic_float = "0.1"
+rand = "0.8"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"
