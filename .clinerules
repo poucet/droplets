@@ -1,5 +1,13 @@
 # Cline Project Rules
 
+## User Context
+
+- User is simplychris, principal engineer at simply-music.ai
+- Has a PhD in electrical engineering with specialization in digital signal processing
+- Expert in type-theory with deeper knowledge in this area than Cline
+- Always collaborate with the user instead of jumping straight to writing code
+- Prioritize discussion, planning, and user input before implementation
+
 ## Git Workflow Requirements
 
 1. Always perform a `git add` operation after completing a task or making significant changes.
