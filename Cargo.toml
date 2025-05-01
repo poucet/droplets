@@ -1,9 +1,9 @@
 [package]
-name = "granular"
+name = "simply-droplets"
 version = "0.1.0"
 edition = "2021"
 authors = ["Simply Chris"]
-description = "A granular synthesis audio plugin built with Rust and nih-plug"
+description = "A 3D droplet-based granular synthesis audio plugin built with Rust and nih-plug"
 license = "MIT"
 
 # Build dynamic library for VST/CLAP plugin
@@ -22,7 +22,7 @@ nih_plug_iced = { git = "https://github.com/robbert-vdh/nih-plug.git" }
 
 # Core dependencies for the plugin
 atomic_float = "0.1"
-rand = "0.8"
+rand = { version = "0.8", features = ["small_rng"] }
 
 [features]
 standalone = []
