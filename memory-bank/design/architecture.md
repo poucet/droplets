@@ -75,11 +75,84 @@ struct TimeWarpCurve {
 ```rust
 /// 3D position with distributions for each axis
 struct Position3D {
+    // Option 1: Independent distributions per axis (original approach)
     x_distribution: Distribution,
     y_distribution: Distribution,
     z_distribution: Distribution,
     
+    // Option 2: Joint distribution for correlated coordinates
+    joint_distribution: Option<JointDistribution3D>,
+    
     fn sample(&self, context: &SampleContext) -> Vector3D;
+}
+
+/// Joint distribution for sampling correlated 3D coordinates
+struct JointDistribution3D {
+    // Various implementation options:
+    // 1. Correlation matrix between axes
+    // 2. Geometric primitives (sphere, cylinder, plane, etc.)
+    // 3. Path-based distributions (following trajectories)
+    // 4. Cluster-based approach (multiple centroids with spread)
+    
+    fn sample(&self, context: &SampleContext) -> Vector3D;
+}
+
+/// Geometric shape-based distributions
+enum GeometricDistribution {
+    // Distributes points within a sphere
+    Sphere {
+        center: Vector3D,
+        radius: Distribution,
+        // Optional: non-uniform distribution within the sphere
+        distance_from_center_bias: Option<Distribution>,
+    },
+    
+    // Distributes points along a path
+    Path {
+        points: Vec<Vector3D>,
+        spread: Distribution,     // How far from the path points can be
+        progression: Distribution, // How to move along the path
+    },
+    
+    // Other shapes: Cube, Plane, Cylinder, etc.
+    // Each with appropriate parameters
+}
+
+/// Defines how a droplet moves through 3D space over time along a user-defined path
+struct MovementTrajectory {
+    // Control points defining the path
+    control_points: Vec<Vector3D>,
+    
+    // How the droplet moves along the path
+    // 0.0 = start of path, 1.0 = end of path
+    position_curve: TimeWarpCurve,
+    
+    // Movement speed factor
+    speed: f32,
+    
+    // Whether to loop when reaching the end of the path
+    loop_path: bool,
+    
+    // B-spline or Bezier interpolation settings
+    interpolation_type: PathInterpolation,
+}
+
+enum PathInterpolation {
+    // Linear interpolation between points (simplest)
+    Linear,
+    
+    // Cubic B-spline for smooth curved paths
+    BSpline {
+        tension: f32,  // Controls how tightly the curve follows control points
+    },
+    
+    // Bezier curves for precise control
+    Bezier,
+    
+    // Catmull-Rom splines (passes through all control points)
+    CatmullRom {
+        alpha: f32,  // Controls curve tightness (0.0 = uniform, 0.5 = centripetal)
+    },
 }
 ```
 
@@ -97,8 +170,9 @@ struct Droplet {
     age: usize,
     time_warp: TimeWarpCurve,
     
-    // 3D positioning
+    // 3D positioning with optional dynamic movement
     position: Vector3D,
+    movement: Option<MovementTrajectory>, // For moving droplets in 3D space
     
     fn is_active(&self) -> bool;
     fn process(&mut self, buffers: &AudioBuffers) -> Sample3D;
