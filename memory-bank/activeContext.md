@@ -1,28 +1,32 @@
-# Active Context: Granular VST
+# Active Context: Simply Droplets
 
 ## Current Focus
-- Basic project structure is now set up and ready for VST/CLAP plugin development
-- The project compiles successfully without warnings
-- We have a minimal working plugin skeleton with parameter definitions for basic granular functionality
+- Defined core architecture for Simply Droplets, a 3D droplet-based granular synthesis VST/CLAP plugin
+- Created design document outlining the key components and their interactions
+- Established conceptual differences between traditional "grains" and our "droplets" approach
+- Planning implementation of core droplet processing engine and 3D audio positioning
 
 ## Recent Changes
-- Created initial Memory Bank files for project documentation
-- Set up the Rust project with cargo
-- Added nih-plug and nih-plug-iced dependencies
-- Implemented basic plugin structure with parameter definitions
-- Set up VST3 and CLAP plugin exports
-- Configured bundling system with xtask
-- Added placeholder for audio buffer management
+- Renamed project from "Granular VST" to "Simply Droplets" to reflect the distinctive approach
+- Created architecture design document in memory-bank/design/architecture.md
+- Defined key components: Distribution, TimeWarpCurve, Position3D, Droplet, RainCatcher, and DropletProcessor
+- Outlined 3D audio positioning concept with x (left-right), y (front-back), and z (height) axes
+- Established time-warping approach for non-linear playback of droplets
 
 ## Next Steps
-1. Implement the audio buffer capture mechanism to store incoming audio for granulation
-2. Create grain generation and scheduling logic
-3. Implement the granular synthesis algorithm in the process function
-4. Set up the Iced-based GUI
-5. Add more parameters specific to granular synthesis
-6. Test the plugin in different DAWs and fine-tune performance
+1. Review and refine the architecture design document
+2. Implement core types (Distribution, TimeWarpCurve, etc.)
+3. Build basic droplet processing engine
+4. Implement the Rain Catcher system for generating droplets
+5. Add 3D positioning and time-warping capabilities
+6. Integrate with nih-plug's parameter system
+7. Develop basic UI controls using nih-plug-iced
+8. Create advanced curve editors for time-warping and spatial distributions
 
 ## Decision Points
-- We'll need to decide on the specific granular synthesis approach (e.g., overlap-add, windowing function)
-- Consider whether to implement traditional or more experimental granular controls
-- Determine the best buffer size and management strategy for real-time performance
+- Need to decide on the specific implementation approach for distributions (parametric vs. curve-based)
+- Consider the most efficient way to handle 3D audio positioning with stereo output
+- Determine how to structure the buffer management for optimal performance
+- Evaluate the complexity/feasibility of user-drawable curves in the UI
+- Consider how to make the plugin performant while managing potentially many droplets
+- Decide on initial parameter set for MVP vs. more advanced features for later versions

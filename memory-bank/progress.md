@@ -1,27 +1,34 @@
-# Progress: Granular VST
+# Progress: Simply Droplets
 
 ## What Works
 - Initial Memory Bank documentation created
 - Basic Rust project structure set up for the plugin
 - Dependencies configured for nih-plug and nih-plug-iced
-- Basic plugin struct defined with parameters for granulation
-- VST3 and CLAP exports implemented
-- Project builds successfully without warnings
-- Bundle system set up via xtask
+- Project renamed from "Granular VST" to "Simply Droplets"
+- Comprehensive architecture design document created
+- Core concepts defined: droplets, 3D audio positioning, time warping, rain catcher system
+- Architectural components sketched out: Distribution, TimeWarpCurve, Position3D, Droplet, RainCatcher, DropletProcessor
 
 ## What's Left to Build
-- Implement the actual granular processing algorithm in the `process` function
-- Create input buffer management for capturing audio to granulate
-- Add grain scheduling and generation logic
-- Set up the Iced-based GUI
-- Implement parameter handling in the DSP code
-- Add more controls and parameters specific to granular synthesis
-- Build and test the plugin in a DAW
+- Implementation of core Distribution and TimeWarpCurve types
+- Droplet processing engine
+- Rain Catcher system for generating droplets
+- 3D audio positioning and spatialization
+- Time-warping implementation
+- User interface with nih-plug-iced
+  - Basic controls
+  - Curve editors for time-warping
+  - 3D positioning visualization
+- Parameter system integration
+- Audio buffer management optimization
+- Testing in various DAWs
 
 ## Current Status
-- Project has a solid foundation that compiles successfully
-- The plugin can be built, but is currently just a pass-through effect
-- Ready for implementing the actual granular DSP logic
+- Project has a solid architectural foundation and design document
+- Next phase is implementation of core types and the droplet processing engine
+- Planning UI approach and parameter handling
 
 ## Known Issues
-- None at this stage with the basic structure, but granular processing has not been implemented yet
+- Need to determine the most efficient buffer access pattern for nih-plug
+- Need to evaluate performance implications of processing many droplets simultaneously
+- May need to simplify 3D audio positioning for initial MVP
