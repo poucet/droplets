@@ -41,39 +41,52 @@ From architecture exploration:
 - Limiting to 32 concurrent droplets balances rich sound with CPU efficiency
 - Normalization based on the square root of active droplet count effectively controls volume
 
+## Development Approach
+
+We will be breaking down the implementation into distinct building blocks, each following a two-step process:
+
+1. **SuperCollider prototype** - To validate the concept, sound design, and functionality
+2. **Rust implementation** - To integrate into the final VST/CLAP plugin
+
+This approach allows us to rapidly test audio concepts before dedicating resources to plugin implementation.
+
+## Building Blocks
+
+1. **Distribution System**
+   - SC Prototype: Create different distribution models (uniform, gaussian, etc.)
+   - Rust Implementation: Implement the Distribution trait with various strategies
+
+2. **Time Warping**
+   - SC Prototype: Test power function warping, experiment with other curve shapes
+   - Rust Implementation: Build the TimeWarpCurve implementation
+
+3. **3D Radial Positioning**
+   - SC Prototype: Test radial coordinate positioning and spatialization to stereo
+   - Rust Implementation: Implement Position3D and RadialCoordinate structs
+
+4. **Droplet Generation**
+   - SC Prototype: Experiment with stochastic generation algorithms
+   - Rust Implementation: Create the RainCatcher system
+
+5. **Envelope Processing**
+   - SC Prototype: Test different envelope shapes and their sonic impact
+   - Rust Implementation: Add envelope support to the Droplet struct
+
+6. **Audio Engine Core**
+   - SC Prototype: Integrate all components in SuperCollider
+   - Rust Implementation: Build the DropletProcessor and buffer management
+
+7. **UI Components**
+   - SC Prototype: Mock UIs in SuperCollider for testing parameter ranges
+   - Rust Implementation: Create nih-plug-iced components
+
 ## Next Steps
-1. Implement core Distribution and TimeWarpCurve types
-   - Start with simple implementations (parametric distributions, predefined curves)
-   - Design with extensibility for later enhancements
-   
-2. Build the basic Droplet struct
-   - Create time-warping implementation using power functions
-   - Implement static 3D positioning (initially without path-based movement)
-   - Add envelope processing for amplitude shaping
-   
-3. Implement RainCatcher system
-   - Build probabilistic droplet generation based on density parameter
-   - Implement property distribution sampling
-   - Add resource management with concurrent droplet limiting
 
-4. Create DropletProcessor
-   - Implement circular buffer for input audio
-   - Build sample-level processing loop
-   - Add basic stereo spatialization
-
-5. Integrate with nih-plug
-   - Define parameter system
-   - Create basic plugin structure
-   - Implement audio processing callback
-
-6. Add basic UI using nih-plug-iced
-   - Start with simple parameter controls
-   - Later add curve editors and spatial visualization
-
-7. Enhance with advanced features
-   - Path-based movement
-   - Custom curve editors
-   - More complex distributions
+1. Set up SuperCollider project for prototyping
+2. Begin with Distribution System prototype in SuperCollider
+3. Test and refine the concept
+4. Implement Distribution system in Rust
+5. Continue with incremental development of each building block
 
 ## Design Decisions
 
