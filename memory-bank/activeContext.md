@@ -5,9 +5,18 @@
 - Defined core types with detailed implementation options
 - Established approach for 3D spatial positioning and time-warping
 - Designed the Rain Catcher system for droplet generation
-- Ready to begin implementation of core components
+- Implemented all SuperCollider prototypes for each building block
+- Ready to begin Rust implementation of core components
 
 ## Recent Changes
+- Created and implemented all SuperCollider prototypes for the building blocks:
+  - Distributions: Created various probabilistic distribution models with visualizations
+  - Time Warping: Implemented power function warping with interactive testing tools
+  - 3D Radial Positioning: Built radial coordinate positioning with stereo rendering
+  - Droplet Generation: Created the Rain Catcher system with configurable distributions
+  - Envelope Processing: Implemented various envelope shapes with parameter control
+  - Audio Engine Core: Integrated all components in a complete audio engine
+  - UI Prototype: Created parameter layout and controls with visualizations
 - Renamed project from "Granular VST" to "Simply Droplets" to reflect the distinctive droplet-based approach
 - Created detailed architecture design document in memory-bank/design/architecture.md
 - Defined core components with Rust struct definitions:
@@ -31,62 +40,92 @@
 - Created component relationship diagrams in the architecture document
 
 ## Implementation Insights
-From architecture exploration:
-- Even with basic stereo rendering, compelling spatial effects are achievable
-- Pan: Simple gain adjustments between channels creates effective horizontal positioning
-- Depth: Volume reduction (up to 70% at maximum depth) provides convincing distance cues
-- Height: Creative stereo mixing adds vertical dimension to the stereo field
-- Randomization: Applying controlled randomness creates diffuse, organic soundscapes
-- Density-based timing: Formula `spawn_interval = sample_rate / (10.0 * density)` provides intuitive control
+From SuperCollider prototype implementation:
+
+### Distribution System
+- Gaussian distribution creates natural-sounding, focused droplet characteristics
+- Clustered distribution with multiple centers creates more interesting spatial textures
+- Bimodal distributions are effective for creating stereo opposition or focal points
+- Interactive control of distribution shape is essential for sound design flexibility
+
+### Time Warping
+- Power function approach works effectively for both acceleration and deceleration effects
+- Random variation of ±20% on the time warp factor creates more organic results
+- Exponential warping (warp_curve > 0) creates forward momentum
+- Logarithmic warping (warp_curve < 0) creates a sense of suspense or anticipation
+- Most musically useful range is between -0.7 and 0.7 for the warp curve parameter
+
+### 3D Radial Positioning
+- Radial coordinate system simplifies many spatial audio calculations
+- Even with basic stereo rendering, convincing spatial effects are achievable
+- Elevation is the most challenging dimension to render convincingly in stereo
+- Path-based movement creates more engaging spatial effects than static positioning
+- The 'advanced' rendering mode provides the best balance between spatial clarity and stereo compatibility
+
+### Droplet Generation
+- The relationship between density parameter and spawning rate works intuitively
 - Limiting to 32 concurrent droplets balances rich sound with CPU efficiency
-- Normalization based on the square root of active droplet count effectively controls volume
+- Clustered spatial distributions create more engaging and natural soundscapes
+- Random variation in time warp and envelope parameters is essential for organic sound
+- Duration distributions concentrated around 100-300ms provide the most musical results
+
+### Envelope Processing
+- Envelope shapes significantly impact the perceived character of droplets
+- Envelope parameters should be adapted based on droplet duration
+- Humanization (subtle random variations) creates more natural, organic textures
+- Parameter ranges need careful constraining for musical results
+- Envelope types can be parametrically distributed like other droplet properties
+
+### Audio Engine Core
+- Object-oriented design with clean separation between configuration and processing logic works well
+- Processing per sample rather than per block provides more control but is more CPU intensive
+- The square root normalization approach effectively manages volume as density changes
+- Circular buffer implementation is critical for maintaining efficiency
+- Hybrid approaches using native UGens for granular processing controlled by parameter logic provides the best performance
+
+### UI Design
+- Parameter organization into logical groups enhances usability
+- Real-time visualization provides essential feedback for understanding complex parameters
+- Interactive parameter relationships are essential for immediate user feedback
+- Parameter ranges should be carefully constrained for musical results
+- Consistent visual language improves learnability and reduces cognitive load
 
 ## Development Approach
 
-We will be breaking down the implementation into distinct building blocks, each following a two-step process:
+We have completed the first step of our two-step development process:
 
-1. **SuperCollider prototype** - To validate the concept, sound design, and functionality
-2. **Rust implementation** - To integrate into the final VST/CLAP plugin
+1. **SuperCollider prototypes** - COMPLETED ✓
+   - Created prototypes for all building blocks
+   - Validated concepts, sound design, and functionality
+   - Documented findings and parameter relationships
 
-This approach allows us to rapidly test audio concepts before dedicating resources to plugin implementation.
-
-## Building Blocks
-
-1. **Distribution System**
-   - SC Prototype: Create different distribution models (uniform, gaussian, etc.)
-   - Rust Implementation: Implement the Distribution trait with various strategies
-
-2. **Time Warping**
-   - SC Prototype: Test power function warping, experiment with other curve shapes
-   - Rust Implementation: Build the TimeWarpCurve implementation
-
-3. **3D Radial Positioning**
-   - SC Prototype: Test radial coordinate positioning and spatialization to stereo
-   - Rust Implementation: Implement Position3D and RadialCoordinate structs
-
-4. **Droplet Generation**
-   - SC Prototype: Experiment with stochastic generation algorithms
-   - Rust Implementation: Create the RainCatcher system
-
-5. **Envelope Processing**
-   - SC Prototype: Test different envelope shapes and their sonic impact
-   - Rust Implementation: Add envelope support to the Droplet struct
-
-6. **Audio Engine Core**
-   - SC Prototype: Integrate all components in SuperCollider
-   - Rust Implementation: Build the DropletProcessor and buffer management
-
-7. **UI Components**
-   - SC Prototype: Mock UIs in SuperCollider for testing parameter ranges
-   - Rust Implementation: Create nih-plug-iced components
+2. **Rust implementation** - NEXT PHASE
+   - Implement the Distribution trait with various strategies
+   - Build the TimeWarpCurve implementation
+   - Implement Position3D and RadialCoordinate structs
+   - Create the RainCatcher system
+   - Add envelope support to the Droplet struct
+   - Build the DropletProcessor and buffer management
+   - Create nih-plug-iced UI components
 
 ## Next Steps
 
-1. Set up SuperCollider project for prototyping
-2. Begin with Distribution System prototype in SuperCollider
-3. Test and refine the concept
-4. Implement Distribution system in Rust
-5. Continue with incremental development of each building block
+1. Begin Rust implementation of the Distribution system
+   - Implement the Distribution trait with uniform, gaussian, and clustered distribution types
+   - Create unit tests with validation against expected distributions
+   - Implement parameter serialization for plugin state saving
+
+2. Move to TimeWarpCurve implementation
+   - Implement the power function approach validated in SuperCollider
+   - Add support for randomization within specified bounds
+   - Create unit tests with validation against expected time-warping behavior
+
+3. Continue with incremental development of each building block
+   - Position3D and related spatial components
+   - RainCatcher droplet generation system
+   - Droplet struct with envelope processing
+   - Audio processing engine core
+   - UI components with nih-plug-iced
 
 ## Design Decisions
 

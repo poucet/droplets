@@ -4,7 +4,14 @@
 - Complete memory bank documentation reflecting the architecture design
 - Basic Rust project structure set up for the plugin
 - Dependencies configured for nih-plug and nih-plug-iced
-- Project renamed from "Granular VST" to "Simply Droplets"
+- All SuperCollider prototypes implemented for each building block:
+  - Distribution System: Created with various probabilistic models and visualizations
+  - Time Warping: Implemented with power function approach and testing tools
+  - 3D Radial Positioning: Built with stereo rendering from 3D coordinates
+  - Droplet Generation: Created the Rain Catcher system with configurable distributions
+  - Envelope Processing: Implemented various envelope shapes with parameter control
+  - Audio Engine Core: Integrated all components in a complete engine
+  - UI Prototype: Created mockup interface with all parameters and visualizations
 - Comprehensive architecture design document created with detailed:
   - Core concepts: droplets, 3D positioning, time-warping, rain catcher system
   - Architectural components: Distribution, TimeWarpCurve, Position3D, Droplet, RainCatcher, DropletProcessor
@@ -13,114 +20,106 @@
   - Parameter design philosophy
   - Component relationship diagrams
   - Technical implementation considerations
-- Path-based movement trajectories designed with multiple interpolation options
-- 3D audio positioning system with stereo rendering approach
-- Time-warping system designed with power function implementation
-- Implementation insights from architecture exploration documented
+- Validated key concepts with SuperCollider prototypes:
+  - Time-warping with power functions is effective and intuitive
+  - 3D positioning using radial coordinates provides natural spatialization
+  - Density-based timing with the formula `spawn_interval = sample_rate / (10.0 * density)` is intuitive
+  - Limiting to 32 concurrent droplets balances richness and performance
+  - Normalization based on the square root of active droplet count effectively controls volume
 
 ## Development Approach
 We've adopted a building-block approach with incremental development:
 
-1. SuperCollider prototypes for each functional component
-2. Rust implementation of each validated component
+1. SuperCollider prototypes for each functional component - **COMPLETED ✓**
+2. Rust implementation of each validated component - **NEXT PHASE**
 3. Integration into the final VST/CLAP plugin
 
-This approach allows us to:
+This approach has allowed us to:
 - Validate audio concepts quickly
 - Experiment with parameter ranges and sonic characteristics
-- Receive feedback earlier in the development process
-- Focus Rust implementation efforts on proven concepts
+- Document findings from each prototype
+- Create a solid foundation for the Rust implementation
 
 ## What's Left to Build
 
-### SuperCollider Prototypes
-1. **Distribution System Prototype**
-   - Various distribution models (uniform, gaussian, bimodal, etc.)
-   - Parameter mapping and scaling functions
-   - Visualization tools for verification
-
-2. **Time Warping Prototype**
-   - Power function implementation
-   - Curve-based warping experimentation
-   - Alternative warping approaches for comparison
-
-3. **3D Radial Positioning Prototype**
-   - Radial coordinate system implementation
-   - Stereo rendering from 3D positions
-   - Audio balance through polar opposites
-
-4. **Droplet Generation Prototype**
-   - Stochastic generation based on density
-   - Parameter-driven distribution sampling
-   - Resource management techniques
-
-5. **Envelope Processing Prototype**
-   - Various envelope shapes (ADSR, exponential, etc.)
-   - Parameter control for envelope segments
-   - Envelope impact on perceived sound
-
-6. **Audio Engine Core Prototype**
-   - Integrated system with all components
-   - Buffer management strategies
-   - Performance testing with varying droplet counts
-
-7. **UI Mock Prototype**
-   - Parameter range experimentation
-   - Control layouts and groupings
-   - Real-time interaction patterns
-
 ### Rust Implementation
-Following validation through SuperCollider prototypes:
+Based on the validated SuperCollider prototypes:
 
-1. **Core Types**
-   - Distribution trait and implementations
-   - TimeWarpCurve implementation
-   - RadialCoordinate and Position3D structs
-   - Droplet struct with position and time-warp
+1. **Distribution System Implementation**
+   - Create the Distribution trait
+   - Implement Uniform, Gaussian, Clustered, and other distribution strategies
+   - Add parameter serialization support
+   - Write unit tests to validate distributions
 
-2. **Generator System**
-   - RainCatcher implementation
-   - Stochastic process integration
-   - Resource management
+2. **Time Warping Implementation**
+   - Create the TimeWarpCurve struct
+   - Implement power function warping with randomization
+   - Add parameter serialization support
+   - Write unit tests to validate time warping behavior
 
-3. **Audio Processing**
-   - DropletProcessor implementation
-   - Buffer management
-   - 3D to stereo rendering
+3. **3D Radial Positioning Implementation**
+   - Create the Position3D and RadialCoordinate structs
+   - Implement stereo rendering from 3D positions
+   - Add path-based movement support
+   - Write unit tests for position calculations
 
-4. **Plugin Integration**
-   - NIH-plug parameter system
-   - Audio processing callback
-   - State management
+4. **Droplet Generation Implementation**
+   - Create the RainCatcher struct
+   - Implement stochastic generation based on density
+   - Add distribution-based parameter sampling
+   - Write unit tests for generation patterns
 
-5. **User Interface**
-   - Basic controls with nih-plug-iced
-   - Advanced curve editors
-   - 3D visualization components
+5. **Envelope Processing Implementation**
+   - Add envelope support to Droplet struct
+   - Implement various envelope shapes
+   - Add humanization support
+   - Write unit tests for envelope behavior
+
+6. **Audio Processing Engine Implementation**
+   - Create the DropletProcessor struct
+   - Implement circular buffer management
+   - Add sample-level processing logic
+   - Write integration tests for full processing chain
+
+7. **Plugin Integration**
+   - Integrate with nih-plug parameter system
+   - Implement audio processing callback
+   - Add state management and serialization
+   - Create basic preset system
+
+8. **User Interface Implementation**
+   - Create primary UI layout with nih-plug-iced
+   - Implement controls for all parameters
+   - Add visualizations for droplets and time warping
+   - Create custom curve editors
 
 ## Current Status
-- Project has a complete architectural foundation
-- Development approach refined to use SuperCollider prototypes
-- Building blocks identified and sequenced
-- Ready to begin SuperCollider prototyping phase
+- All SuperCollider prototypes have been implemented
+- Key concepts have been validated and documented
+- Implementation insights have been captured in the activeContext.md
+- Ready to begin Rust implementation phase
 
 ## Known Issues & Challenges
 - Performance optimization for processing multiple droplets simultaneously
-  - Limiting to 32 concurrent droplets by default, with normalization based on active count
-  - Need to implement efficient circular buffer management
+  - Based on prototypes, limiting to 32 concurrent droplets with normalization works well
+  - Need to implement efficient circular buffer management in Rust
   - Need to optimize per-sample processing for realtime audio
+  - Consider using SIMD instructions for parallel processing of droplets
 
 - Complexity management:
   - Start with simpler implementations of distributions and time-warping
-  - Defer path-based movement to later iterations
+  - Implement path-based movement after validating static positioning
   - Begin with basic stereo rendering before attempting advanced 3D audio techniques
+  - Split implementation into small, testable components
 
 - UI implementation challenges:
   - Custom curve editors will require specialized iced implementations
   - 3D visualization needs to be performant enough for real-time use
   - Parameter serialization for complex types needs careful design
+  - Interactive parameter relationships need to be maintained
 
 - Integration challenges:
-  - Need to ensure compatibility with nih-plug's parameter system for complex types
-  - Ensure sample-accurate processing in the audio thread
-  - Maintain separation between audio and UI threads for stability
+  - Ensure compatibility with nih-plug's parameter system for complex types
+  - Maintain sample-accurate processing in the audio thread
+  - Ensure strong separation between audio and UI threads for stability
+  - Keep plugin state serialization efficient and backward-compatible
