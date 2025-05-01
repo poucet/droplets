@@ -12,6 +12,7 @@
 - Defined key components: Distribution, TimeWarpCurve, Position3D, Droplet, RainCatcher, and DropletProcessor
 - Outlined 3D audio positioning concept with x (left-right), y (front-back), and z (height) axes
 - Established time-warping approach for non-linear playback of droplets
+- Added support for droplet movement along user-defined paths using splines
 
 ## Next Steps
 1. Review and refine the architecture design document
@@ -30,3 +31,5 @@
 - Evaluate the complexity/feasibility of user-drawable curves in the UI
 - Consider how to make the plugin performant while managing potentially many droplets
 - Decide on initial parameter set for MVP vs. more advanced features for later versions
+- Determine the best interpolation approach for movement paths (B-spline, Bezier, or Catmull-Rom)
+- Consider how the time-warp curve for movement relates to the audio time-warp

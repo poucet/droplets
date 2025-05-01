@@ -8,6 +8,7 @@
 - Comprehensive architecture design document created
 - Core concepts defined: droplets, 3D audio positioning, time warping, rain catcher system
 - Architectural components sketched out: Distribution, TimeWarpCurve, Position3D, Droplet, RainCatcher, DropletProcessor
+- Path-based movement trajectories designed for dynamic droplet positioning
 
 ## What's Left to Build
 - Implementation of core Distribution and TimeWarpCurve types
@@ -32,3 +33,4 @@
 - Need to determine the most efficient buffer access pattern for nih-plug
 - Need to evaluate performance implications of processing many droplets simultaneously
 - May need to simplify 3D audio positioning for initial MVP
+- Need to implement path interpolation algorithms for droplet movement (B-spline, Bezier, Catmull-Rom)
