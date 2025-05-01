@@ -71,12 +71,15 @@
 - Optimization for real-time sample-level processing
 
 ### 3D Positioning and Movement
-- Vector mathematics for position calculations
+- Radial coordinate mathematics for position calculations
+  - Spherical/polar coordinate system (radius, azimuth, elevation)
+  - Easy computation of polar opposites for audio balance
+  - Conversion to/from Cartesian coordinates when needed
 - Path interpolation algorithms (B-spline, Bezier, Catmull-Rom)
 - Stereo rendering techniques for 3D->2D conversion
-  - Pan: gain adjustments between channels
-  - Depth: volume reduction (up to 70% at maximum depth)
-  - Height: creative stereo mixing techniques
+  - Azimuth: mapped directly to stereo pan position
+  - Radius: affects overall intensity and presence
+  - Elevation: creative stereo mixing techniques
 
 ### Parameter System
 - Integration with nih-plug's parameter system

@@ -31,15 +31,21 @@ struct TimeWarpCurve {
 ```
 
 ### Position3D
-Manages 3D positioning for droplets:
+Manages 3D positioning for droplets using radial coordinates:
 ```rust
 struct Position3D {
-    x_distribution: Distribution,
-    y_distribution: Distribution,
-    z_distribution: Distribution,
+    // Radial coordinate system
+    radius_distribution: Distribution,       // Distance from center
+    azimuth_distribution: Distribution,      // Horizontal angle (0-2π)
+    elevation_distribution: Distribution,    // Vertical angle (-π/2 to π/2)
+    
+    // Optional joint distribution
     joint_distribution: Option<JointDistribution3D>,
     
-    fn sample(&self, context: &SampleContext) -> Vector3D;
+    fn sample(&self, context: &SampleContext) -> RadialCoordinate;
+    
+    // Helper to convert to cartesian when needed
+    fn to_cartesian(&self, radial: RadialCoordinate) -> Vector3D;
 }
 ```
 
@@ -57,11 +63,29 @@ struct Droplet {
     time_warp: TimeWarpCurve,
     
     // 3D positioning with optional dynamic movement
-    position: Vector3D,
+    position: RadialCoordinate,
     movement: Option<MovementTrajectory>,
     
     fn is_active(&self) -> bool;
     fn process(&mut self, buffers: &AudioBuffers) -> Sample3D;
+    
+    // Helper to compute polar opposite for audio balance
+    fn get_polar_opposite(&self) -> RadialCoordinate {
+        // Easy with radial coordinates - just add π to azimuth
+        // and negate elevation for perfect polar opposite
+        RadialCoordinate {
+            radius: self.position.radius,
+            azimuth: (self.position.azimuth + std::f32::consts::PI) % (2.0 * std::f32::consts::PI),
+            elevation: -self.position.elevation,
+        }
+    }
+}
+
+/// 3D radial coordinate
+struct RadialCoordinate {
+    radius: f32,      // Distance from center
+    azimuth: f32,     // Horizontal angle (0-2π)
+    elevation: f32,   // Vertical angle (-π/2 to π/2)
 }
 ```
 
@@ -125,9 +149,9 @@ graph TD
     Distributions -- Include --> PositionDist[Position Distribution]
     Distributions -- Include --> TimewarpDist[Time Warp Distribution]
     
-    PositionDist -- Contains --> XDist[X-axis Distribution]
-    PositionDist -- Contains --> YDist[Y-axis Distribution]
-    PositionDist -- Contains --> ZDist[Z-axis Distribution]
+    PositionDist -- Contains --> RadiusDist[Radius Distribution]
+    PositionDist -- Contains --> AzimuthDist[Azimuth Distribution]
+    PositionDist -- Contains --> ElevationDist[Elevation Distribution]
     PositionDist -- May Use --> JointDist[Joint Distribution]
     
     ActiveDroplets -- Process --> Audio[Audio Samples]

@@ -21,10 +21,12 @@ Unlike traditional granular synthesizers, Simply Droplets:
 - Droplets use time-warping for unique playback characteristics
 
 ### 3D Audio Positioning
-- X-axis: Left-right panning (stereo field)
-- Y-axis: Front-back positioning (depth/distance)
-- Z-axis: Up-down positioning (height)
-- All three dimensions are mixed down to stereo output
+- **Radial Coordinate System**:
+  - Radius: Distance from the center (intensity/presence)
+  - Azimuth: Horizontal angle around the listener (0-360°)
+  - Elevation: Vertical angle (-90° to +90°)
+- This system makes it easy to compute polar opposites for audio balance
+- All dimensions are mixed down to stereo output
 - Options for static positioning or dynamic movement along paths
 
 ### Time Warping

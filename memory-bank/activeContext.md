@@ -17,10 +17,11 @@
   - Droplet - representing active audio snippets with position and time-warp
   - RainCatcher - generator system for creating droplets with configured properties
   - DropletProcessor - main audio processing component
-- Established detailed 3D audio positioning concept with:
-  - X-axis: Left-right panning (stereo field)
-  - Y-axis: Front-back positioning (depth/distance)
-  - Z-axis: Up-down positioning (height)
+- Established detailed 3D audio positioning concept using radial coordinates:
+  - Radius: Distance from the center (intensity/presence)
+  - Azimuth: Horizontal angle around the listener (0-360°)
+  - Elevation: Vertical angle (-90° to +90°)
+  - This coordinate system makes it easy to compute polar opposites for audio balance
   - Options for both static positioning and dynamic movement along paths
 - Designed time-warping system using power functions:
   - Exponential: `position.powf(1.0 + warp_curve * 3.0) * time_warp`
