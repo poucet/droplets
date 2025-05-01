@@ -4,6 +4,36 @@
 
 Simply Droplets is a 3D droplet-based granular synthesis audio plugin built in Rust using the `nih-plug` framework. Unlike traditional granular synthesis which focuses on "grains," this plugin uses the concept of "droplets" that can be positioned in 3D space and have configurable time-warping characteristics.
 
+## Audio Processing Parameters
+
+### Current Implementation Parameters
+
+The existing implementation provides the following parameters:
+
+| Parameter | Description | Range | Default |
+|-----------|-------------|-------|---------|
+| Min Size | Minimum duration of droplets | 5.0-100.0 ms | 20.0 ms |
+| Max Size | Maximum duration of droplets | 20.0-500.0 ms | 150.0 ms |
+| Density | Controls how frequently droplets are generated | 1.0-100.0% | 50.0% |
+| Position | Base position within the buffer | 0.0-1.0 | 0.5 |
+| Spread | Random position variation for droplets | 0.0-1.0 | 0.2 |
+| Time Warp | Playback speed factor | 0.25-4.0 | 1.0 |
+| Warp Curve | Shape of time warping curve | -1.0 to 1.0 | 0.0 |
+| Pan Spread | Stereo width variation | 0.0-1.0 | 0.5 |
+| Depth | Front-to-back variation | 0.0-1.0 | 0.3 |
+| Height Spread | Up-down variation | 0.0-1.0 | 0.3 |
+| Height Mix | Amount of height dimension mixed into stereo output | 0.0-1.0 | 0.5 |
+| Dry/Wet | Mix between original and processed signal | 0.0-1.0 | 1.0 |
+
+### Envelope System
+
+The current implementation uses a simple ADSR envelope with fixed proportions:
+- Attack: 25% of total droplet duration 
+- Sustain: 50% of total droplet duration (at full level)
+- Release: 25% of total droplet duration
+
+This envelope shapes the amplitude of each droplet over its lifetime, creating natural-sounding fadeins and fadeouts.
+
 ## Core Concepts
 
 ### Droplets vs. Grains
@@ -24,6 +54,24 @@ Each droplet exists in a 3D audio space with:
 
 In stereo output, this 3D positioning is collapsed to create a sense of space and dimension.
 
+The current 3D audio implementation includes:
+
+1. **Pan (left-right)**: Simple gain adjustments for left and right channels
+   - `-1.0` = full left, `1.0` = full right
+   - Implemented as gain factors: left gain decreases as pan moves right, right gain decreases as pan moves left
+
+2. **Depth (front-back)**: Simulated distance through volume reduction
+   - `0.0` = close (full volume), `1.0` = far (reduced volume)
+   - Implemented with a depth gain factor: `1.0 - (depth * 0.7)` (maximum 70% reduction at full depth)
+   - A more sophisticated approach could include frequency filtering to simulate distance
+
+3. **Height (up-down)**: Vertical positioning
+   - `-1.0` = below listener, `1.0` = above listener
+   - Currently implemented by mixing the height-weighted signal into both channels
+   - The `height_mix` parameter controls how much of the height dimension affects the final output
+
+The 3D space is further enhanced by randomized spread parameters for each dimension, creating a more diffuse and organic sound field.
+
 ### Time Warping
 
 Each droplet can have its playback time-warped according to a configurable curve. This allows for:
@@ -31,12 +79,35 @@ Each droplet can have its playback time-warped according to a configurable curve
 - Non-linear playback (accelerations, decelerations)
 - Creative time-based effects
 
+The current implementation offers three warp curve types:
+1. **Linear (warp_curve = 0.0)**: No warping, straight playback
+2. **Exponential (warp_curve > 0.0)**: Time accelerates as the droplet progresses
+   - Implementation: `position.powf(1.0 + warp_curve * 3.0) * time_warp`
+3. **Logarithmic (warp_curve < 0.0)**: Time decelerates as the droplet progresses
+   - Implementation: `position.powf(1.0 / (1.0 + warp_curve.abs() * 3.0)) * time_warp`
+
+Each droplet also has a random `time_warp` factor multiplier (within ±20% of the base time warp value). This helps create more organic and varied playback, preventing the mechanical repetition sometimes heard in granular synthesis.
+
 ### Rain Catcher System
 
 The "Rain Catcher" is responsible for creating new droplets based on probability distributions. This system:
 - Decides when to spawn new droplets
 - Determines droplet characteristics (duration, position, time-warp)
 - Manages overall droplet density
+
+In the current implementation:
+- The Density parameter controls how frequently droplets are spawned
+  - Higher density = more frequent droplets (smaller spawn interval)
+  - The spawn interval is calculated as: `sample_rate / (10.0 * density)`
+- New droplets have randomized properties:
+  - Duration: Random value between Min Size and Max Size parameters
+  - 3D Position: Random values within the spread ranges for each dimension
+  - Time Warp: Base Time Warp value with ±20% random variation
+- The system limits the maximum number of concurrent droplets to 32
+- Inactive droplets are automatically pruned before spawning new ones
+- Droplet amplitude is normalized based on the square root of the active droplet count to prevent volume spikes
+
+This approach creates an organic and evolving texture rather than a mechanical repetition of grains.
 
 ## Architecture
 
