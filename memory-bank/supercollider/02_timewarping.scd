@@ -9,7 +9,7 @@
 ~plotTimeWarpCurve = {|curve, numPoints=100, title="Time Warp Curve"|
     var points = Array.fill(numPoints, {|i| 
         var t = i / (numPoints - 1);
-        [t, curve.value(t)]
+        [t, curve.value(t) ? 0] // Add nil protection
     });
     points.plot(title, Rect(100, 200, 500, 300));
 };
@@ -24,7 +24,7 @@
         var phase = Line.ar(0, 1, dur);
         
         // Apply the time warp curve to the phase
-        var warped_phase = curve.value(phase);
+        var warped_phase = curve.value(phase).clip(0, 1); // Add clipping for safety
         
         // Use the warped phase to read from the buffer
         sig = BufRd.ar(2, bufnum, warped_phase * BufFrames.ir(bufnum), 1);
@@ -99,11 +99,11 @@
     
     // Bidirectional (forward then backward)
     bidirectional: {|t|
-        if(t < 0.5) {
+        if(t < 0.5, {
             t * 2
-        } {
+        }, {
             (1.0 - t) * 2
-        }
+        })
     },
     
     // Random fluctuations around linear
@@ -113,15 +113,15 @@
     
     // Time freezing at certain points
     timeFreeze: {|t, freezePoint=0.5, freezeDuration=0.3|
-        if((t > freezePoint) && (t < (freezePoint + freezeDuration))) {
+        if((t > freezePoint) && (t < (freezePoint + freezeDuration)), {
             freezePoint
-        } {
-            if(t < freezePoint) {
+        }, {
+            if(t < freezePoint, {
                 t
-            } {
+            }, {
                 t - freezeDuration
-            }
-        }
+            })
+        })
     }
 );
 
@@ -136,7 +136,13 @@
         case
         { direction == 1 } { curve.value(t) }
         { direction == -1 } { 1.0 - curve.value(t) }
-        { direction == 0 } { if(t < 0.5) { curve.value(t * 2) * 0.5 } { 1.0 - (curve.value((t - 0.5) * 2) * 0.5) } };
+        { direction == 0 } { 
+            if(t < 0.5, {
+                curve.value(t * 2) * 0.5
+            }, {
+                1.0 - (curve.value((t - 0.5) * 2) * 0.5)
+            })
+        };
     };
     
     case
@@ -146,21 +152,21 @@
     { type == \sinusoidal } { {|t| directionWrapper.value(t, ~timeWarpCurves.sinusoidal) } }
     { type == \sCurve } { {|t| directionWrapper.value(t, ~timeWarpCurves.sCurve) } }
     { type == \randomFluctuations } { {|t| directionWrapper.value(t, {|x| ~timeWarpCurves.randomFluctuations.value(x, factor * 0.1) }) } }
-    { ~timeWarpCurves.linear };  // Default to linear if unknown type
+    { {|t| t } };  // Default to linear if unknown type
 };
 
 // Power function warping as defined in the architecture document
 ~powerFunctionWarping = {|t, warp_curve=0.0, time_warp=1.0, randomize=true|
-    var random_factor = if(randomize) { 0.8 + 0.4.rand } { 1.0 };  // ±20% variation
+    var random_factor = if(randomize, { 0.8 + 0.4.rand }, { 1.0 });  // ±20% variation
     var result;
     
-    if(warp_curve >= 0.0) {
+    if(warp_curve >= 0.0, {
         // Exponential curve (acceleration)
         result = t.pow(1.0 + (warp_curve * 3.0)) * time_warp * random_factor;
-    } {
+    }, {
         // Logarithmic curve (deceleration)
         result = t.pow(1.0 / (1.0 + (warp_curve.abs * 3.0))) * time_warp * random_factor;
-    };
+    });
     
     result.clip(0, 1); // Ensure we stay in the valid range
 };
@@ -249,38 +255,62 @@ var currentCurve, plotView, params, testBuffer;
 warpTypeMenu = PopUpMenu(win, Rect(10, 10, 150, 20))
     .items_(["linear", "exponential", "logarithmic", "sinusoidal", "sCurve", "randomFluctuations", "power"])
     .action_({ |menu|
+        var dirIdx;
+        
+        // Safely get the direction index
+        dirIdx = if(directionMenu.items.notNil && directionMenu.value.notNil, {
+            directionMenu.items[directionMenu.value];
+        }, {
+            "forward"; // Default to forward if not available
+        });
+        
+        // Handle potential nil values from array lookups
+        dirIdx = if(dirIdx.isNil, { "forward" }, { dirIdx });
+        
         params = (
             type: menu.items[menu.value].asSymbol,
             factor: factorSlider.value * 5,
-            direction: ["forward", "reverse", "bidirectional"].indexOf(directionMenu.items[directionMenu.value]) - 1,
+            direction: if(dirIdx == "forward", { 1 }, { if(dirIdx == "reverse", { -1 }, { 0 }) }), // Safer direction handling
             timeWarp: timeWarpSlider.value * 2,
             randomize: randomizeCheck.value
         );
         
-        if(params.type == \power) {
+        if(params.type == \power, {
             currentCurve = {|t| ~powerFunctionWarping.value(t, params.factor - 2.5, params.timeWarp, params.randomize) };
-        } {
+        }, {
             currentCurve = ~parametricTimeWarp.(params.type, params.factor, params.direction);
-        };
+        });
     });
 
 StaticText(win, Rect(10, 40, 150, 20)).string_("Factor / Warp Curve:");
 factorSlider = Slider(win, Rect(10, 60, 150, 20))
     .value_(0.5)
     .action_({ |slider|
+        var dirIdx;
+        
+        // Safely get the direction index
+        dirIdx = if(directionMenu.items.notNil && directionMenu.value.notNil, {
+            directionMenu.items[directionMenu.value];
+        }, {
+            "forward"; // Default to forward if not available
+        });
+        
+        // Handle potential nil values from array lookups
+        dirIdx = if(dirIdx.isNil, { "forward" }, { dirIdx });
+        
         params = (
             type: warpTypeMenu.items[warpTypeMenu.value].asSymbol,
             factor: slider.value * 5,
-            direction: ["forward", "reverse", "bidirectional"].indexOf(directionMenu.items[directionMenu.value]) - 1,
+            direction: if(dirIdx == "forward", { 1 }, { if(dirIdx == "reverse", { -1 }, { 0 }) }), // Safer direction handling
             timeWarp: timeWarpSlider.value * 2,
             randomize: randomizeCheck.value
         );
         
-        if(params.type == \power) {
+        if(params.type == \power, {
             currentCurve = {|t| ~powerFunctionWarping.value(t, params.factor - 2.5, params.timeWarp, params.randomize) };
-        } {
+        }, {
             currentCurve = ~parametricTimeWarp.(params.type, params.factor, params.direction);
-        };
+        });
     });
 
 StaticText(win, Rect(10, 90, 150, 20)).string_("Direction:");
@@ -290,54 +320,78 @@ directionMenu = PopUpMenu(win, Rect(10, 110, 150, 20))
         params = (
             type: warpTypeMenu.items[warpTypeMenu.value].asSymbol,
             factor: factorSlider.value * 5,
-            direction: ["forward", "reverse", "bidirectional"].indexOf(menu.items[menu.value]) - 1,
+            direction: if(menu.value == 0, { 1 }, { if(menu.value == 1, { -1 }, { 0 }) }), // Use direct values instead of indexOf
             timeWarp: timeWarpSlider.value * 2,
             randomize: randomizeCheck.value
         );
         
-        if(params.type == \power) {
+        if(params.type == \power, {
             currentCurve = {|t| ~powerFunctionWarping.value(t, params.factor - 2.5, params.timeWarp, params.randomize) };
-        } {
+        }, {
             currentCurve = ~parametricTimeWarp.(params.type, params.factor, params.direction);
-        };
+        });
     });
 
 StaticText(win, Rect(10, 140, 150, 20)).string_("Time Warp Speed:");
 timeWarpSlider = Slider(win, Rect(10, 160, 150, 20))
     .value_(0.5)
     .action_({ |slider|
+        var dirIdx;
+        
+        // Safely get the direction index
+        dirIdx = if(directionMenu.items.notNil && directionMenu.value.notNil, {
+            directionMenu.items[directionMenu.value];
+        }, {
+            "forward"; // Default to forward if not available
+        });
+        
+        // Handle potential nil values from array lookups
+        dirIdx = if(dirIdx.isNil, { "forward" }, { dirIdx });
+        
         params = (
             type: warpTypeMenu.items[warpTypeMenu.value].asSymbol,
             factor: factorSlider.value * 5,
-            direction: ["forward", "reverse", "bidirectional"].indexOf(directionMenu.items[directionMenu.value]) - 1,
+            direction: if(dirIdx == "forward", { 1 }, { if(dirIdx == "reverse", { -1 }, { 0 }) }), // Safer direction handling
             timeWarp: slider.value * 2,
             randomize: randomizeCheck.value
         );
         
-        if(params.type == \power) {
+        if(params.type == \power, {
             currentCurve = {|t| ~powerFunctionWarping.value(t, params.factor - 2.5, params.timeWarp, params.randomize) };
-        } {
+        }, {
             currentCurve = ~parametricTimeWarp.(params.type, params.factor, params.direction);
-        };
+        });
     });
 
 randomizeCheck = CheckBox(win, Rect(10, 190, 150, 20))
     .string_("Randomize ±20%")
     .value_(true)
     .action_({ |checkbox|
+        var dirIdx;
+        
+        // Safely get the direction index
+        dirIdx = if(directionMenu.items.notNil && directionMenu.value.notNil, {
+            directionMenu.items[directionMenu.value];
+        }, {
+            "forward"; // Default to forward if not available
+        });
+        
+        // Handle potential nil values from array lookups
+        dirIdx = if(dirIdx.isNil, { "forward" }, { dirIdx });
+        
         params = (
             type: warpTypeMenu.items[warpTypeMenu.value].asSymbol,
             factor: factorSlider.value * 5,
-            direction: ["forward", "reverse", "bidirectional"].indexOf(directionMenu.items[directionMenu.value]) - 1,
+            direction: if(dirIdx == "forward", { 1 }, { if(dirIdx == "reverse", { -1 }, { 0 }) }), // Safer direction handling
             timeWarp: timeWarpSlider.value * 2,
             randomize: checkbox.value
         );
         
-        if(params.type == \power) {
+        if(params.type == \power, {
             currentCurve = {|t| ~powerFunctionWarping.value(t, params.factor - 2.5, params.timeWarp, params.randomize) };
-        } {
+        }, {
             currentCurve = ~parametricTimeWarp.(params.type, params.factor, params.direction);
-        };
+        });
     });
 
 plotButton = Button(win, Rect(10, 220, 150, 30))
@@ -359,11 +413,11 @@ recordButton = Button(win, Rect(10, 260, 150, 30))
 audioButton = Button(win, Rect(10, 300, 70, 30))
     .states_([["Play"]])
     .action_({
-        if(testBuffer.notNil) {
+        if(testBuffer.notNil, {
             ~playTimeWarped.(currentCurve, testBuffer, 4.0);
-        } {
+        }, {
             "Please record a test buffer first.".postln;
-        }
+        });
     });
 
 stopButton = Button(win, Rect(90, 300, 70, 30))
