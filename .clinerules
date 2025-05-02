@@ -35,6 +35,42 @@
 - ⬇️ `:arrow_down:` - Downgrading dependencies
 - 🔀 `:twisted_rightwards_arrows:` - Merging branches
 
+## Coding Style Guidelines
+
+### SuperCollider Variable Declarations
+
+- For SuperCollider files (.scd) only, variables must always be declared at the beginning of a function, immediately after the arguments line
+- Even if their values are defined later in the function, all variables should be declared upfront
+- This improves code readability and makes it easier to understand the scope of all variables
+
+Example in SuperCollider:
+
+```supercollider
+// Good
+~processBuffer = {|buffer, gain=1.0|
+    var result;
+    var processedSignal;
+    var envelope;
+    
+    processedSignal = buffer * gain;
+    envelope = Env.linen(0.1, 0.8, 0.1);
+    result = processedSignal * envelope;
+    
+    result
+};
+
+// Avoid
+~processBuffer = {|buffer, gain=1.0|
+    var processedSignal = buffer * gain;
+    var envelope = Env.linen(0.1, 0.8, 0.1);
+    var result = processedSignal * envelope;
+    
+    result
+};
+```
+
+This pattern applies specifically to SuperCollider code, not to Rust or other languages used in the project.
+
 ## Examples
 
 ```
