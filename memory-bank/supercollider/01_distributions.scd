@@ -7,28 +7,36 @@
 
 // Function to plot a distribution
 ~plotDistribution = {|distribution, numSamples=1000, title="Distribution"|
-    var samples = Array.fill(numSamples, { distribution.value });
-    var plot = samples.plot(title);
+    var samples;
+    var plot;
+
+    samples = Array.fill(numSamples, { distribution.value });
+    plot = samples.plot(title);
     // Don't try to set plotMode to histogram as it might not be available in all SC versions
     plot.refresh;
 };
 
 // Alternative histogram-like visualization
 ~plotDistributionHistogram = {|distribution, numSamples=1000, numBins=20, title="Distribution Histogram"|
-    var samples = Array.fill(numSamples, { distribution.value });
-    var bins = Array.fill(numBins, { 0 });
-    var binWidth = 1.0 / numBins;
-    
+    var samples;
+    var bins;
+    var binWidth;
+    var maxVal;
+
+    samples = Array.fill(numSamples, { distribution.value });
+    bins = Array.fill(numBins, { 0 });
+    binWidth = 1.0 / numBins;
+
     // Count samples in each bin
     samples.do {|sample|
         var binIndex = (sample / binWidth).asInteger.clip(0, numBins-1);
         bins[binIndex] = bins[binIndex] + 1;
     };
-    
+
     // Normalize bins for better visualization
-    var maxVal = bins.maxItem;
+    maxVal = bins.maxItem;
     bins = bins.collect {|val| val / maxVal };
-    
+
     // Plot the histogram
     bins.plot(title);
 };
@@ -36,9 +44,13 @@
 // Function to play a distribution as pitch values
 ~playDistribution = {|distribution, baseFreq=440, spread=200, dur=0.1|
     {
-        var trig = Impulse.kr(1/dur);
-        var freq = baseFreq + (distribution.value * spread);
-        var sig = SinOsc.ar(freq) * EnvGen.kr(Env.perc(0.01, dur), trig);
+        var trig;
+        var freq;
+        var sig;
+
+        trig = Impulse.kr(1/dur);
+        freq = baseFreq + (distribution.value * spread);
+        sig = SinOsc.ar(freq) * EnvGen.kr(Env.perc(0.01, dur), trig);
         Out.ar(0, sig ! 2);
     }.play;
 };
@@ -55,103 +67,111 @@
 // ==============================
 
 // Basic distribution types
-~distributions = (
-    // Uniform distribution between 0 and 1
-    uniform: { 
-        1.0.rand 
-    },
-    
-    // Gaussian (normal) distribution
-    // Mean = 0.5, standard deviation adjustable
-    gaussian: {|stdDev=0.15|
-        var u1 = 1.0.rand;
-        var u2 = 1.0.rand;
-        var r = (-2 * u1.log).sqrt;
-        var theta = 2pi * u2;
-        var val = r * theta.sin;
-        // Map from typical [-3,3] range to [0,1] and clip
-        (val * stdDev + 0.5).clip(0, 1);
-    },
-    
-    // Triangular distribution - higher probability in the middle
-    triangular: {
-        var a = 1.0.rand;
-        var b = 1.0.rand;
-        (a + b) * 0.5;
-    },
-    
-    // Exponential distribution - more values near 0
-    exponential: {|lambda=5|
-        (1.0 - (-1 * lambda * 1.0.rand).exp).clip(0, 1);
-    },
-    
-    // Bimodal distribution - two peaks
-    bimodal: {|peak1=0.25, peak2=0.75, mix=0.5, stdDev=0.1|
-        var dist = if(1.0.rand < mix, {
-            peak1
-        }, {
-            peak2
-        });
-        
-        // Add gaussian noise
-        (dist + (0.gaussian * stdDev)).clip(0, 1);
-    },
-    
-    // Beta distribution - flexible shape based on alpha/beta
-    beta: {|alpha=2, beta=2|
-        var u, v, x, y;
-        u = 1.0.rand;
-        v = 1.0.rand;
-        x = u.pow(1/alpha);
-        y = v.pow(1/beta);
-        if ((x + y) <= 1, { 
-            x / (x + y) 
-        }, { 
-            ~distributions.beta.value(alpha, beta)
-        });
-    }
-);
+~uniform = {
+	1.0.rand
+};
+
+// Gaussian (normal) distribution
+// Mean = 0.5, standard deviation adjustable
+~gaussian = {|stdDev=0.15|
+	var u1;
+	var u2;
+	var r;
+	var theta;
+	var val;
+
+	u1 = 1.0.rand;
+	u2 = 1.0.rand;
+	r = (-2 * u1.log).sqrt;
+	theta = 2pi * u2;
+	val = r * theta.sin;
+	// Map from typical [-3,3] range to [0,1] and clip
+	(val * stdDev + 0.5).clip(0, 1);
+};
+
+// Triangular distribution - higher probability in the middle
+~triangular = {
+	var a, b;
+
+	a = 1.0.rand;
+	b = 1.0.rand;
+	(a + b) * 0.5;
+};
+
+// Exponential distribution - more values near 0
+~exponential = {|lambda=5|
+    (1.0 - (-1 * lambda * 1.0.rand).exp).clip(0, 1);
+};
+
+// Bimodal distribution - two peaks
+~bimodal = {|peak1=0.25, peak2=0.75, mix=0.5, stdDev=0.1|
+	var dist;
+
+	dist = if(1.0.rand < mix.value, {
+		peak1.value
+	}, {
+		peak2.value
+	});
+
+	// Add gaussian noise
+	(dist.value + (0.gaussCurve * stdDev.value)).clip(0, 1);
+};
+
+// Beta distribution - flexible shape based on alpha/beta
+~beta = {|alpha=2, beta=2|
+	var u, v, x, y;
+
+	u = 1.0.rand;
+	v = 1.0.rand;
+	x = u.pow(1 / alpha.value);
+	y = v.pow(1 / beta.value);
+	if ((x + y) <= 1, {
+		x / (x + y)
+	}, {
+		~beta.value(alpha, beta)
+	});
+};
 
 // ==============================
 // PARAMETRIC DISTRIBUTION
 // ==============================
-
-// Create a parametric distribution that can blend between different distribution types
 ~parametricDistribution = {|type=\uniform, param1=0.15, param2=0.5|
     case
-    { type == \uniform } { ~distributions.uniform }
-    { type == \gaussian } { { ~distributions.gaussian.value(param1) } }
-    { type == \triangular } { ~distributions.triangular }
-    { type == \exponential } { { ~distributions.exponential.value(param1 * 10) } }
-    { type == \bimodal } { { ~distributions.bimodal.value(param1, param2, 0.5, 0.1) } }
-    { type == \beta } { { ~distributions.beta.value(param1 * 10, param2 * 10) } }
-    { ~distributions.uniform };  // Default to uniform if unknown type
+    { type == \uniform } { ~uniform }
+    { type == \gaussian } { { ~gaussian.value(param1) } }
+    { type == \triangular } { ~triangular }
+    { type == \exponential } { { ~exponential.value(param1 * 10) } }
+    { type == \bimodal } { { ~bimodal.value(param1, param2, 0.5, 0.1) } }
+    { type == \beta } { { ~beta.value(param1 * 10, param2 * 10) } }
+    { ~uniform };  // Default to uniform if unknown type
 };
-
 // ==============================
 // RADIAL COORDINATE DISTRIBUTIONS
 // ==============================
 
-// Distribution specifically for radial coordinates
-~radialDistribution = (
-    // Radius distribution (distance from center)
-    radius: {|minRadius=0, maxRadius=1, distribution|
-        var value = distribution.value;
-        minRadius + (value * (maxRadius - minRadius));
-    },
-    
-    // Azimuth distribution (horizontal angle 0-2π)
-    azimuth: {|minAzimuth=0, maxAzimuth=2pi, distribution|
-        var value = distribution.value;
-        minAzimuth + (value * (maxAzimuth - minAzimuth));
-    },
-    
-    // Elevation distribution (vertical angle -π/2 to π/2)
-    elevation: {|minElevation= -0.5pi, maxElevation=0.5pi, distribution|
-        var value = distribution.value;
-        minElevation + (value * (maxElevation - minElevation));
-    }
-);
+// Radius distribution (distance from center)
+~radius = {|minRadius=0, maxRadius=1, distribution|
+    var value;
+
+    value = distribution.value;
+    minRadius + (value * (maxRadius - minRadius));
+};
+
+// Azimuth distribution (horizontal angle 0-2π)
+~azimuth = {|minAzimuth=0, maxAzimuth=2pi, distribution|
+    var value;
+
+    value = distribution.value;
+    minAzimuth + (value * (maxAzimuth - minAzimuth));
+};
+
+// Elevation distribution (vertical angle -π/2 to π/2)
+~elevation = {|minElevation= -0.5pi, maxElevation=0.5pi, distribution|
+    var value;
+
+    value = distribution.value;
+    minElevation + (value * (maxElevation - minElevation));
+};
 
 // ==============================
 // TESTING AND VISUALIZATION
@@ -163,28 +183,21 @@ s.boot;
 // Plot various distributions
 (
 // Simple distributions
-~plotDistribution.(~distributions.uniform, 10000, "Uniform Distribution");
-~plotDistribution.(~distributions.gaussian, 10000, "Gaussian Distribution");
-~plotDistribution.(~distributions.triangular, 10000, "Triangular Distribution");
-~plotDistribution.(~distributions.exponential, 10000, "Exponential Distribution");
-~plotDistribution.(~distributions.bimodal, 10000, "Bimodal Distribution");
-~plotDistribution.(~distributions.beta, 10000, "Beta Distribution");
-
-// Parametric distribution with different types
-~plotDistribution.(~parametricDistribution.(\uniform), 10000, "Parametric: Uniform");
-~plotDistribution.(~parametricDistribution.(\gaussian, 0.05), 10000, "Parametric: Narrow Gaussian");
-~plotDistribution.(~parametricDistribution.(\gaussian, 0.25), 10000, "Parametric: Wide Gaussian");
-~plotDistribution.(~parametricDistribution.(\beta, 0.2, 0.8), 10000, "Parametric: Beta (2, 8)");
+~plotDistribution.value(~uniform, 10000, "Uniform Distribution");
+~plotDistribution.value(~gaussian, 10000, "Gaussian Distribution");
+~plotDistribution.value(~triangular, 10000, "Triangular Distribution");
+~plotDistribution.value(~exponential, 10000, "Exponential Distribution");
+~plotDistribution.value(~bimodal, 10000, "Bimodal Distribution");
+~plotDistribution.value(~beta, 10000, "Beta Distribution");
 
 // Try the alternative histogram visualization
-~plotDistributionHistogram.(~distributions.gaussian, 10000, 30, "Gaussian Distribution Histogram");
-~plotDistributionHistogram.(~distributions.bimodal, 10000, 30, "Bimodal Distribution Histogram");
+~plotDistributionHistogram.value(~gaussian, 10000, 30, "Gaussian Distribution Histogram");
+~plotDistributionHistogram.value(~bimodal, 10000, 30, "Bimodal Distribution Histogram");
 )
 
 // Audio testing of distributions
 (
-var dist = ~parametricDistribution.(\gaussian, 0.15);
-~playDistribution.(dist, 440, 200, 0.1);
+~playDistribution.(~gaussian, 440, 200, 0.1);
 )
 
 // ==============================
@@ -193,9 +206,19 @@ var dist = ~parametricDistribution.(\gaussian, 0.15);
 
 // GUI for testing distributions
 (
-var win = Window("Distribution Tester", Rect(100, 100, 500, 400)).front;
-var distTypeMenu, param1Slider, param2Slider, plotButton, audioButton, stopButton;
-var currentDist, plotView, params;
+var win;
+var distTypeMenu;
+var param1Slider;
+var param2Slider;
+var plotButton;
+var audioButton;
+var stopButton;
+var currentDist;
+var plotView;
+var params;
+
+// Create window
+win = Window("Distribution Tester", Rect(100, 100, 500, 400)).front;
 
 // GUI elements
 distTypeMenu = PopUpMenu(win, Rect(10, 10, 150, 20))
@@ -292,15 +315,15 @@ TextView(win, Rect(170, 10, 320, 380))
 /*
 Distribution findings:
 
-1. Gaussian (Normal) distributions with stdDev around 0.15 provide natural-sounding, 
+1. Gaussian (Normal) distributions with stdDev around 0.15 provide natural-sounding,
    focused results that avoid extremes.
 
-2. Beta distributions offer the most flexibility for shaping the probability curve, 
+2. Beta distributions offer the most flexibility for shaping the probability curve,
    with parameters allowing for skewed distributions that can emphasize specific
    regions of the parameter space.
 
 3. Bimodal distributions are useful for creating contrast between two distinct
-   parameter regions, like having droplets predominantly in front and behind 
+   parameter regions, like having droplets predominantly in front and behind
    the listener.
 
 4. For azimuth, a uniform distribution creates the widest stereo field, while
@@ -309,7 +332,7 @@ Distribution findings:
 5. For radius, exponential distributions (more values near min radius) create
    a dense sound with occasional distant droplets.
 
-6. For elevation, triangular distributions centered at 0 provide a natural 
+6. For elevation, triangular distributions centered at 0 provide a natural
    "mostly horizontal with some height variation" characteristic.
 
 Key implementation insights:
