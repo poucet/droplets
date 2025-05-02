@@ -9,8 +9,28 @@
 ~plotDistribution = {|distribution, numSamples=1000, title="Distribution"|
     var samples = Array.fill(numSamples, { distribution.value });
     var plot = samples.plot(title);
-    plot.plotMode = \histogram;
+    // Don't try to set plotMode to histogram as it might not be available in all SC versions
     plot.refresh;
+};
+
+// Alternative histogram-like visualization
+~plotDistributionHistogram = {|distribution, numSamples=1000, numBins=20, title="Distribution Histogram"|
+    var samples = Array.fill(numSamples, { distribution.value });
+    var bins = Array.fill(numBins, { 0 });
+    var binWidth = 1.0 / numBins;
+    
+    // Count samples in each bin
+    samples.do {|sample|
+        var binIndex = (sample / binWidth).asInteger.clip(0, numBins-1);
+        bins[binIndex] = bins[binIndex] + 1;
+    };
+    
+    // Normalize bins for better visualization
+    var maxVal = bins.maxItem;
+    bins = bins.collect {|val| val / maxVal };
+    
+    // Plot the histogram
+    bins.plot(title);
 };
 
 // Function to play a distribution as pitch values
@@ -67,11 +87,11 @@
     
     // Bimodal distribution - two peaks
     bimodal: {|peak1=0.25, peak2=0.75, mix=0.5, stdDev=0.1|
-        var dist = if(1.0.rand < mix) {
+        var dist = if(1.0.rand < mix, {
             peak1
-        } {
+        }, {
             peak2
-        };
+        });
         
         // Add gaussian noise
         (dist + (0.gaussian * stdDev)).clip(0, 1);
@@ -79,12 +99,16 @@
     
     // Beta distribution - flexible shape based on alpha/beta
     beta: {|alpha=2, beta=2|
-        var u, v, x;
+        var u, v, x, y;
         u = 1.0.rand;
         v = 1.0.rand;
         x = u.pow(1/alpha);
         y = v.pow(1/beta);
-        if ((x + y) <= 1) { x / (x + y) } { ~distributions.beta.value(alpha, beta) };
+        if ((x + y) <= 1, { 
+            x / (x + y) 
+        }, { 
+            ~distributions.beta.value(alpha, beta)
+        });
     }
 );
 
@@ -151,6 +175,10 @@ s.boot;
 ~plotDistribution.(~parametricDistribution.(\gaussian, 0.05), 10000, "Parametric: Narrow Gaussian");
 ~plotDistribution.(~parametricDistribution.(\gaussian, 0.25), 10000, "Parametric: Wide Gaussian");
 ~plotDistribution.(~parametricDistribution.(\beta, 0.2, 0.8), 10000, "Parametric: Beta (2, 8)");
+
+// Try the alternative histogram visualization
+~plotDistributionHistogram.(~distributions.gaussian, 10000, 30, "Gaussian Distribution Histogram");
+~plotDistributionHistogram.(~distributions.bimodal, 10000, 30, "Bimodal Distribution Histogram");
 )
 
 // Audio testing of distributions
@@ -208,11 +236,8 @@ param2Slider = Slider(win, Rect(10, 110, 150, 20))
 plotButton = Button(win, Rect(10, 140, 150, 30))
     .states_([["Plot Distribution"]])
     .action_({
-        // Create new plot window
-        var samples = Array.fill(10000, { currentDist.value });
-        var plot = samples.plot("Distribution - " + params.type);
-        plot.plotMode = \histogram;
-        plot.refresh;
+        // Use alternative histogram visualization
+        ~plotDistributionHistogram.(currentDist, 10000, 30, "Distribution - " + params.type);
     });
 
 audioButton = Button(win, Rect(10, 180, 70, 30))
@@ -234,6 +259,30 @@ params = (
     param2: 0.5
 );
 currentDist = ~parametricDistribution.(params.type, params.param1, params.param2);
+
+// Add explanatory text
+TextView(win, Rect(170, 10, 320, 380))
+    .string_(
+        "Distribution Testing in Simply Droplets\n\n" ++
+        "This prototype demonstrates different probability distributions\n" ++
+        "for controlling droplet parameters.\n\n" ++
+        "Available distribution types:\n" ++
+        "• Uniform: Equal probability across the entire range\n" ++
+        "• Gaussian: Bell curve centered in the middle\n" ++
+        "• Triangular: Linear falloff from center to edges\n" ++
+        "• Exponential: More values near minimum\n" ++
+        "• Bimodal: Two distinct centers of activity\n" ++
+        "• Beta: Versatile distribution with flexible shape\n\n" ++
+        "Distribution parameters:\n" ++
+        "• Parameter 1: Controls width/spread or shape\n" ++
+        "• Parameter 2: Controls position or secondary shaping\n\n" ++
+        "Click 'Play' to hear how the distribution affects pitch.\n" ++
+        "Click 'Plot Distribution' to see the probability density.\n\n" ++
+        "When implemented in droplets, each parameter (position, duration,\n" ++
+        "timewarp, radius, azimuth, elevation) can have its own distribution\n" ++
+        "type, creating rich and complex textures."
+    )
+    .editable_(false);
 )
 
 // ==============================
