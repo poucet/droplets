@@ -21,34 +21,35 @@
 ~playTimeWarped = {|curve, bufnum, dur=2.0|
     {
         var sig, phase, rate, bufDur, bufFrames, sampleRate;
-
+        var slopeEstimate, bufPos;
+        
         // Get buffer information
         bufFrames = BufFrames.ir(bufnum);
         bufDur = bufFrames / BufSampleRate.ir(bufnum);
         sampleRate = SampleRate.ir;
-
+        
         // Use a normalized phase from 0 to 1
         phase = Line.kr(0, 1, dur); // Control rate line from 0 to 1
-
+        
         // Apply the time warp curve to the phase first
         phase = curve.value(phase);
-
+        
         // Estimate derivative by comparing current to slightly delayed value
         // This approximates the slope of the curve and thus the rate multiplier
-        var slopeEstimate = (phase - DelayN.kr(phase, 0.05, 0.05)) / 0.05;
-
+        slopeEstimate = (phase - DelayN.kr(phase, 0.05, 0.05)) / 0.05;
+        
         // Calculate rate for PlayBuf
         rate = (slopeEstimate * bufDur).clip(0.1, 10); // Clip to avoid extreme rates
-
+        
         // Position in the buffer based on warped phase
-        var bufPos = phase * bufFrames;
-
+        bufPos = phase * bufFrames;
+        
         // Use PlayBuf for playback with variable rate
         sig = PlayBuf.ar(
-            numChannels: 2,
+            numChannels: 2, 
             bufnum: bufnum,
             rate: rate * BufRateScale.ir(bufnum),
-            startPos: 0,
+            startPos: bufPos, // Start from the position based on warped phase
             trigger: 1,
             loop: 0,
             doneAction: 0
@@ -327,16 +328,16 @@ s.waitForBoot {
 */
 
 // Example 2: Load an existing audio file
-
+/*
 // Load a sound file
-(
 s.waitForBoot {
-    ~testBuffer = ~loadAudioFile.value("/Users/simplychris/Music/hellowav.wav");
-
+    // Replace this path with your own audio file path
+    ~testBuffer = ~loadAudioFile.value(Platform.resourceDir +/+ "sounds/a11wlk01.wav");
+    
     // Apply different time warping
     ~playTimeWarped.(~linear, ~testBuffer, 4.0);
 }
-)
+*/
 
 
 // ==============================
