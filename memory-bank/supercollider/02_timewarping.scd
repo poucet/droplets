@@ -20,36 +20,43 @@
 // This implementation affects pitch when time is warped (faster = higher pitch)
 ~playTimeWarped = {|curve, bufnum, dur=2.0|
     {
-        var sig, pos, rate, bufDur, bufFrames;
-        
+        var sig, phase, rate, bufDur, bufFrames, sampleRate;
+
         // Get buffer information
         bufFrames = BufFrames.ir(bufnum);
         bufDur = bufFrames / BufSampleRate.ir(bufnum);
-        
-        // Calculate position using a phasor
-        pos = Phasor.ar(0, 1 / (dur * SampleRate.ir), 0, bufFrames);
-        
-        // Apply time warping by calculating the rate
-        // Use the difference between successive positions in the warped curve
-        // as the rate multiplier
-        rate = bufDur / dur; // Base rate to play full buffer
-        rate = rate * K2A.ar(
-            Slope.kr(curve.value(pos / bufFrames)) * bufFrames + 1
-        ).clip(0.1, 10); // Clip to reasonable rates to avoid extreme pitch shifts
-        
-        // Use standard playback with warped rate
+        sampleRate = SampleRate.ir;
+
+        // Use a normalized phase from 0 to 1
+        phase = Line.kr(0, 1, dur); // Control rate line from 0 to 1
+
+        // Apply the time warp curve to the phase first
+        phase = curve.value(phase);
+
+        // Estimate derivative by comparing current to slightly delayed value
+        // This approximates the slope of the curve and thus the rate multiplier
+        var slopeEstimate = (phase - DelayN.kr(phase, 0.05, 0.05)) / 0.05;
+
+        // Calculate rate for PlayBuf
+        rate = (slopeEstimate * bufDur).clip(0.1, 10); // Clip to avoid extreme rates
+
+        // Position in the buffer based on warped phase
+        var bufPos = phase * bufFrames;
+
+        // Use PlayBuf for playback with variable rate
         sig = PlayBuf.ar(
             numChannels: 2,
             bufnum: bufnum,
-            rate: rate,
+            rate: rate * BufRateScale.ir(bufnum),
             startPos: 0,
+            trigger: 1,
             loop: 0,
             doneAction: 0
         );
-        
+
         // Apply an envelope to avoid clicks
         sig = sig * EnvGen.kr(Env.sine(dur), doneAction: 2);
-        
+
         Out.ar(0, sig);
     }.play;
 };
@@ -57,7 +64,7 @@
 // Load an audio file for testing time warping
 ~loadAudioFile = {|path|
     var buffer;
-    
+
     if(File.exists(path), {
         buffer = Buffer.read(s, path);
         "Audio file loaded: %".format(path).postln;
@@ -65,7 +72,7 @@
         "File not found: %".format(path).postln;
         nil
     });
-    
+
     buffer;
 };
 
@@ -73,10 +80,10 @@
 ~createTestSound = {|outputPath, dur=4.0|
     var buffer, soundFile;
     var path = outputPath ?? {Platform.recordingsDir +/+ "test_sound.wav"};
-    
+
     // Allocate buffer
     buffer = Buffer.alloc(s, s.sampleRate * dur, 2);
-    
+
     // Create a synth that makes a rising tone with harmonics
     SynthDef(\testSound, {|bufnum|
         var sig;
@@ -98,11 +105,11 @@
 
     "Creating test sound...".postln;
     dur.wait;
-    
+
     // Save the buffer to a file
     buffer.write(path, "wav", "int16");
     "Test sound saved to: %".format(path).postln;
-    
+
     buffer;
 };
 
@@ -248,16 +255,16 @@ s.boot;
 ~plotTimeWarpCurve.({|t| ~powerFunctionWarping.value(t, 0.5, 1.0, true)}, 100, "Power: Exponential with Randomization");
 );
 
-// Create and load a test sound 
+// Create and load a test sound
 (
 s.waitForBoot {
     fork {
         // Path for the test sound
         var testSoundPath = Platform.recordingsDir +/+ "test_sound.wav";
-        
+
         // Create a test sound and save it to a file
         ~testBuffer = ~createTestSound.value(testSoundPath, 4.0);
-        
+
         // Alternatively, you can load an existing audio file:
         // ~testBuffer = ~loadAudioFile.value("/path/to/your/soundfile.wav");
     }
@@ -308,7 +315,7 @@ s.waitForBoot {
     fork {
         var testSoundPath = Platform.recordingsDir +/+ "test_sound.wav";
         ~testBuffer = ~createTestSound.value(testSoundPath, 4.0);
-        
+
         // Now play with different warp curves
         ~playTimeWarped.(~linear, ~testBuffer, 4.0);
         2.wait;
@@ -320,15 +327,17 @@ s.waitForBoot {
 */
 
 // Example 2: Load an existing audio file
-/*
+
 // Load a sound file
+(
 s.waitForBoot {
-    ~testBuffer = ~loadAudioFile.value("/path/to/your/soundfile.wav");
-    
+    ~testBuffer = ~loadAudioFile.value("/Users/simplychris/Music/hellowav.wav");
+
     // Apply different time warping
     ~playTimeWarped.(~linear, ~testBuffer, 4.0);
 }
-*/
+)
+
 
 // ==============================
 // NOTES AND OBSERVATIONS
