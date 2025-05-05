@@ -56,13 +56,31 @@
     }.play;
 };
 
-// Record a short sample for testing time warping
-~recordTestBuffer = {|dur=4.0|
+// Load an audio file for testing time warping
+~loadAudioFile = {|path|
     var buffer;
+    
+    if(File.exists(path), {
+        buffer = Buffer.read(s, path);
+        "Audio file loaded: %".format(path).postln;
+    }, {
+        "File not found: %".format(path).postln;
+        nil
+    });
+    
+    buffer;
+};
 
+// Create a simple synthetic test sound and save it as a file
+~createTestSound = {|outputPath, dur=4.0|
+    var buffer, soundFile;
+    var path = outputPath ?? {Platform.recordingsDir +/+ "test_sound.wav"};
+    
+    // Allocate buffer
     buffer = Buffer.alloc(s, s.sampleRate * dur, 2);
-
-    SynthDef(\recordBuf, {|bufnum|
+    
+    // Create a synth that makes a rising tone with harmonics
+    SynthDef(\testSound, {|bufnum|
         var sig;
         var pan;
         var stereo;
@@ -80,10 +98,13 @@
         RecordBuf.ar(stereo, bufnum, loop: 0, doneAction: 2);
     }).play(s, [\bufnum, buffer]);
 
-    "Recording test buffer...".postln;
+    "Creating test sound...".postln;
     dur.wait;
-    "Recording complete.".postln;
-
+    
+    // Save the buffer to a file
+    buffer.write(path, "wav", "int16");
+    "Test sound saved to: %".format(path).postln;
+    
     buffer;
 };
 
@@ -229,11 +250,18 @@ s.boot;
 ~plotTimeWarpCurve.({|t| ~powerFunctionWarping.value(t, 0.5, 1.0, true)}, 100, "Power: Exponential with Randomization");
 );
 
-// Record a test buffer
+// Create and load a test sound 
 (
 s.waitForBoot {
     fork {
-        ~testBuffer = ~recordTestBuffer.value(4.0);
+        // Path for the test sound
+        var testSoundPath = Platform.recordingsDir +/+ "test_sound.wav";
+        
+        // Create a test sound and save it to a file
+        ~testBuffer = ~createTestSound.value(testSoundPath, 4.0);
+        
+        // Alternatively, you can load an existing audio file:
+        // ~testBuffer = ~loadAudioFile.value("/path/to/your/soundfile.wav");
     }
 }
 );
@@ -436,27 +464,39 @@ plotButton = Button(win, Rect(10, 220, 150, 30))
         ~plotTimeWarpCurve.(currentCurve, 100, "Time Warp: " + params.type);
     });
 
-recordButton = Button(win, Rect(10, 260, 150, 30))
-    .states_([["Record Test Buffer"]])
+// Create two buttons side by side for creating test sound and loading audio
+createSoundButton = Button(win, Rect(10, 260, 150, 30))
+    .states_([["Create Test Sound"]])
     .action_({
         s.waitForBoot {
             fork {
-                testBuffer = ~recordTestBuffer.value(4.0);
+                var testSoundPath = Platform.recordingsDir +/+ "test_sound.wav";
+                testBuffer = ~createTestSound.value(testSoundPath, 4.0);
             }
         }
     });
 
-audioButton = Button(win, Rect(10, 300, 70, 30))
+loadFileButton = Button(win, Rect(10, 300, 150, 30))
+    .states_([["Load Audio File"]])
+    .action_({
+        Dialog.openPanel({ |path|
+            s.waitForBoot {
+                testBuffer = ~loadAudioFile.value(path);
+            }
+        });
+    });
+
+audioButton = Button(win, Rect(10, 340, 70, 30))
     .states_([["Play"]])
     .action_({
         if(testBuffer.notNil, {
             ~playTimeWarped.(currentCurve, testBuffer, 4.0);
         }, {
-            "Please record a test buffer first.".postln;
+            "Please load or create a test sound first.".postln;
         });
     });
 
-stopButton = Button(win, Rect(90, 300, 70, 30))
+stopButton = Button(win, Rect(90, 340, 70, 30))
     .states_([["Stop"]])
     .action_({
         s.freeAll;
