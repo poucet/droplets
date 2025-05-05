@@ -11,46 +11,47 @@
 
     points = Array.fill(numPoints, {|i|
         var t = i / (numPoints - 1);
-		curve.value(t)
+        curve.value(t) // Return just y values for plotting
     });
     points.plot(title, Rect(100, 200, 500, 300));
 };
 
 // Function to play a sound with time warping applied
+// Uses granular synthesis for better time manipulation
 ~playTimeWarped = {|curve, bufnum, dur=2.0|
     {
-        // Start a playback using the time warp curve to modulate position
-        var sig;
-        var phase;
-        var buf_frames;
-		var warpTable;
-		var warped_phase;
-
-        // Get buffer information
-        buf_frames = BufFrames.ir(bufnum);
-
-        // Create a normalized phase from 0 to 1 over the duration at audio rate
-        phase = Line.ar(0, 1, dur);
-
-        // For each sample, lookup what the warped phase would be for that position
-        // We create a mapping table with a pre-calculated curve that will be interpolated
-        warpTable = LocalBuf.newFrom(
-            // Create 1024 points of our warping curve for lookup
-            Array.fill(1024, {|i|
-                var t = i/1023;
-                curve.value(t).clip(0, 0.999); // Prevent reading past buffer end
-            })
+        var sig, pos, bufDur, grainRate, grainDur;
+        
+        // Get buffer duration
+        bufDur = BufFrames.ir(bufnum) / BufSampleRate.ir(bufnum);
+        
+        // Create a normalized linear position from 0 to 1
+        pos = Line.kr(0, 1, dur);
+        
+        // Apply the time warp curve to the position
+        pos = curve.value(pos).clip(0, 1);
+        
+        // Convert normalized position to actual buffer position (in seconds)
+        pos = pos * bufDur;
+        
+        // Use granular synthesis for better quality time manipulation
+        grainRate = 20; // 20 grains per second
+        grainDur = 0.1; // 100ms grains with overlap
+        
+        sig = GrainBuf.ar(
+            numChannels: 2,
+            trigger: Impulse.ar(grainRate),
+            dur: grainDur,
+            sndbuf: bufnum,
+            rate: 1.0,   // Normal playback rate
+            pos: pos / bufDur, // Normalized position (0-1)
+            interp: 4,   // Cubic interpolation for better quality
+            pan: 0       // Center pan
         );
-
-        // Look up the warped phase from our table
-        warped_phase = BufRd.ar(1, warpTable, phase * 1023, 1, 1);
-
-        // Use the warped phase to read from the buffer
-        sig = BufRd.ar(2, bufnum, warped_phase * buf_frames, 1, 1);
-
+        
         // Apply an envelope to avoid clicks
         sig = sig * EnvGen.kr(Env.sine(dur), doneAction: 2);
-
+        
         Out.ar(0, sig);
     }.play;
 };
@@ -499,6 +500,7 @@ TextView(win, Rect(170, 10, 420, 320))
     .editable_(false);
 }.value
 );
+
 // ==============================
 // NOTES AND OBSERVATIONS
 // ==============================
