@@ -5,18 +5,11 @@
 // UTILITY FUNCTIONS
 // ==============================
 
-// Function to plot 3D positions (top-down and side view)
-~plot3DPositions = {|positions, title="3D Positions"|
-    var topView = positions.collect {|pos| [pos[1], pos[0]] };  // azimuth, radius
-    var sideView = positions.collect {|pos| [pos[1], pos[2]] }; // azimuth, elevation
-    
-    topView.plot(title + " (Top View: Azimuth/Radius)", Rect(100, 100, 400, 400));
-    sideView.plot(title + " (Side View: Azimuth/Elevation)", Rect(520, 100, 400, 400));
-};
-
 // Function to generate test positions
 ~generateTestPositions = {|count=100, distributionMethod=\uniform|
-    var positions = Array.fill(count, {
+    var positions;
+    
+    positions = Array.fill(count, {
         var radius, azimuth, elevation;
         
         case
@@ -71,39 +64,48 @@
 
 // Function to convert radial coordinates to Cartesian
 ~radialToCartesian = {|radial|
-    var radius = radial[0];
-    var azimuth = radial[1];
-    var elevation = radial[2];
+    var radius, azimuth, elevation;
+    var x, y, z;
     
-    var x = radius * cos(elevation) * cos(azimuth);
-    var y = radius * cos(elevation) * sin(azimuth);
-    var z = radius * sin(elevation);
+    radius = radial[0];
+    azimuth = radial[1];
+    elevation = radial[2];
+    
+    x = radius * cos(elevation) * cos(azimuth);
+    y = radius * cos(elevation) * sin(azimuth);
+    z = radius * sin(elevation);
     
     [x, y, z];
 };
 
 // Function to convert Cartesian coordinates to radial
 ~cartesianToRadial = {|cartesian|
-    var x = cartesian[0];
-    var y = cartesian[1];
-    var z = cartesian[2];
+    var x, y, z;
+    var radius, azimuth, elevation;
     
-    var radius = sqrt((x * x) + (y * y) + (z * z));
-    var azimuth = atan2(y, x);
-    var elevation = asin(z / radius);
+    x = cartesian[0];
+    y = cartesian[1];
+    z = cartesian[2];
+    
+    radius = sqrt((x * x) + (y * y) + (z * z));
+    azimuth = atan2(y, x);
+    elevation = asin(z / radius);
     
     [radius, azimuth, elevation];
 };
 
 // Function to get the polar opposite position
 ~getPolarOpposite = {|radial|
-    var radius = radial[0];
-    var azimuth = radial[1];
-    var elevation = radial[2];
+    var radius, azimuth, elevation;
+    var oppositeAzimuth, oppositeElevation;
+    
+    radius = radial[0];
+    azimuth = radial[1];
+    elevation = radial[2];
     
     // Add π to azimuth and negate elevation for perfect polar opposite
-    var oppositeAzimuth = (azimuth + pi) % (2 * pi);
-    var oppositeElevation = -elevation;
+    oppositeAzimuth = (azimuth + pi) % (2 * pi);
+    oppositeElevation = -elevation;
     
     [radius, oppositeAzimuth, oppositeElevation];
 };
@@ -114,16 +116,18 @@
 
 // Render a 3D position to stereo (returns [left, right] gain)
 ~renderToStereo = {|radial, mode=\simple|
-    var radius = radial[0];
-    var azimuth = radial[1];
-    var elevation = radial[2];
-    var left, right, depth, elevationFactor;
+    var radius, azimuth, elevation;
+    var left, right, pan, depthAttenuation, elevationFactor, effectivePan;
+    
+    radius = radial[0];
+    azimuth = radial[1];
+    elevation = radial[2];
     
     case
     // Simple panning based on azimuth, with depth based on radius
     { mode == \simple } {
-        var pan = sin(azimuth) * 0.5 + 0.5;  // Convert azimuth to 0-1 pan value
-        var depthAttenuation = 1.0 - (radius * 0.7);  // Distant sounds are quieter (up to 70% reduction)
+        pan = sin(azimuth) * 0.5 + 0.5;  // Convert azimuth to 0-1 pan value
+        depthAttenuation = 1.0 - (radius * 0.7);  // Distant sounds are quieter (up to 70% reduction)
         
         left = cos(pan * pi/2) * depthAttenuation;
         right = sin(pan * pi/2) * depthAttenuation;
@@ -132,14 +136,14 @@
     // More complex model with elevation affecting the stereo image
     { mode == \advanced } {
         // Use cosine-based panning law for smoother energy distribution
-        var pan = sin(azimuth) * 0.5 + 0.5;  // Convert azimuth to 0-1 pan value
+        pan = sin(azimuth) * 0.5 + 0.5;  // Convert azimuth to 0-1 pan value
         
         // Depth attenuation: distant sounds are quieter
-        var depthAttenuation = 0.3 + (0.7 * (1.0 - radius));  // Scale from 0.3 to 1.0
+        depthAttenuation = 0.3 + (0.7 * (1.0 - radius));  // Scale from 0.3 to 1.0
         
         // Elevation affects the stereo width - higher sounds are wider
-        var elevationFactor = 0.5 + (sin(elevation) * 0.5);  // 0-1 based on elevation
-        var effectivePan = (pan - 0.5) * elevationFactor + 0.5;  // Apply elevation to pan
+        elevationFactor = 0.5 + (sin(elevation) * 0.5);  // 0-1 based on elevation
+        effectivePan = (pan - 0.5) * elevationFactor + 0.5;  // Apply elevation to pan
         
         // Apply the panning law
         left = cos(effectivePan * pi/2) * depthAttenuation;
@@ -148,8 +152,8 @@
     
     // HRTF-inspired approximation with more spatial cues
     { mode == \spatial } {
-        var pan = sin(azimuth) * 0.5 + 0.5;  // Convert azimuth to 0-1 pan value
-        var depthAttenuation = 0.3 + (0.7 * (1.0 - radius));  // Scale from 0.3 to 1.0
+        pan = sin(azimuth) * 0.5 + 0.5;  // Convert azimuth to 0-1 pan value
+        depthAttenuation = 0.3 + (0.7 * (1.0 - radius));  // Scale from 0.3 to 1.0
         
         // Base stereo position
         left = cos(pan * pi/2);
@@ -168,15 +172,17 @@
         // This creates a subtle height impression
         left = left * (1.0 - elevationFactor);
         right = right * (1.0 + elevationFactor);
-    }
+    };
     
     [left, right];
 };
 
 // Function to play a sound at a 3D position
 ~playAtPosition = {|radial, renderMode=\simple, freq=440, dur=0.5|
-    var pos = radial;
-    var stereoGain = ~renderToStereo.value(pos, renderMode);
+    var pos, stereoGain;
+    
+    pos = radial;
+    stereoGain = ~renderToStereo.value(pos, renderMode);
     
     {
         var sig = SinOsc.ar(freq) * EnvGen.kr(Env.perc(0.01, dur), doneAction: 2);
@@ -198,26 +204,30 @@
 // Function to play a continuous sound that moves along a path
 ~playMovingSound = {|path, dur=5.0, renderMode=\simple, freq=440|
     {
-        var numPoints = path.size;
-        var sig = SinOsc.ar(freq) * EnvGen.kr(Env.sine(dur), doneAction: 2);
-        var pos = Line.kr(0, numPoints - 0.001, dur);
-        var posIndex = pos.floor;
-        var posFrac = pos - posIndex;
+        var numPoints, sig, pos, posIndex, posFrac;
         var position, currentPos, nextPos, interpPos, stereoGain;
+        var currentAzimuth, nextAzimuth, currentElevation, nextElevation;
+        var radius, azimuth, azimuthDiff, elevation;
+        
+        numPoints = path.size;
+        sig = SinOsc.ar(freq) * EnvGen.kr(Env.sine(dur), doneAction: 2);
+        pos = Line.kr(0, numPoints - 0.001, dur);
+        posIndex = pos.floor;
+        posFrac = pos - posIndex;
         
         // Linear interpolation between path points
         currentPos = Select.kr(posIndex, path.flop[0]);
         nextPos = Select.kr(posIndex + 1 % numPoints, path.flop[0]);
-        var currentAzimuth = Select.kr(posIndex, path.flop[1]);
-        var nextAzimuth = Select.kr(posIndex + 1 % numPoints, path.flop[1]);
-        var currentElevation = Select.kr(posIndex, path.flop[2]);
-        var nextElevation = Select.kr(posIndex + 1 % numPoints, path.flop[2]);
+        currentAzimuth = Select.kr(posIndex, path.flop[1]);
+        nextAzimuth = Select.kr(posIndex + 1 % numPoints, path.flop[1]);
+        currentElevation = Select.kr(posIndex, path.flop[2]);
+        nextElevation = Select.kr(posIndex + 1 % numPoints, path.flop[2]);
         
         // Interpolate radius
-        var radius = currentPos * (1 - posFrac) + (nextPos * posFrac);
+        radius = currentPos * (1 - posFrac) + (nextPos * posFrac);
         
         // Handle wrapping for azimuth interpolation
-        var azimuthDiff = nextAzimuth - currentAzimuth;
+        azimuthDiff = nextAzimuth - currentAzimuth;
         if(azimuthDiff.abs > pi) {
             if(azimuthDiff > 0) {
                 nextAzimuth = nextAzimuth - 2pi;
@@ -225,11 +235,11 @@
                 nextAzimuth = nextAzimuth + 2pi;
             };
         };
-        var azimuth = currentAzimuth * (1 - posFrac) + (nextAzimuth * posFrac);
+        azimuth = currentAzimuth * (1 - posFrac) + (nextAzimuth * posFrac);
         azimuth = azimuth.mod(2pi);
         
         // Interpolate elevation
-        var elevation = currentElevation * (1 - posFrac) + (nextElevation * posFrac);
+        elevation = currentElevation * (1 - posFrac) + (nextElevation * posFrac);
         
         position = [radius, azimuth, elevation];
         stereoGain = ~renderToStereo.value(position, renderMode);
@@ -275,9 +285,11 @@
     { shape == \randomWalk } {
         var currentPos = [0.5, 0, 0];  // Start at [radius, azimuth, elevation]
         path = Array.fill(points, {|i|
-            var radius = (currentPos[0] + 0.1.rand2).clip(0.1, 1.0);
-            var azimuth = (currentPos[1] + 0.5.rand2).mod(2pi);
-            var elevation = (currentPos[2] + 0.1.rand2).clip(-pi/2, pi/2);
+            var radius, azimuth, elevation;
+            
+            radius = (currentPos[0] + 0.1.rand2).clip(0.1, 1.0);
+            azimuth = (currentPos[1] + 0.5.rand2).mod(2pi);
+            elevation = (currentPos[2] + 0.1.rand2).clip(-pi/2, pi/2);
             currentPos = [radius, azimuth, elevation];
         });
     }
@@ -305,19 +317,6 @@
 
 // Start the server for audio testing
 s.boot;
-
-// Plot different distribution methods
-(
-var uniformPositions = ~generateTestPositions.value(200, \uniform);
-var sphericalPositions = ~generateTestPositions.value(200, \spherical);
-var clusteredPositions = ~generateTestPositions.value(200, \clustered);
-var shellPositions = ~generateTestPositions.value(200, \shell);
-
-~plot3DPositions.value(uniformPositions, "Uniform Distribution");
-~plot3DPositions.value(sphericalPositions, "Spherical Distribution");
-~plot3DPositions.value(clusteredPositions, "Clustered Distribution");
-~plot3DPositions.value(shellPositions, "Shell Distribution");
-)
 
 // Test coordinate conversions
 (
@@ -385,268 +384,6 @@ var circlePath = ~generatePath.value(\circle, 24);
 (
 var spiralPath = ~generatePath.value(\spiral, 24);
 ~playMovingSound.value(spiralPath, 5.0, \advanced, 440);
-)
-
-// ==============================
-// INTERACTIVE TESTING
-// ==============================
-
-// GUI for testing 3D positioning
-(
-var win = Window("3D Position Tester", Rect(100, 100, 800, 600)).front;
-var radiusSlider, azimuthSlider, elevationSlider;
-var positionView, renderModeMenu, pathMenu;
-var playButton, pathButton, stopButton;
-var currentPosition, renderMode;
-var radiusText, azimuthText, elevationText;
-var redrawPosition;
-var drawArea;
-
-// Create a view for visualizing the position
-drawArea = UserView(win, Rect(300, 20, 480, 480))
-    .background_(Color.black)
-    .drawFunc_({|view|
-        var center = view.bounds.center;
-        var radius = view.bounds.width * 0.45;
-        var userRadius, userAzimuth, userElevation;
-        var x, y, size;
-        
-        if(currentPosition.notNil) {
-            userRadius = currentPosition[0];
-            userAzimuth = currentPosition[1];
-            userElevation = currentPosition[2];
-            
-            // Draw reference circles
-            Pen.strokeColor = Color.gray(0.3);
-            Pen.addArc(center, radius * 0.25, 0, 2pi);
-            Pen.stroke;
-            Pen.addArc(center, radius * 0.5, 0, 2pi);
-            Pen.stroke;
-            Pen.addArc(center, radius * 0.75, 0, 2pi);
-            Pen.stroke;
-            Pen.addArc(center, radius, 0, 2pi);
-            Pen.stroke;
-            
-            // Draw coordinate axes
-            Pen.strokeColor = Color.gray(0.5);
-            Pen.moveTo(center.x - radius, center.y);
-            Pen.lineTo(center.x + radius, center.y);
-            Pen.stroke;
-            Pen.moveTo(center.x, center.y - radius);
-            Pen.lineTo(center.x, center.y + radius);
-            Pen.stroke;
-            
-            // Draw the position (top-down view)
-            x = center.x + (cos(userAzimuth) * userRadius * radius);
-            y = center.y + (sin(userAzimuth) * userRadius * radius);
-            
-            // Size varies with elevation
-            size = 10 * (1 + sin(userElevation));
-            
-            // Color based on elevation (blue below, green at horizon, red above)
-            Pen.fillColor = Color.new(
-                0.5 + (sin(userElevation) * 0.5),  // Red: more for higher elevation
-                0.5 - (sin(userElevation).abs * 0.3),  // Green: more at horizon
-                0.5 - (sin(userElevation) * 0.5)   // Blue: more for lower elevation
-            );
-            
-            Pen.addOval(Rect(x - (size/2), y - (size/2), size, size));
-            Pen.fill;
-            
-            // Draw a line from center to position
-            Pen.strokeColor = Color.gray(0.6);
-            Pen.moveTo(center);
-            Pen.lineTo(Point(x, y));
-            Pen.stroke;
-            
-            // Add cross at center
-            Pen.strokeColor = Color.white;
-            Pen.moveTo(center.x - 5, center.y);
-            Pen.lineTo(center.x + 5, center.y);
-            Pen.stroke;
-            Pen.moveTo(center.x, center.y - 5);
-            Pen.lineTo(center.x, center.y + 5);
-            Pen.stroke;
-            
-            // Draw labels for front/back/left/right
-            Pen.stringAtPoint("Front", Point(center.x - 15, center.y - radius - 20));
-            Pen.stringAtPoint("Back", Point(center.x - 15, center.y + radius + 5));
-            Pen.stringAtPoint("Left", Point(center.x - radius - 30, center.y - 10));
-            Pen.stringAtPoint("Right", Point(center.x + radius + 5, center.y - 10));
-        }
-    });
-
-// GUI elements for radius, azimuth, and elevation
-StaticText(win, Rect(20, 20, 150, 20)).string_("Radius (Distance):");
-radiusText = StaticText(win, Rect(250, 20, 50, 20)).string_("0.5");
-radiusSlider = Slider(win, Rect(20, 40, 220, 20))
-    .value_(0.5)  // Initial value
-    .action_({|slider|
-        var val = slider.value;
-        currentPosition[0] = val;
-        radiusText.string = val.round(0.01);
-        drawArea.refresh;
-    });
-
-StaticText(win, Rect(20, 70, 150, 20)).string_("Azimuth (Horizontal Angle):");
-azimuthText = StaticText(win, Rect(250, 70, 50, 20)).string_("0.0");
-azimuthSlider = Slider(win, Rect(20, 90, 220, 20))
-    .value_(0)  // Initial value
-    .action_({|slider|
-        var val = slider.value * 2pi;
-        currentPosition[1] = val;
-        azimuthText.string = (val / pi).round(0.01) ++ "π";
-        drawArea.refresh;
-    });
-
-StaticText(win, Rect(20, 120, 150, 20)).string_("Elevation (Vertical Angle):");
-elevationText = StaticText(win, Rect(250, 120, 50, 20)).string_("0.0");
-elevationSlider = Slider(win, Rect(20, 140, 220, 20))
-    .value_(0.5)  // Initial value (center for zero elevation)
-    .action_({|slider|
-        var val = (slider.value - 0.5) * pi;  // Map 0-1 to -π/2 to π/2
-        currentPosition[2] = val;
-        elevationText.string = (val / pi).round(0.01) ++ "π";
-        drawArea.refresh;
-    });
-
-// Render mode selection
-StaticText(win, Rect(20, 180, 150, 20)).string_("Render Mode:");
-renderModeMenu = PopUpMenu(win, Rect(20, 200, 150, 20))
-    .items_(["simple", "advanced", "spatial"])
-    .action_({|menu|
-        renderMode = menu.items[menu.value].asSymbol;
-    });
-
-// Path shape selection
-StaticText(win, Rect(20, 230, 150, 20)).string_("Path Shape:");
-pathMenu = PopUpMenu(win, Rect(20, 250, 150, 20))
-    .items_(["circle", "spiral", "figure8", "randomWalk", "custom"])
-    .action_({|menu|
-        // Nothing to do here, the selection is used when the path button is pressed
-    });
-
-// Buttons
-playButton = Button(win, Rect(20, 290, 100, 30))
-    .states_([["Play Sound"]])
-    .action_({
-        ~playAtPosition.value(currentPosition, renderMode, 440, 0.5);
-    });
-
-pathButton = Button(win, Rect(130, 290, 100, 30))
-    .states_([["Play Path"]])
-    .action_({
-        var pathShape = pathMenu.items[pathMenu.value].asSymbol;
-        var path = ~generatePath.value(pathShape, 24);
-        ~playMovingSound.value(path, 5.0, renderMode, 440);
-    });
-
-stopButton = Button(win, Rect(240, 290, 50, 30))
-    .states_([["Stop"]])
-    .action_({
-        s.freeAll;
-    });
-
-// Position presets
-StaticText(win, Rect(20, 340, 150, 20)).string_("Position Presets:");
-Button(win, Rect(20, 360, 80, 25))
-    .states_([["Front"]])
-    .action_({
-        currentPosition = [0.5, 0, 0];
-        radiusSlider.value = 0.5;
-        azimuthSlider.value = 0;
-        elevationSlider.value = 0.5;
-        radiusText.string = "0.5";
-        azimuthText.string = "0.0π";
-        elevationText.string = "0.0π";
-        drawArea.refresh;
-    });
-
-Button(win, Rect(110, 360, 80, 25))
-    .states_([["Right"]])
-    .action_({
-        currentPosition = [0.5, pi/2, 0];
-        radiusSlider.value = 0.5;
-        azimuthSlider.value = 0.25;
-        elevationSlider.value = 0.5;
-        radiusText.string = "0.5";
-        azimuthText.string = "0.5π";
-        elevationText.string = "0.0π";
-        drawArea.refresh;
-    });
-
-Button(win, Rect(200, 360, 80, 25))
-    .states_([["Back"]])
-    .action_({
-        currentPosition = [0.5, pi, 0];
-        radiusSlider.value = 0.5;
-        azimuthSlider.value = 0.5;
-        elevationSlider.value = 0.5;
-        radiusText.string = "0.5";
-        azimuthText.string = "1.0π";
-        elevationText.string = "0.0π";
-        drawArea.refresh;
-    });
-
-Button(win, Rect(20, 390, 80, 25))
-    .states_([["Left"]])
-    .action_({
-        currentPosition = [0.5, 3pi/2, 0];
-        radiusSlider.value = 0.5;
-        azimuthSlider.value = 0.75;
-        elevationSlider.value = 0.5;
-        radiusText.string = "0.5";
-        azimuthText.string = "1.5π";
-        elevationText.string = "0.0π";
-        drawArea.refresh;
-    });
-
-Button(win, Rect(110, 390, 80, 25))
-    .states_([["Above"]])
-    .action_({
-        currentPosition = [0.5, 0, pi/3];
-        radiusSlider.value = 0.5;
-        azimuthSlider.value = 0;
-        elevationSlider.value = 0.5 + (1/6);
-        radiusText.string = "0.5";
-        azimuthText.string = "0.0π";
-        elevationText.string = "0.33π";
-        drawArea.refresh;
-    });
-
-Button(win, Rect(200, 390, 80, 25))
-    .states_([["Below"]])
-    .action_({
-        currentPosition = [0.5, 0, -pi/3];
-        radiusSlider.value = 0.5;
-        azimuthSlider.value = 0;
-        elevationSlider.value = 0.5 - (1/6);
-        radiusText.string = "0.5";
-        azimuthText.string = "0.0π";
-        elevationText.string = "-0.33π";
-        drawArea.refresh;
-    });
-
-// Add explanatory text
-TextView(win, Rect(300, 510, 480, 80))
-    .string_(
-        "3D Radial Positioning in Simply Droplets\n\n" ++
-        "This prototype demonstrates the 3D positioning system using radial coordinates.\n" ++
-        "• Radius: Distance from the center (0.0 - 1.0)\n" ++
-        "• Azimuth: Horizontal angle around the listener (0 - 2π)\n" ++
-        "• Elevation: Vertical angle from horizontal plane (-π/2 to π/2)\n\n" ++
-        "The top-down view shows position in the horizontal plane, with color and size\n" ++
-        "indicating elevation. Try the different render modes and path shapes!"
-    )
-    .editable_(false);
-
-// Initialize with default values
-currentPosition = [0.5, 0, 0];  // [radius, azimuth, elevation]
-renderMode = \advanced;
-renderModeMenu.value = 1;  // Set to advanced by default
-
-// Draw the initial position
-drawArea.refresh;
 )
 
 // ==============================
