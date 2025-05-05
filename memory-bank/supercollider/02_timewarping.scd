@@ -4,12 +4,14 @@
 // ==============================
 // UTILITY FUNCTIONS
 // ==============================
-
+(
 // Function to visualize a time warp curve
 ~plotTimeWarpCurve = {|curve, numPoints=100, title="Time Warp Curve"|
-    var points = Array.fill(numPoints, {|i| 
+    var points;
+
+    points = Array.fill(numPoints, {|i|
         var t = i / (numPoints - 1);
-        [t, curve.value(t) ? 0] // Add nil protection
+		curve.value(t)
     });
     points.plot(title, Rect(100, 200, 500, 300));
 };
@@ -18,30 +20,53 @@
 ~playTimeWarped = {|curve, bufnum, dur=2.0|
     {
         // Start a playback using the time warp curve to modulate position
-        var sig, rate, pos;
-        
-        // Create a normalized phase from 0 to 1 over the duration
-        var phase = Line.ar(0, 1, dur);
-        
-        // Apply the time warp curve to the phase
-        var warped_phase = curve.value(phase).clip(0, 1); // Add clipping for safety
-        
+        var sig;
+        var phase;
+        var buf_frames;
+		var warpTable;
+		var warped_phase;
+
+        // Get buffer information
+        buf_frames = BufFrames.ir(bufnum);
+
+        // Create a normalized phase from 0 to 1 over the duration at audio rate
+        phase = Line.ar(0, 1, dur);
+
+        // For each sample, lookup what the warped phase would be for that position
+        // We create a mapping table with a pre-calculated curve that will be interpolated
+        warpTable = LocalBuf.newFrom(
+            // Create 1024 points of our warping curve for lookup
+            Array.fill(1024, {|i|
+                var t = i/1023;
+                curve.value(t).clip(0, 0.999); // Prevent reading past buffer end
+            })
+        );
+
+        // Look up the warped phase from our table
+        warped_phase = BufRd.ar(1, warpTable, phase * 1023, 1, 1);
+
         // Use the warped phase to read from the buffer
-        sig = BufRd.ar(2, bufnum, warped_phase * BufFrames.ir(bufnum), 1);
-        
+        sig = BufRd.ar(2, bufnum, warped_phase * buf_frames, 1, 1);
+
         // Apply an envelope to avoid clicks
         sig = sig * EnvGen.kr(Env.sine(dur), doneAction: 2);
-        
+
         Out.ar(0, sig);
     }.play;
 };
 
 // Record a short sample for testing time warping
 ~recordTestBuffer = {|dur=4.0|
-    var buffer = Buffer.alloc(s, s.sampleRate * dur, 2);
-    
+    var buffer;
+
+    buffer = Buffer.alloc(s, s.sampleRate * dur, 2);
+
     SynthDef(\recordBuf, {|bufnum|
-        var sig = SinOsc.ar(
+        var sig;
+        var pan;
+        var stereo;
+
+        sig = SinOsc.ar(
             // Create a rising tone with harmonics
             XLine.kr(300, 1200, dur) * [1, 1.5, 2, 2.5, 3].scramble,
             0,
@@ -49,15 +74,15 @@
             LFTri.kr([3, 5, 7, 11, 13].scramble, 0, 0.05).sum + 0.1
         ).sum;
         // Make it stereo with some movement
-        var pan = SinOsc.kr(0.5).range(-0.7, 0.7);
-        var stereo = Pan2.ar(sig, pan);
+        pan = SinOsc.kr(0.5).range(-0.7, 0.7);
+        stereo = Pan2.ar(sig, pan);
         RecordBuf.ar(stereo, bufnum, loop: 0, doneAction: 2);
     }).play(s, [\bufnum, buffer]);
-    
+
     "Recording test buffer...".postln;
     dur.wait;
     "Recording complete.".postln;
-    
+
     buffer;
 };
 
@@ -66,64 +91,61 @@
 // ==============================
 
 // Basic curves for time warping
-~timeWarpCurves = (
-    // Linear (no warping, reference)
-    linear: {|t|
-        t
-    },
-    
-    // Exponential curve (acceleration)
-    exponential: {|t, factor=3.0|
-        t.pow(1.0 + factor)
-    },
-    
-    // Logarithmic curve (deceleration)
-    logarithmic: {|t, factor=3.0|
-        t.pow(1.0 / (1.0 + factor))
-    },
-    
-    // Sine-based curve (smooth acceleration and deceleration)
-    sinusoidal: {|t|
-        0.5 - (0.5 * cos(pi * t))
-    },
-    
-    // S-curve (slow start, fast middle, slow end)
-    sCurve: {|t|
-        3 * t.pow(2) - 2 * t.pow(3)
-    },
-    
-    // Reverse direction
-    reverse: {|t|
-        1.0 - t
-    },
-    
-    // Bidirectional (forward then backward)
-    bidirectional: {|t|
-        if(t < 0.5, {
-            t * 2
+~linear = {|t|
+	t
+};
+
+// Exponential curve (acceleration)
+~exponential = {|t, factor=3.0|
+	t.pow(1.0 + factor)
+};
+
+// Logarithmic curve (deceleration)
+~logarithmic = {|t, factor=3.0|
+    t.pow(1.0 / (1.0 + factor))
+};
+
+// Sine-based curve (smooth acceleration and deceleration)
+~sinusoidal = {|t|
+    0.5 - (0.5 * cos(pi * t))
+};
+
+// S-curve (slow start, fast middle, slow end)
+~sCurve = {|t|
+    3 * t.pow(2) - 2 * t.pow(3)
+};
+
+// Reverse direction
+~reverse = {|t|
+    1.0 - t
+};
+
+// Bidirectional (forward then backward)
+~bidirectional= {|t|
+    if(t < 0.5, {
+        t * 2
+    }, {
+        (1.0 - t) * 2
+    })
+};
+
+// Random fluctuations around linear
+~randomFluctuations = {|t, amount=0.2|
+    (t + (amount * (2.0.rand - 1.0))).clip(0, 1)
+};
+
+// Time freezing at certain points
+~timeFreeze =  {|t, freezePoint=0.5, freezeDuration=0.3|
+    if((t > freezePoint) && (t < (freezePoint + freezeDuration)), {
+        freezePoint
+    }, {
+        if(t < freezePoint, {
+            t
         }, {
-            (1.0 - t) * 2
+            t - freezeDuration
         })
-    },
-    
-    // Random fluctuations around linear
-    randomFluctuations: {|t, amount=0.2|
-        (t + (amount * (2.0.rand - 1.0))).clip(0, 1)
-    },
-    
-    // Time freezing at certain points
-    timeFreeze: {|t, freezePoint=0.5, freezeDuration=0.3|
-        if((t > freezePoint) && (t < (freezePoint + freezeDuration)), {
-            freezePoint
-        }, {
-            if(t < freezePoint, {
-                t
-            }, {
-                t - freezeDuration
-            })
-        })
-    }
-);
+    })
+};
 
 // ==============================
 // PARAMETRIC TIME WARP CURVE
@@ -131,12 +153,14 @@
 
 // Create a parametric time warp curve that blends between different types
 ~parametricTimeWarp = {|type=\linear, factor=3.0, direction=1|
+    var directionWrapper;
+
     // Direction: 1 = forward, -1 = reverse, 0 = bidirectional
-    var directionWrapper = {|t, curve|
+    directionWrapper = {|t, curve|
         case
         { direction == 1 } { curve.value(t) }
         { direction == -1 } { 1.0 - curve.value(t) }
-        { direction == 0 } { 
+        { direction == 0 } {
             if(t < 0.5, {
                 curve.value(t * 2) * 0.5
             }, {
@@ -144,22 +168,24 @@
             })
         };
     };
-    
+
     case
-    { type == \linear } { {|t| directionWrapper.value(t, ~timeWarpCurves.linear) } }
-    { type == \exponential } { {|t| directionWrapper.value(t, {|x| ~timeWarpCurves.exponential.value(x, factor) }) } }
-    { type == \logarithmic } { {|t| directionWrapper.value(t, {|x| ~timeWarpCurves.logarithmic.value(x, factor) }) } }
-    { type == \sinusoidal } { {|t| directionWrapper.value(t, ~timeWarpCurves.sinusoidal) } }
-    { type == \sCurve } { {|t| directionWrapper.value(t, ~timeWarpCurves.sCurve) } }
-    { type == \randomFluctuations } { {|t| directionWrapper.value(t, {|x| ~timeWarpCurves.randomFluctuations.value(x, factor * 0.1) }) } }
+    { type == \linear } { {|t| directionWrapper.value(t, ~linear) } }
+    { type == \exponential } { {|t| directionWrapper.value(t, {|x| ~exponential.value(x, factor) }) } }
+    { type == \logarithmic } { {|t| directionWrapper.value(t, {|x| ~logarithmic.value(x, factor) }) } }
+    { type == \sinusoidal } { {|t| directionWrapper.value(t, ~sinusoidal) } }
+    { type == \sCurve } { {|t| directionWrapper.value(t, ~sCurve) } }
+    { type == \randomFluctuations } { {|t| directionWrapper.value(t, {|x| ~randomFluctuations.value(x, factor * 0.1) }) } }
     { {|t| t } };  // Default to linear if unknown type
 };
 
 // Power function warping as defined in the architecture document
 ~powerFunctionWarping = {|t, warp_curve=0.0, time_warp=1.0, randomize=true|
-    var random_factor = if(randomize, { 0.8 + 0.4.rand }, { 1.0 });  // ±20% variation
+    var random_factor;
     var result;
-    
+
+    random_factor = if(randomize, { 0.8 + 0.4.rand }, { 1.0 });  // ±20% variation
+
     if(warp_curve >= 0.0, {
         // Exponential curve (acceleration)
         result = t.pow(1.0 + (warp_curve * 3.0)) * time_warp * random_factor;
@@ -167,27 +193,29 @@
         // Logarithmic curve (deceleration)
         result = t.pow(1.0 / (1.0 + (warp_curve.abs * 3.0))) * time_warp * random_factor;
     });
-    
+
     result.clip(0, 1); // Ensure we stay in the valid range
 };
-
+);
 // ==============================
 // TESTING AND VISUALIZATION
 // ==============================
 
+(
 // Start the server for audio testing
 s.boot;
+);
 
 // Plot various time warp curves
 (
 // Basic curves
-~plotTimeWarpCurve.(~timeWarpCurves.linear, 100, "Linear (No Warping)");
-~plotTimeWarpCurve.(~timeWarpCurves.exponential, 100, "Exponential (Acceleration)");
-~plotTimeWarpCurve.(~timeWarpCurves.logarithmic, 100, "Logarithmic (Deceleration)");
-~plotTimeWarpCurve.(~timeWarpCurves.sinusoidal, 100, "Sinusoidal");
-~plotTimeWarpCurve.(~timeWarpCurves.sCurve, 100, "S-Curve");
-~plotTimeWarpCurve.(~timeWarpCurves.reverse, 100, "Reverse");
-~plotTimeWarpCurve.(~timeWarpCurves.bidirectional, 100, "Bidirectional");
+~plotTimeWarpCurve.(~linear, 100, "Linear (No Warping)");
+~plotTimeWarpCurve.(~exponential, 100, "Exponential (Acceleration)");
+~plotTimeWarpCurve.(~logarithmic, 100, "Logarithmic (Deceleration)");
+~plotTimeWarpCurve.(~sinusoidal, 100, "Sinusoidal");
+~plotTimeWarpCurve.(~sCurve, 100, "S-Curve");
+~plotTimeWarpCurve.(~reverse, 100, "Reverse");
+~plotTimeWarpCurve.(~bidirectional, 100, "Bidirectional");
 
 // Power function warping with different settings
 ~plotTimeWarpCurve.({|t| ~powerFunctionWarping.value(t, 0.0, 1.0, false)}, 100, "Power: Linear (warp_curve = 0.0)");
@@ -198,7 +226,7 @@ s.boot;
 
 // With randomization
 ~plotTimeWarpCurve.({|t| ~powerFunctionWarping.value(t, 0.5, 1.0, true)}, 100, "Power: Exponential with Randomization");
-)
+);
 
 // Record a test buffer
 (
@@ -207,38 +235,38 @@ s.waitForBoot {
         ~testBuffer = ~recordTestBuffer.value(4.0);
     }
 }
-)
+);
 
 // Play audio with different time warping
 (
 // Linear (no warping)
-~playTimeWarped.(~timeWarpCurves.linear, ~testBuffer, 4.0);
-)
+~playTimeWarped.(~linear, ~testBuffer, 4.0);
+);
 
 (
 // Exponential curve (acceleration)
-~playTimeWarped.(~timeWarpCurves.exponential, ~testBuffer, 4.0);
-)
+~playTimeWarped.(~exponential, ~testBuffer, 4.0);
+);
 
 (
 // Logarithmic curve (deceleration)
-~playTimeWarped.(~timeWarpCurves.logarithmic, ~testBuffer, 4.0);
-)
+~playTimeWarped.(~logarithmic, ~testBuffer, 4.0);
+);
 
 (
 // Bidirectional (forward then backward)
-~playTimeWarped.(~timeWarpCurves.bidirectional, ~testBuffer, 4.0);
-)
+~playTimeWarped.(~bidirectional, ~testBuffer, 4.0);
+);
 
 (
 // Power function warping (exponential)
 ~playTimeWarped.({|t| ~powerFunctionWarping.value(t, 0.7, 1.0, true)}, ~testBuffer, 4.0);
-)
+);
 
 (
 // Power function warping (logarithmic)
 ~playTimeWarped.({|t| ~powerFunctionWarping.value(t, -0.7, 1.0, true)}, ~testBuffer, 4.0);
-)
+);
 
 // ==============================
 // INTERACTIVE TESTING
@@ -246,27 +274,40 @@ s.waitForBoot {
 
 // GUI for testing time warping
 (
-var win = Window("Time Warp Tester", Rect(100, 100, 600, 500)).front;
-var warpTypeMenu, factorSlider, directionMenu, timeWarpSlider, randomizeCheck;
-var plotButton, audioButton, stopButton, recordButton;
-var currentCurve, plotView, params, testBuffer;
+{
+var win;
+var warpTypeMenu;
+var factorSlider;
+var directionMenu;
+var timeWarpSlider;
+var randomizeCheck;
+var plotButton;
+var audioButton;
+var stopButton;
+var recordButton;
+var currentCurve;
+var plotView;
+var params;
+var testBuffer;
+var dirIdx;
+
+// Create window
+win = Window("Time Warp Tester", Rect(100, 100, 600, 500)).front;
 
 // GUI elements
 warpTypeMenu = PopUpMenu(win, Rect(10, 10, 150, 20))
     .items_(["linear", "exponential", "logarithmic", "sinusoidal", "sCurve", "randomFluctuations", "power"])
     .action_({ |menu|
-        var dirIdx;
-        
         // Safely get the direction index
         dirIdx = if(directionMenu.items.notNil && directionMenu.value.notNil, {
             directionMenu.items[directionMenu.value];
         }, {
             "forward"; // Default to forward if not available
         });
-        
+
         // Handle potential nil values from array lookups
         dirIdx = if(dirIdx.isNil, { "forward" }, { dirIdx });
-        
+
         params = (
             type: menu.items[menu.value].asSymbol,
             factor: factorSlider.value * 5,
@@ -274,7 +315,7 @@ warpTypeMenu = PopUpMenu(win, Rect(10, 10, 150, 20))
             timeWarp: timeWarpSlider.value * 2,
             randomize: randomizeCheck.value
         );
-        
+
         if(params.type == \power, {
             currentCurve = {|t| ~powerFunctionWarping.value(t, params.factor - 2.5, params.timeWarp, params.randomize) };
         }, {
@@ -286,18 +327,16 @@ StaticText(win, Rect(10, 40, 150, 20)).string_("Factor / Warp Curve:");
 factorSlider = Slider(win, Rect(10, 60, 150, 20))
     .value_(0.5)
     .action_({ |slider|
-        var dirIdx;
-        
         // Safely get the direction index
         dirIdx = if(directionMenu.items.notNil && directionMenu.value.notNil, {
             directionMenu.items[directionMenu.value];
         }, {
             "forward"; // Default to forward if not available
         });
-        
+
         // Handle potential nil values from array lookups
         dirIdx = if(dirIdx.isNil, { "forward" }, { dirIdx });
-        
+
         params = (
             type: warpTypeMenu.items[warpTypeMenu.value].asSymbol,
             factor: slider.value * 5,
@@ -305,7 +344,7 @@ factorSlider = Slider(win, Rect(10, 60, 150, 20))
             timeWarp: timeWarpSlider.value * 2,
             randomize: randomizeCheck.value
         );
-        
+
         if(params.type == \power, {
             currentCurve = {|t| ~powerFunctionWarping.value(t, params.factor - 2.5, params.timeWarp, params.randomize) };
         }, {
@@ -324,7 +363,7 @@ directionMenu = PopUpMenu(win, Rect(10, 110, 150, 20))
             timeWarp: timeWarpSlider.value * 2,
             randomize: randomizeCheck.value
         );
-        
+
         if(params.type == \power, {
             currentCurve = {|t| ~powerFunctionWarping.value(t, params.factor - 2.5, params.timeWarp, params.randomize) };
         }, {
@@ -336,18 +375,16 @@ StaticText(win, Rect(10, 140, 150, 20)).string_("Time Warp Speed:");
 timeWarpSlider = Slider(win, Rect(10, 160, 150, 20))
     .value_(0.5)
     .action_({ |slider|
-        var dirIdx;
-        
         // Safely get the direction index
         dirIdx = if(directionMenu.items.notNil && directionMenu.value.notNil, {
             directionMenu.items[directionMenu.value];
         }, {
             "forward"; // Default to forward if not available
         });
-        
+
         // Handle potential nil values from array lookups
         dirIdx = if(dirIdx.isNil, { "forward" }, { dirIdx });
-        
+
         params = (
             type: warpTypeMenu.items[warpTypeMenu.value].asSymbol,
             factor: factorSlider.value * 5,
@@ -355,7 +392,7 @@ timeWarpSlider = Slider(win, Rect(10, 160, 150, 20))
             timeWarp: slider.value * 2,
             randomize: randomizeCheck.value
         );
-        
+
         if(params.type == \power, {
             currentCurve = {|t| ~powerFunctionWarping.value(t, params.factor - 2.5, params.timeWarp, params.randomize) };
         }, {
@@ -367,18 +404,16 @@ randomizeCheck = CheckBox(win, Rect(10, 190, 150, 20))
     .string_("Randomize ±20%")
     .value_(true)
     .action_({ |checkbox|
-        var dirIdx;
-        
         // Safely get the direction index
         dirIdx = if(directionMenu.items.notNil && directionMenu.value.notNil, {
             directionMenu.items[directionMenu.value];
         }, {
             "forward"; // Default to forward if not available
         });
-        
+
         // Handle potential nil values from array lookups
         dirIdx = if(dirIdx.isNil, { "forward" }, { dirIdx });
-        
+
         params = (
             type: warpTypeMenu.items[warpTypeMenu.value].asSymbol,
             factor: factorSlider.value * 5,
@@ -386,7 +421,7 @@ randomizeCheck = CheckBox(win, Rect(10, 190, 150, 20))
             timeWarp: timeWarpSlider.value * 2,
             randomize: checkbox.value
         );
-        
+
         if(params.type == \power, {
             currentCurve = {|t| ~powerFunctionWarping.value(t, params.factor - 2.5, params.timeWarp, params.randomize) };
         }, {
@@ -462,8 +497,8 @@ TextView(win, Rect(170, 10, 420, 320))
         "time warping characteristics, creating a rich, evolving sound."
     )
     .editable_(false);
-)
-
+}.value
+);
 // ==============================
 // NOTES AND OBSERVATIONS
 // ==============================
@@ -478,19 +513,19 @@ Time Warping findings:
    more organic results, avoiding the mechanical quality often associated
    with granular synthesis.
 
-3. Exponential warping (warp_curve > 0) creates forward momentum and works 
+3. Exponential warping (warp_curve > 0) creates forward momentum and works
    well for percussive or rhythmic material.
 
-4. Logarithmic warping (warp_curve < 0) creates a sense of suspense or 
+4. Logarithmic warping (warp_curve < 0) creates a sense of suspense or
    anticipation and emphasizes attack portions.
 
 5. Bidirectional playback can create interesting textural effects but is
    less intuitive for musical material with strong directional qualities.
 
-6. Most musically useful range seems to be warp_curve values between -0.7 
+6. Most musically useful range seems to be warp_curve values between -0.7
    and 0.7, with more extreme values creating special effects.
 
-7. Time freezing effects (implemented as a separate curve type) could be 
+7. Time freezing effects (implemented as a separate curve type) could be
    valuable for creating sustained textures from short input material.
 
 Key implementation insights:
