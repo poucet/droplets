@@ -17,36 +17,34 @@
 };
 
 // Function to play a sound with time warping applied
-// Uses granular synthesis for better time manipulation
+// This implementation affects pitch when time is warped (faster = higher pitch)
 ~playTimeWarped = {|curve, bufnum, dur=2.0|
     {
-        var sig, pos, bufDur, grainRate, grainDur;
+        var sig, pos, rate, bufDur, bufFrames;
         
-        // Get buffer duration
-        bufDur = BufFrames.ir(bufnum) / BufSampleRate.ir(bufnum);
+        // Get buffer information
+        bufFrames = BufFrames.ir(bufnum);
+        bufDur = bufFrames / BufSampleRate.ir(bufnum);
         
-        // Create a normalized linear position from 0 to 1
-        pos = Line.kr(0, 1, dur);
+        // Calculate position using a phasor
+        pos = Phasor.ar(0, 1 / (dur * SampleRate.ir), 0, bufFrames);
         
-        // Apply the time warp curve to the position
-        pos = curve.value(pos).clip(0, 1);
+        // Apply time warping by calculating the rate
+        // Use the difference between successive positions in the warped curve
+        // as the rate multiplier
+        rate = bufDur / dur; // Base rate to play full buffer
+        rate = rate * K2A.ar(
+            Slope.kr(curve.value(pos / bufFrames)) * bufFrames + 1
+        ).clip(0.1, 10); // Clip to reasonable rates to avoid extreme pitch shifts
         
-        // Convert normalized position to actual buffer position (in seconds)
-        pos = pos * bufDur;
-        
-        // Use granular synthesis for better quality time manipulation
-        grainRate = 20; // 20 grains per second
-        grainDur = 0.1; // 100ms grains with overlap
-        
-        sig = GrainBuf.ar(
+        // Use standard playback with warped rate
+        sig = PlayBuf.ar(
             numChannels: 2,
-            trigger: Impulse.ar(grainRate),
-            dur: grainDur,
-            sndbuf: bufnum,
-            rate: 1.0,   // Normal playback rate
-            pos: pos / bufDur, // Normalized position (0-1)
-            interp: 4,   // Cubic interpolation for better quality
-            pan: 0       // Center pan
+            bufnum: bufnum,
+            rate: rate,
+            startPos: 0,
+            loop: 0,
+            doneAction: 0
         );
         
         // Apply an envelope to avoid clicks
@@ -298,248 +296,39 @@ s.waitForBoot {
 );
 
 // ==============================
-// INTERACTIVE TESTING
+// SIMPLE EXAMPLES
 // ==============================
 
-// GUI for testing time warping
-(
-{
-var win;
-var warpTypeMenu;
-var factorSlider;
-var directionMenu;
-var timeWarpSlider;
-var randomizeCheck;
-var plotButton;
-var audioButton;
-var stopButton;
-var recordButton;
-var currentCurve;
-var plotView;
-var params;
-var testBuffer;
-var dirIdx;
+// Here are some simpler examples of how to load a file and apply time warping
 
-// Create window
-win = Window("Time Warp Tester", Rect(100, 100, 600, 500)).front;
+// Example 1: Create and use a test sound
+/*
+// Create a test sound
+s.waitForBoot {
+    fork {
+        var testSoundPath = Platform.recordingsDir +/+ "test_sound.wav";
+        ~testBuffer = ~createTestSound.value(testSoundPath, 4.0);
+        
+        // Now play with different warp curves
+        ~playTimeWarped.(~linear, ~testBuffer, 4.0);
+        2.wait;
+        ~playTimeWarped.(~exponential, ~testBuffer, 4.0);
+        2.wait;
+        ~playTimeWarped.(~logarithmic, ~testBuffer, 4.0);
+    }
+}
+*/
 
-// GUI elements
-warpTypeMenu = PopUpMenu(win, Rect(10, 10, 150, 20))
-    .items_(["linear", "exponential", "logarithmic", "sinusoidal", "sCurve", "randomFluctuations", "power"])
-    .action_({ |menu|
-        // Safely get the direction index
-        dirIdx = if(directionMenu.items.notNil && directionMenu.value.notNil, {
-            directionMenu.items[directionMenu.value];
-        }, {
-            "forward"; // Default to forward if not available
-        });
-
-        // Handle potential nil values from array lookups
-        dirIdx = if(dirIdx.isNil, { "forward" }, { dirIdx });
-
-        params = (
-            type: menu.items[menu.value].asSymbol,
-            factor: factorSlider.value * 5,
-            direction: if(dirIdx == "forward", { 1 }, { if(dirIdx == "reverse", { -1 }, { 0 }) }), // Safer direction handling
-            timeWarp: timeWarpSlider.value * 2,
-            randomize: randomizeCheck.value
-        );
-
-        if(params.type == \power, {
-            currentCurve = {|t| ~powerFunctionWarping.value(t, params.factor - 2.5, params.timeWarp, params.randomize) };
-        }, {
-            currentCurve = ~parametricTimeWarp.(params.type, params.factor, params.direction);
-        });
-    });
-
-StaticText(win, Rect(10, 40, 150, 20)).string_("Factor / Warp Curve:");
-factorSlider = Slider(win, Rect(10, 60, 150, 20))
-    .value_(0.5)
-    .action_({ |slider|
-        // Safely get the direction index
-        dirIdx = if(directionMenu.items.notNil && directionMenu.value.notNil, {
-            directionMenu.items[directionMenu.value];
-        }, {
-            "forward"; // Default to forward if not available
-        });
-
-        // Handle potential nil values from array lookups
-        dirIdx = if(dirIdx.isNil, { "forward" }, { dirIdx });
-
-        params = (
-            type: warpTypeMenu.items[warpTypeMenu.value].asSymbol,
-            factor: slider.value * 5,
-            direction: if(dirIdx == "forward", { 1 }, { if(dirIdx == "reverse", { -1 }, { 0 }) }), // Safer direction handling
-            timeWarp: timeWarpSlider.value * 2,
-            randomize: randomizeCheck.value
-        );
-
-        if(params.type == \power, {
-            currentCurve = {|t| ~powerFunctionWarping.value(t, params.factor - 2.5, params.timeWarp, params.randomize) };
-        }, {
-            currentCurve = ~parametricTimeWarp.(params.type, params.factor, params.direction);
-        });
-    });
-
-StaticText(win, Rect(10, 90, 150, 20)).string_("Direction:");
-directionMenu = PopUpMenu(win, Rect(10, 110, 150, 20))
-    .items_(["forward", "reverse", "bidirectional"])
-    .action_({ |menu|
-        params = (
-            type: warpTypeMenu.items[warpTypeMenu.value].asSymbol,
-            factor: factorSlider.value * 5,
-            direction: if(menu.value == 0, { 1 }, { if(menu.value == 1, { -1 }, { 0 }) }), // Use direct values instead of indexOf
-            timeWarp: timeWarpSlider.value * 2,
-            randomize: randomizeCheck.value
-        );
-
-        if(params.type == \power, {
-            currentCurve = {|t| ~powerFunctionWarping.value(t, params.factor - 2.5, params.timeWarp, params.randomize) };
-        }, {
-            currentCurve = ~parametricTimeWarp.(params.type, params.factor, params.direction);
-        });
-    });
-
-StaticText(win, Rect(10, 140, 150, 20)).string_("Time Warp Speed:");
-timeWarpSlider = Slider(win, Rect(10, 160, 150, 20))
-    .value_(0.5)
-    .action_({ |slider|
-        // Safely get the direction index
-        dirIdx = if(directionMenu.items.notNil && directionMenu.value.notNil, {
-            directionMenu.items[directionMenu.value];
-        }, {
-            "forward"; // Default to forward if not available
-        });
-
-        // Handle potential nil values from array lookups
-        dirIdx = if(dirIdx.isNil, { "forward" }, { dirIdx });
-
-        params = (
-            type: warpTypeMenu.items[warpTypeMenu.value].asSymbol,
-            factor: factorSlider.value * 5,
-            direction: if(dirIdx == "forward", { 1 }, { if(dirIdx == "reverse", { -1 }, { 0 }) }), // Safer direction handling
-            timeWarp: slider.value * 2,
-            randomize: randomizeCheck.value
-        );
-
-        if(params.type == \power, {
-            currentCurve = {|t| ~powerFunctionWarping.value(t, params.factor - 2.5, params.timeWarp, params.randomize) };
-        }, {
-            currentCurve = ~parametricTimeWarp.(params.type, params.factor, params.direction);
-        });
-    });
-
-randomizeCheck = CheckBox(win, Rect(10, 190, 150, 20))
-    .string_("Randomize ±20%")
-    .value_(true)
-    .action_({ |checkbox|
-        // Safely get the direction index
-        dirIdx = if(directionMenu.items.notNil && directionMenu.value.notNil, {
-            directionMenu.items[directionMenu.value];
-        }, {
-            "forward"; // Default to forward if not available
-        });
-
-        // Handle potential nil values from array lookups
-        dirIdx = if(dirIdx.isNil, { "forward" }, { dirIdx });
-
-        params = (
-            type: warpTypeMenu.items[warpTypeMenu.value].asSymbol,
-            factor: factorSlider.value * 5,
-            direction: if(dirIdx == "forward", { 1 }, { if(dirIdx == "reverse", { -1 }, { 0 }) }), // Safer direction handling
-            timeWarp: timeWarpSlider.value * 2,
-            randomize: checkbox.value
-        );
-
-        if(params.type == \power, {
-            currentCurve = {|t| ~powerFunctionWarping.value(t, params.factor - 2.5, params.timeWarp, params.randomize) };
-        }, {
-            currentCurve = ~parametricTimeWarp.(params.type, params.factor, params.direction);
-        });
-    });
-
-plotButton = Button(win, Rect(10, 220, 150, 30))
-    .states_([["Plot Curve"]])
-    .action_({
-        ~plotTimeWarpCurve.(currentCurve, 100, "Time Warp: " + params.type);
-    });
-
-// Create two buttons side by side for creating test sound and loading audio
-createSoundButton = Button(win, Rect(10, 260, 150, 30))
-    .states_([["Create Test Sound"]])
-    .action_({
-        s.waitForBoot {
-            fork {
-                var testSoundPath = Platform.recordingsDir +/+ "test_sound.wav";
-                testBuffer = ~createTestSound.value(testSoundPath, 4.0);
-            }
-        }
-    });
-
-loadFileButton = Button(win, Rect(10, 300, 150, 30))
-    .states_([["Load Audio File"]])
-    .action_({
-        Dialog.openPanel({ |path|
-            s.waitForBoot {
-                testBuffer = ~loadAudioFile.value(path);
-            }
-        });
-    });
-
-audioButton = Button(win, Rect(10, 340, 70, 30))
-    .states_([["Play"]])
-    .action_({
-        if(testBuffer.notNil, {
-            ~playTimeWarped.(currentCurve, testBuffer, 4.0);
-        }, {
-            "Please load or create a test sound first.".postln;
-        });
-    });
-
-stopButton = Button(win, Rect(90, 340, 70, 30))
-    .states_([["Stop"]])
-    .action_({
-        s.freeAll;
-    });
-
-// Setup default values and initial curve
-params = (
-    type: \power,
-    factor: 2.5,
-    direction: 1,
-    timeWarp: 1.0,
-    randomize: true
-);
-
-warpTypeMenu.valueAction = 6;  // Set to power function by default
-directionMenu.valueAction = 0;  // Set to forward by default
-
-// Use existing test buffer if available
-testBuffer = ~testBuffer;
-
-// Add explanatory text
-TextView(win, Rect(170, 10, 420, 320))
-    .string_(
-        "Time Warping in Simply Droplets\n\n" ++
-        "This prototype demonstrates time manipulation within droplets.\n\n" ++
-        "The power function warping approach works as follows:\n" ++
-        "- Warp Curve > 0: Exponential acceleration effect\n" ++
-        "- Warp Curve = 0: Linear playback (no warping)\n" ++
-        "- Warp Curve < 0: Logarithmic deceleration effect\n\n" ++
-        "The randomization option adds ±20% variation to create more\n" ++
-        "organic sounding results. This helps avoid mechanical artifacts\n" ++
-        "often associated with granular synthesis.\n\n" ++
-        "Usage:\n" ++
-        "1. Record a test buffer\n" ++
-        "2. Adjust the parameters\n" ++
-        "3. Plot the resulting curve\n" ++
-        "4. Play to hear the effect\n\n" ++
-        "When integrating with droplets, each droplet will have its own\n" ++
-        "time warping characteristics, creating a rich, evolving sound."
-    )
-    .editable_(false);
-}.value
-);
+// Example 2: Load an existing audio file
+/*
+// Load a sound file
+s.waitForBoot {
+    ~testBuffer = ~loadAudioFile.value("/path/to/your/soundfile.wav");
+    
+    // Apply different time warping
+    ~playTimeWarped.(~linear, ~testBuffer, 4.0);
+}
+*/
 
 // ==============================
 // NOTES AND OBSERVATIONS
