@@ -228,13 +228,19 @@
         
         // Handle wrapping for azimuth interpolation
         azimuthDiff = nextAzimuth - currentAzimuth;
-        if(azimuthDiff.abs > pi) {
-            if(azimuthDiff > 0) {
-                nextAzimuth = nextAzimuth - 2pi;
-            } {
-                nextAzimuth = nextAzimuth + 2pi;
-            };
-        };
+        // Use UGen selection instead of if statements
+        nextAzimuth = Select.kr(
+            (azimuthDiff.abs > pi), [
+                nextAzimuth, // No adjustment needed
+                Select.kr(
+                    (azimuthDiff > 0),
+                    [
+                        nextAzimuth + 2pi, // azimuthDiff < 0
+                        nextAzimuth - 2pi  // azimuthDiff > 0
+                    ]
+                )
+            ]
+        );
         azimuth = currentAzimuth * (1 - posFrac) + (nextAzimuth * posFrac);
         azimuth = azimuth.mod(2pi);
         
