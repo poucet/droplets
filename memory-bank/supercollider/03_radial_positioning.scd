@@ -8,10 +8,10 @@
 // Function to generate test positions
 ~generateTestPositions = {|count=100, distributionMethod=\uniform|
     var positions;
-    
+
     positions = Array.fill(count, {
         var radius, azimuth, elevation;
-        
+
         case
         { distributionMethod == \uniform } {
             radius = 1.0.rand;
@@ -24,7 +24,7 @@
             var v = 1.0.rand;
             var theta = 2pi * u;
             var phi = acos(2 * v - 1);
-            
+
             radius = 1.0.rand;  // Random radius
             azimuth = theta;    // Uniform around the circle
             elevation = phi - (pi/2);  // Convert from [0, pi] to [-pi/2, pi/2]
@@ -39,7 +39,7 @@
             ];
             var center = clusterCenters[cluster];
             var spread = 0.3;
-            
+
             radius = (center[0] + (spread * 0.5 * 1.0.rand)).clip(0, 1);
             azimuth = (center[1] + (spread * pi * 1.0.rand)).mod(2pi);
             elevation = (center[2] + (spread * 0.5 * 1.0.rand)).clip(-pi/2, pi/2);
@@ -50,15 +50,15 @@
             var v = 1.0.rand;
             var theta = 2pi * u;
             var phi = acos(2 * v - 1);
-            
+
             radius = 0.8;          // Fixed radius
             azimuth = theta;       // Uniform around the circle
             elevation = phi - (pi/2);  // Convert from [0, pi] to [-pi/2, pi/2]
         };
-        
+
         [radius, azimuth, elevation];
     });
-    
+
     positions;
 };
 
@@ -66,15 +66,15 @@
 ~radialToCartesian = {|radial|
     var radius, azimuth, elevation;
     var x, y, z;
-    
+
     radius = radial[0];
     azimuth = radial[1];
     elevation = radial[2];
-    
+
     x = radius * cos(elevation) * cos(azimuth);
     y = radius * cos(elevation) * sin(azimuth);
     z = radius * sin(elevation);
-    
+
     [x, y, z];
 };
 
@@ -82,15 +82,15 @@
 ~cartesianToRadial = {|cartesian|
     var x, y, z;
     var radius, azimuth, elevation;
-    
+
     x = cartesian[0];
     y = cartesian[1];
     z = cartesian[2];
-    
+
     radius = sqrt((x * x) + (y * y) + (z * z));
     azimuth = atan2(y, x);
     elevation = asin(z / radius);
-    
+
     [radius, azimuth, elevation];
 };
 
@@ -98,15 +98,15 @@
 ~getPolarOpposite = {|radial|
     var radius, azimuth, elevation;
     var oppositeAzimuth, oppositeElevation;
-    
+
     radius = radial[0];
     azimuth = radial[1];
     elevation = radial[2];
-    
+
     // Add π to azimuth and negate elevation for perfect polar opposite
     oppositeAzimuth = (azimuth + pi) % (2 * pi);
-    oppositeElevation = -elevation;
-    
+    oppositeElevation = 0-elevation;
+
     [radius, oppositeAzimuth, oppositeElevation];
 };
 
@@ -118,72 +118,72 @@
 ~renderToStereo = {|radial, mode=\simple|
     var radius, azimuth, elevation;
     var left, right, pan, depthAttenuation, elevationFactor, effectivePan;
-    
+
     radius = radial[0];
     azimuth = radial[1];
     elevation = radial[2];
-    
+
     case
     // Simple panning based on azimuth, with depth based on radius
     { mode == \simple } {
         pan = sin(azimuth) * 0.5 + 0.5;  // Convert azimuth to 0-1 pan value
         depthAttenuation = 1.0 - (radius * 0.7);  // Distant sounds are quieter (up to 70% reduction)
-        
+
         left = cos(pan * pi/2) * depthAttenuation;
         right = sin(pan * pi/2) * depthAttenuation;
     }
-    
+
     // More complex model with elevation affecting the stereo image
     { mode == \advanced } {
         // Use cosine-based panning law for smoother energy distribution
         pan = sin(azimuth) * 0.5 + 0.5;  // Convert azimuth to 0-1 pan value
-        
+
         // Depth attenuation: distant sounds are quieter
         depthAttenuation = 0.3 + (0.7 * (1.0 - radius));  // Scale from 0.3 to 1.0
-        
+
         // Elevation affects the stereo width - higher sounds are wider
         elevationFactor = 0.5 + (sin(elevation) * 0.5);  // 0-1 based on elevation
         effectivePan = (pan - 0.5) * elevationFactor + 0.5;  // Apply elevation to pan
-        
+
         // Apply the panning law
         left = cos(effectivePan * pi/2) * depthAttenuation;
         right = sin(effectivePan * pi/2) * depthAttenuation;
     }
-    
+
     // HRTF-inspired approximation with more spatial cues
     { mode == \spatial } {
         pan = sin(azimuth) * 0.5 + 0.5;  // Convert azimuth to 0-1 pan value
         depthAttenuation = 0.3 + (0.7 * (1.0 - radius));  // Scale from 0.3 to 1.0
-        
+
         // Base stereo position
         left = cos(pan * pi/2);
         right = sin(pan * pi/2);
-        
+
         // Add depth cues (slight lowpass filtering for distant sounds)
         left = left * depthAttenuation;
         right = right * depthAttenuation;
-        
+
         // Add elevation cues (simplified HRTF approximation)
         // Higher sounds have more high frequency content and slight phase modification
         elevationFactor = sin(elevation) * 0.3;  // -0.3 to 0.3 range
-        
+
         // For higher sounds (positive elevation), boost right channel slightly
         // For lower sounds (negative elevation), boost left channel slightly
         // This creates a subtle height impression
         left = left * (1.0 - elevationFactor);
         right = right * (1.0 + elevationFactor);
     };
-    
+
     [left, right];
 };
 
 // Function to play a sound at a 3D position
 ~playAtPosition = {|radial, renderMode=\simple, freq=440, dur=0.5|
     var pos, stereoGain;
-    
+
     pos = radial;
     stereoGain = ~renderToStereo.value(pos, renderMode);
-    
+
     {
         var sig = SinOsc.ar(freq) * EnvGen.kr(Env.perc(0.01, dur), doneAction: 2);
         Out.ar(0, sig * stereoGain);
@@ -208,13 +208,13 @@
         var position, currentPos, nextPos, interpPos, stereoGain;
         var currentAzimuth, nextAzimuth, currentElevation, nextElevation;
         var radius, azimuth, azimuthDiff, elevation;
-        
+
         numPoints = path.size;
         sig = SinOsc.ar(freq) * EnvGen.kr(Env.sine(dur), doneAction: 2);
         pos = Line.kr(0, numPoints - 0.001, dur);
         posIndex = pos.floor;
         posFrac = pos - posIndex;
-        
+
         // Linear interpolation between path points
         currentPos = Select.kr(posIndex, path.flop[0]);
         nextPos = Select.kr(posIndex + 1 % numPoints, path.flop[0]);
@@ -222,10 +222,10 @@
         nextAzimuth = Select.kr(posIndex + 1 % numPoints, path.flop[1]);
         currentElevation = Select.kr(posIndex, path.flop[2]);
         nextElevation = Select.kr(posIndex + 1 % numPoints, path.flop[2]);
-        
+
         // Interpolate radius
         radius = currentPos * (1 - posFrac) + (nextPos * posFrac);
-        
+
         // Handle wrapping for azimuth interpolation
         azimuthDiff = nextAzimuth - currentAzimuth;
         // Use UGen selection instead of if statements
@@ -243,13 +243,13 @@
         );
         azimuth = currentAzimuth * (1 - posFrac) + (nextAzimuth * posFrac);
         azimuth = azimuth.mod(2pi);
-        
+
         // Interpolate elevation
         elevation = currentElevation * (1 - posFrac) + (nextElevation * posFrac);
-        
+
         position = [radius, azimuth, elevation];
         stereoGain = ~renderToStereo.value(position, renderMode);
-        
+
         sig * stereoGain;
     }.play;
 };
@@ -257,7 +257,7 @@
 // Generate path shapes
 ~generatePath = {|shape=\circle, points=24|
     var path;
-    
+
     case
     // Circle path around the listener
     { shape == \circle } {
@@ -266,7 +266,7 @@
             [0.8, angle, 0.0];  // Fixed radius, varying azimuth, zero elevation
         });
     }
-    
+
     // Spiral path that also changes elevation
     { shape == \spiral } {
         path = Array.fill(points, {|i|
@@ -275,7 +275,7 @@
             [0.3 + (0.6 * progress), angle, -0.5 + progress];  // Varying radius and elevation
         });
     }
-    
+
     // Figure-8 pattern
     { shape == \figure8 } {
         path = Array.fill(points, {|i|
@@ -286,20 +286,20 @@
             [radius, azimuth, elevation];
         });
     }
-    
+
     // Random walk
     { shape == \randomWalk } {
         var currentPos = [0.5, 0, 0];  // Start at [radius, azimuth, elevation]
         path = Array.fill(points, {|i|
             var radius, azimuth, elevation;
-            
+
             radius = (currentPos[0] + 0.1.rand2).clip(0.1, 1.0);
             azimuth = (currentPos[1] + 0.5.rand2).mod(2pi);
             elevation = (currentPos[2] + 0.1.rand2).clip(-pi/2, pi/2);
             currentPos = [radius, azimuth, elevation];
         });
     }
-    
+
     // Custom path (example)
     { shape == \custom } {
         path = [
@@ -313,7 +313,7 @@
             [0.7, 7pi/4, -0.2],   // Front-left, slightly down
         ];
     };
-    
+
     path;
 };
 
@@ -329,6 +329,7 @@ s.boot;
 var testRadial = [0.8, pi/4, pi/6];  // radius, azimuth, elevation
 var cartesian = ~radialToCartesian.value(testRadial);
 var backToRadial = ~cartesianToRadial.value(cartesian);
+var opposite;
 
 "Original Radial:".postln;
 testRadial.postln;
@@ -338,7 +339,7 @@ cartesian.postln;
 backToRadial.postln;
 
 // Test polar opposite
-var opposite = ~getPolarOpposite.value(testRadial);
+opposite = ~getPolarOpposite.value(testRadial);
 "Polar Opposite:".postln;
 opposite.postln;
 )
@@ -425,7 +426,7 @@ var spiralPath = ~generatePath.value(\spiral, 24);
    was achieved with the 'advanced' rendering mode; the 'spatial' mode creates
    interesting effects but requires careful tuning to avoid phase issues.
 
-7. Converting back and forth between radial and Cartesian coordinates works 
+7. Converting back and forth between radial and Cartesian coordinates works
    seamlessly, which will be important for path-based movement calculations.
 
 Key implementation insights:
