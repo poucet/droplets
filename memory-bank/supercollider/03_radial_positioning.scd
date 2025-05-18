@@ -114,100 +114,113 @@
 // 3D TO STEREO RENDERING
 // ==============================
 
-// Render a 3D position to stereo (returns [left, right] gain)
-~renderToStereo = {|radial, mode=\simple|
+// Render a 3D position to stereo (returns [left, right, leftDelay, rightDelay])
+~renderBinaural = {|radial|
     var radius, azimuth, elevation;
-    var left, right, pan, depthAttenuation, elevationFactor, effectivePan;
+    var left, right, pan, depthAttenuation, elevationFactor;
+    var headRadius, speedOfSound, maxDelay, leftDelay, rightDelay;
+    var sinAz, sinAzAbs; // Added variable declarations at the top
 
     radius = radial[0];
     azimuth = radial[1];
     elevation = radial[2];
 
-    case
-    // Simple panning based on azimuth, with depth based on radius
-    { mode == \simple } {
-        pan = sin(azimuth) * 0.5 + 0.5;  // Convert azimuth to 0-1 pan value
-        depthAttenuation = 1.0 - (radius * 0.7);  // Distant sounds are quieter (up to 70% reduction)
+    // Convert azimuth to pan position (0-1)
+    pan = sin(azimuth) * 0.5 + 0.5;
 
-        left = cos(pan * pi/2) * depthAttenuation;
-        right = sin(pan * pi/2) * depthAttenuation;
-    }
+    // Distance attenuation
+    depthAttenuation = 0.3 + (0.7 * (1.0 - radius));
 
-    // More complex model with elevation affecting the stereo image
-    { mode == \advanced } {
-        // Use cosine-based panning law for smoother energy distribution
-        pan = sin(azimuth) * 0.5 + 0.5;  // Convert azimuth to 0-1 pan value
+    // Calculate amplitude using cosine panning law
+    left = cos(pan * pi/2) * depthAttenuation;
+    right = sin(pan * pi/2) * depthAttenuation;
 
-        // Depth attenuation: distant sounds are quieter
-        depthAttenuation = 0.3 + (0.7 * (1.0 - radius));  // Scale from 0.3 to 1.0
+    // Elevation cues
+    elevationFactor = sin(elevation) * 0.3;
+    left = left * (1.0 - elevationFactor);
+    right = right * (1.0 + elevationFactor);
 
-        // Elevation affects the stereo width - higher sounds are wider
-        elevationFactor = 0.5 + (sin(elevation) * 0.5);  // 0-1 based on elevation
-        effectivePan = (pan - 0.5) * elevationFactor + 0.5;  // Apply elevation to pan
+    // Calculate ITD (Interaural Time Difference)
+    headRadius = 0.0875; // meters
+    speedOfSound = 343.0; // m/s
+    maxDelay = headRadius / speedOfSound; // ~0.00025s or 0.25ms
 
-        // Apply the panning law
-        left = cos(effectivePan * pi/2) * depthAttenuation;
-        right = sin(effectivePan * pi/2) * depthAttenuation;
-    }
+    // Initialize delays
+    leftDelay = 0.0;
+    rightDelay = 0.0;
 
-    // HRTF-inspired approximation with more spatial cues
-    { mode == \spatial } {
-        pan = sin(azimuth) * 0.5 + 0.5;  // Convert azimuth to 0-1 pan value
-        depthAttenuation = 0.3 + (0.7 * (1.0 - radius));  // Scale from 0.3 to 1.0
+    // Calculate delays based on azimuth using UGen-compatible constructs
+    // We'll use sin(azimuth) to get the lateral component and its sign
+    // to determine which channel needs delay
 
-        // Base stereo position
-        left = cos(pan * pi/2);
-        right = sin(pan * pi/2);
+    // Compute sin of azimuth once for efficiency
+    sinAz = sin(azimuth);
 
-        // Add depth cues (slight lowpass filtering for distant sounds)
-        left = left * depthAttenuation;
-        right = right * depthAttenuation;
+    // Get absolute value for scaling the delay amount
+    sinAzAbs = abs(sinAz);
 
-        // Add elevation cues (simplified HRTF approximation)
-        // Higher sounds have more high frequency content and slight phase modification
-        elevationFactor = sin(elevation) * 0.3;  // -0.3 to 0.3 range
+    // Use proper UGen method for conditionally applying delay
+    // When sinAz > 0 (sound from right), we delay left channel
+    // When sinAz < 0 (sound from left), we delay right channel
+    leftDelay = sinAzAbs * maxDelay * 0.5 * (sinAz + abs(sinAz));  // Only non-zero when sinAz > 0
+    rightDelay = sinAzAbs * maxDelay * 0.5 * (abs(sinAz) - sinAz); // Only non-zero when sinAz < 0
 
-        // For higher sounds (positive elevation), boost right channel slightly
-        // For lower sounds (negative elevation), boost left channel slightly
-        // This creates a subtle height impression
-        left = left * (1.0 - elevationFactor);
-        right = right * (1.0 + elevationFactor);
-    };
-
-    [left, right];
+    // Return amplitude and delay information
+    [left, right, leftDelay, rightDelay];
 };
 
 // Function to play a sound at a 3D position
-~playAtPosition = {|radial, renderMode=\simple, freq=440, dur=0.5|
-    var pos, stereoGain;
+~playAtPosition = {|radial, freq=440, dur=0.5|
+    var pos, stereoResult, leftGain, rightGain, leftDelay, rightDelay;
+    var maxDelayBuffer;
 
     pos = radial;
-    stereoGain = ~renderToStereo.value(pos, renderMode);
+    stereoResult = ~renderBinaural.value(pos);
+
+    leftGain = stereoResult[0];
+    rightGain = stereoResult[1];
+    leftDelay = stereoResult[2];
+    rightDelay = stereoResult[3];
 
     {
-        var sig = SinOsc.ar(freq) * EnvGen.kr(Env.perc(0.01, dur), doneAction: 2);
-        Out.ar(0, sig * stereoGain);
+        var sig, leftSig, rightSig;
+
+        sig = SinOsc.ar(freq) * EnvGen.kr(Env.perc(0.01, dur), doneAction: 2);
+
+        // Ensure we have enough buffer for delay
+        maxDelayBuffer = 0.001; // 1ms buffer
+
+        // Apply delay to create phase differences
+        leftSig = DelayN.ar(sig * leftGain, maxDelayBuffer, leftDelay);
+        rightSig = DelayN.ar(sig * rightGain, maxDelayBuffer, rightDelay);
+
+        // Return stereo signal with both amplitude and time differences
+        [leftSig, rightSig];
     }.play;
 };
 
 // Function to play a sequence of positions
-~playPositionSequence = {|positions, renderMode=\simple, baseFreq=440, durs=0.2|
+~playPositionSequence = {|positions, baseFreq=440, durs=0.2|
     Task({
         positions.do {|pos, i|
-            var freq = baseFreq * (1 + (i % 12) / 12);  // Simple scale
-            ~playAtPosition.value(pos, renderMode, freq, durs);
+            var freq;
+
+            freq = baseFreq * (1 + (i % 12) / 12);  // Simple scale
+            ~playAtPosition.value(pos, freq, durs);
             durs.wait;
         };
     }).play;
 };
 
 // Function to play a continuous sound that moves along a path
-~playMovingSound = {|path, dur=5.0, renderMode=\simple, freq=440|
+~playMovingSound = {|path, dur=5.0, freq=440|
     {
         var numPoints, sig, pos, posIndex, posFrac;
-        var position, currentPos, nextPos, interpPos, stereoGain;
+        var position, currentPos, nextPos, stereoResult;
         var currentAzimuth, nextAzimuth, currentElevation, nextElevation;
         var radius, azimuth, azimuthDiff, elevation;
+        var leftGain, rightGain, leftDelay, rightDelay;
+        var maxDelayBuffer, leftSig, rightSig;
 
         numPoints = path.size;
         sig = SinOsc.ar(freq) * EnvGen.kr(Env.sine(dur), doneAction: 2);
@@ -248,9 +261,20 @@
         elevation = currentElevation * (1 - posFrac) + (nextElevation * posFrac);
 
         position = [radius, azimuth, elevation];
-        stereoGain = ~renderToStereo.value(position, renderMode);
+        stereoResult = ~renderBinaural.value(position);
 
-        sig * stereoGain;
+        leftGain = stereoResult[0];
+        rightGain = stereoResult[1];
+        leftDelay = stereoResult[2];
+        rightDelay = stereoResult[3];
+
+        // Apply delay for ITD
+        maxDelayBuffer = 0.001; // 1ms buffer
+        leftSig = DelayN.ar(sig * leftGain, maxDelayBuffer, leftDelay);
+        rightSig = DelayN.ar(sig * rightGain, maxDelayBuffer, rightDelay);
+
+        // Return stereo signal with both amplitude and time differences
+        [leftSig, rightSig];
     }.play;
 };
 
@@ -344,7 +368,7 @@ opposite = ~getPolarOpposite.value(testRadial);
 opposite.postln;
 )
 
-// Test stereo rendering of individual positions
+// Test binaural rendering of individual positions
 (
 var testPositions = [
     [0.5, 0, 0],         // Front center
@@ -358,7 +382,7 @@ var testPositions = [
 ];
 
 testPositions.do {|pos, i|
-    var stereo = ~renderToStereo.value(pos, \advanced);
+    var stereo = ~renderBinaural.value(pos);
     [i, pos, stereo].postln;
 };
 )
@@ -376,7 +400,7 @@ var testPositions = [
 
 fork {
     testPositions.do {|pos, i|
-        ~playAtPosition.value(pos, \advanced, 440, 0.5);
+        ~playAtPosition.value(pos, 440, 0.5);
         0.7.wait;
     };
 }
@@ -385,12 +409,51 @@ fork {
 // Test audio playback through a movement path
 (
 var circlePath = ~generatePath.value(\circle, 24);
-~playMovingSound.value(circlePath, 5.0, \advanced, 440);
+~playMovingSound.value(circlePath, 5.0, 440);
 )
 
 (
 var spiralPath = ~generatePath.value(\spiral, 24);
-~playMovingSound.value(spiralPath, 5.0, \advanced, 440);
+~playMovingSound.value(spiralPath, 5.0, 440);
+)
+
+// ==============================
+// BINAURAL RENDERING TESTS
+// ==============================
+
+// Test binaural rendering with individual positions
+(
+var testPositions = [
+    [0.5, 0, 0],         // Front center
+    [0.5, pi/2, 0],      // Right
+    [0.5, pi, 0],        // Back
+    [0.5, 3pi/2, 0],     // Left
+    [0.5, pi/4, 0],      // Front-right
+    [0.5, 3pi/4, 0],     // Back-right
+    [0.5, 5pi/4, 0],     // Back-left
+    [0.5, 7pi/4, 0],     // Front-left
+];
+
+fork {
+    "Playing test positions with binaural rendering...".postln;
+    testPositions.do {|pos, i|
+        ("Position " ++ i ++ ": " ++ pos).postln;
+        ~playAtPosition.value(pos, 440, 0.5);
+        0.7.wait;
+    };
+}
+)
+
+// Test circle path using binaural rendering
+(
+var circlePath = ~generatePath.value(\circle, 24);
+~playMovingSound.value(circlePath, 5.0, 440);
+)
+
+// Test figure-8 path using binaural rendering
+(
+var figure8Path = ~generatePath.value(\figure8, 24);
+~playMovingSound.value(figure8Path, 5.0, 440);
 )
 
 // ==============================
@@ -404,34 +467,28 @@ var spiralPath = ~generatePath.value(\spiral, 24);
    intuitive way to work with spatial audio, particularly for the polar
    opposite calculation which is trivial in this system.
 
-2. Even with basic stereo rendering techniques, convincing spatial effects
-   can be achieved:
-   - Azimuth maps naturally to stereo panning
-   - Radius affects overall gain (distant sounds are quieter)
-   - Elevation can be creatively mapped to subtle stereo balance alterations
+2. The combined binaural rendering approach significantly enhances spatial perception by:
+   - Using amplitude differences (ILD - Interaural Level Differences)
+   - Adding time/phase differences (ITD - Interaural Time Differences)
+   - Including elevation cues for height perception
+   - Improving front-back discrimination that amplitude-only approaches struggle with
 
-3. The 'advanced' rendering mode creates a more convincing spatial image by:
-   - Using a cosine-based panning law for smoother energy distribution
-   - Scaling stereo width based on elevation (higher sounds = wider stereo)
-   - Applying different attenuation curves for distance
-
-4. For clustered distributions of droplets, the resulting spatial image
+3. For clustered distributions of droplets, the resulting spatial image
    creates a sense of environment or space that feels more natural than
    uniform distributions.
 
-5. Path-based movement adds a significant dynamic element to the spatial
+4. Path-based movement adds a significant dynamic element to the spatial
    rendering, creating engaging and evolving soundscapes.
 
-6. The most effective balance between spatial clarity and stereo compatibility
-   was achieved with the 'advanced' rendering mode; the 'spatial' mode creates
-   interesting effects but requires careful tuning to avoid phase issues.
-
-7. Converting back and forth between radial and Cartesian coordinates works
-   seamlessly, which will be important for path-based movement calculations.
+5. Converting between radial and Cartesian coordinates works seamlessly,
+   which is important for path-based movement calculations.
 
 Key implementation insights:
 - Radial coordinates simplify many spatial audio calculations
 - Elevation is the most challenging dimension to render convincingly in stereo
 - Movement along paths creates more engaging spatial effects than static positioning
-- Simple stereo rendering techniques can create surprisingly effective 3D impression
+- The ITD implementation adds critical phase/time differences between channels:
+  * Maximum delay of ~0.25ms corresponds to human head dimensions
+  * Delay varies with azimuth according to sine function for natural transition
+  * Left/right channel delays alternate based on sound direction
 */
