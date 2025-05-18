@@ -37,8 +37,11 @@
 
 ## Coding Style Guidelines
 
-### SuperCollider Variable Declarations
+### SuperCollider Variable Naming and Declarations
 
+- Environment variables (variables starting with ~) must use camelCase starting with a lowercase letter
+  - Correct: `~rainCatcher`, `~playAtPosition`, `~renderBinaural`
+  - Incorrect: `~RainCatcher`, `~PlayAtPosition`, `~RenderBinaural`
 - For SuperCollider files (.scd) only, variables must always be declared at the beginning of a function, immediately after the arguments line
 - Even if their values are defined later in the function, all variables should be declared upfront
 - This improves code readability and makes it easier to understand the scope of all variables

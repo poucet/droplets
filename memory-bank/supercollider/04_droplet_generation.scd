@@ -136,12 +136,19 @@
 };
 
 // Function to play active droplets
-~playDroplets = {|droplets, buffer, renderMode=\advanced|
+~playDroplets = {|droplets, buffer|
     droplets.collect {|droplet, i|
         if(droplet.active) {
-            var pos = droplet.getPlaybackPosition;
-            var stereoGain = ~renderToStereo.value(droplet.position, renderMode);
-            var phasor, sig;
+            var pos, stereoResult, leftGain, rightGain, leftDelay, rightDelay;
+            var phasor, sig, maxDelayBuffer, leftSig, rightSig;
+            
+            pos = droplet.getPlaybackPosition;
+            stereoResult = ~renderBinaural.value(droplet.position);
+            
+            leftGain = stereoResult[0];
+            rightGain = stereoResult[1];
+            leftDelay = stereoResult[2];
+            rightDelay = stereoResult[3];
             
             {
                 // Read a snippet from the buffer
@@ -158,8 +165,12 @@
                 // Apply envelope (simple triangle)
                 sig = sig * EnvGen.kr(Env.perc(0.1, 0.9), timeScale: droplet.duration / s.sampleRate);
                 
-                // Apply stereo positioning
-                Out.ar(0, sig * stereoGain);
+                // Apply stereo positioning with both amplitude and phase differences
+                maxDelayBuffer = 0.001; // 1ms buffer for delay
+                leftSig = DelayN.ar(sig[0] * leftGain, maxDelayBuffer, leftDelay);
+                rightSig = DelayN.ar(sig[1] * rightGain, maxDelayBuffer, rightDelay);
+                
+                Out.ar(0, [leftSig, rightSig]);
             }.play;
         };
     };
@@ -169,7 +180,7 @@
 // RAIN CATCHER IMPLEMENTATION
 // ==============================
 
-~RainCatcher = {|config|
+~makeRainCatcher = {|config|
     var catcher = (
         // Configuration
         config: config ?? (
@@ -392,32 +403,55 @@ var config = (
 );
 
 // Create a rain catcher with our configuration
-~rainCatcher = ~RainCatcher.value(config);
+~rainCatcher = ~makeRainCatcher.value(config);
 ~rainCatcher.buffer = ~testBuffer;
 
-// Set render position function (from the 3D positioning prototype)
-// This is needed for stereo rendering of the droplet positions
-~renderToStereo = {|radial, mode=\advanced|
-    var radius = radial[0];
-    var azimuth = radial[1];
-    var elevation = radial[2];
-    var left, right;
+// Set render position function (from the updated 3D positioning prototype)
+// This is needed for binaural rendering of the droplet positions
+~renderBinaural = {|radial|
+    var radius, azimuth, elevation;
+    var left, right, pan, depthAttenuation, elevationFactor;
+    var headRadius, speedOfSound, maxDelay, leftDelay, rightDelay;
+    var sinAz, sinAzAbs;
     
-    // Use cosine-based panning law for smoother energy distribution
-    var pan = sin(azimuth) * 0.5 + 0.5;  // Convert azimuth to 0-1 pan value
+    radius = radial[0];
+    azimuth = radial[1];
+    elevation = radial[2];
     
-    // Depth attenuation: distant sounds are quieter
-    var depthAttenuation = 0.3 + (0.7 * (1.0 - radius));  // Scale from 0.3 to 1.0
+    // Convert azimuth to pan position (0-1)
+    pan = sin(azimuth) * 0.5 + 0.5;
     
-    // Elevation affects the stereo width - higher sounds are wider
-    var elevationFactor = 0.5 + (sin(elevation) * 0.5);  // 0-1 based on elevation
-    var effectivePan = (pan - 0.5) * elevationFactor + 0.5;  // Apply elevation to pan
+    // Distance attenuation
+    depthAttenuation = 0.3 + (0.7 * (1.0 - radius));
     
-    // Apply the panning law
-    left = cos(effectivePan * pi/2) * depthAttenuation;
-    right = sin(effectivePan * pi/2) * depthAttenuation;
+    // Calculate amplitude using cosine panning law
+    left = cos(pan * pi/2) * depthAttenuation;
+    right = sin(pan * pi/2) * depthAttenuation;
     
-    [left, right];
+    // Elevation cues
+    elevationFactor = sin(elevation) * 0.3;
+    left = left * (1.0 - elevationFactor);
+    right = right * (1.0 + elevationFactor);
+    
+    // Calculate ITD (Interaural Time Difference)
+    headRadius = 0.0875; // meters
+    speedOfSound = 343.0; // m/s
+    maxDelay = headRadius / speedOfSound; // ~0.00025s or 0.25ms
+    
+    // Initialize delays
+    leftDelay = 0.0;
+    rightDelay = 0.0;
+    
+    // Calculate delays based on azimuth using UGen-compatible constructs
+    sinAz = sin(azimuth);
+    sinAzAbs = abs(sinAz);
+    
+    // Use proper UGen method for conditionally applying delay
+    leftDelay = sinAzAbs * maxDelay * 0.5 * (sinAz + abs(sinAz));  // Only non-zero when sinAz > 0
+    rightDelay = sinAzAbs * maxDelay * 0.5 * (abs(sinAz) - sinAz); // Only non-zero when sinAz < 0
+    
+    // Return amplitude and delay information
+    [left, right, leftDelay, rightDelay];
 };
 
 // Create a visualization window and play the droplets
@@ -435,7 +469,7 @@ var config = (
         ~currentTime = ~currentTime + numSamplesPerUpdate;
         
         // Play the new droplets
-        ~playDroplets.value(activeDroplets, ~testBuffer, \advanced);
+        ~playDroplets.value(activeDroplets, ~testBuffer);
         
         0.05.wait;  // 50ms = 20Hz update rate
     }
@@ -485,7 +519,7 @@ var config = (
     )
 );
 
-rainCatcher = ~RainCatcher.value(config);
+rainCatcher = ~~makeRainCatcher .value(config);
 rainCatcher.buffer = ~testBuffer;
 
 // Top section - control parameters
@@ -678,7 +712,7 @@ Button(window, Rect(20, 200, 100, 30))
                 }.defer;
                 
                 // Play the new droplets
-                ~playDroplets.value(activeDroplets, ~testBuffer, renderMode);
+                ~playDroplets.value(activeDroplets, ~testBuffer);
                 
                 0.05.wait;  // 50ms = 20Hz update rate
             }
