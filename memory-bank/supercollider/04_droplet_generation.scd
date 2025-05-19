@@ -4,7 +4,7 @@
 // ==============================
 // UTILITY FUNCTIONS
 // ==============================
-
+(
 // Function to create a single droplet with given properties
 ~createDroplet = {|startPos, duration, timeWarp, position, bufnum|
     (
@@ -36,22 +36,6 @@
             (self.startPosition + (warped * self.duration)).round.asInteger;
         }
     );
-};
-
-// Function to generate a batch of droplets
-~generateDroplets = {|count, bufferLength, bufnum, distributions|
-    Array.fill(count, {
-        var startPos = (distributions.position.value * bufferLength).asInteger;
-        var duration = (distributions.duration.value * s.sampleRate).asInteger;
-        var timeWarp = distributions.timeWarp;
-        var position = [
-            distributions.radius.value,
-            distributions.azimuth.value,
-            distributions.elevation.value
-        ];
-
-        ~createDroplet.value(startPos, duration, timeWarp, position, bufnum);
-    });
 };
 
 // Function to visualize active droplets
@@ -198,6 +182,7 @@
                 timeWarp: {|t|
                     var warpCurve = 1.0.rand2;  // -1.0 to 1.0
                     var randomFactor = 0.8 + (0.4.rand);  // 0.8 to 1.2 (±20%)
+					["XXX: timeWarp: ", t].postln;
 
                     if(warpCurve >= 0.0) {
                         t.pow(1.0 + (warpCurve * 3.0)) * randomFactor
@@ -259,8 +244,8 @@
             self;
         },
 
-        // Update state and spawn new droplets if needed
-        update: {|self, currentTime|
+        // Advance state and spawn new droplets if needed
+        advance: {|self, currentTime|
             var spawnInterval, shouldSpawn;
 			var server = Server.default;
 
@@ -319,7 +304,7 @@
 
     catcher.init;
 };
-
+)
 // ==============================
 // TESTING AND VISUALIZATION
 // ==============================
@@ -363,6 +348,7 @@ var config = (
         timeWarp: {|t|
             var warpCurve = 1.0.rand2;  // -1.0 to 1.0
             var randomFactor = 0.8 + (0.4.rand);  // 0.8 to 1.2 (±20%)
+			["XXX: timeWarp", t].postln;
 
             if(warpCurve >= 0.0) {
                 t.pow(1.0 + (warpCurve * 3.0)) * randomFactor
@@ -464,7 +450,7 @@ var config = (
 ~updateRoutine = Routine({
     while({ ~vizWindow.isClosed.not }) {
         var numSamplesPerUpdate = s.sampleRate / 20;  // Update at 20Hz        // Update rain catcher state
-        ~rainCatcher.update(~currentTime);
+        ~rainCatcher.advance(~currentTime);
         ~currentTime = ~currentTime + numSamplesPerUpdate;
 
         // Play the new droplets
@@ -518,7 +504,7 @@ var config = (
     )
 );
 
-rainCatcher = ~~makeRainCatcher .value(config);
+rainCatcher = ~makeRainCatcher .value(config);
 rainCatcher.buffer = ~testBuffer;
 
 // Top section - control parameters
@@ -702,7 +688,7 @@ Button(window, Rect(20, 200, 100, 30))
                 var activeDroplets;
 
                 // Update rain catcher state
-                activeDroplets = rainCatcher.update(currentTime);
+                activeDroplets = rainCatcher.advance(currentTime);
                 currentTime = currentTime + numSamplesPerUpdate;
 
                 // Update the droplet count display
