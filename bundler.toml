@@ -2,7 +2,7 @@
 name = "Granular"
 version = "0.1.0"
 description = "A granular synthesis audio plugin built with Rust and nih-plug"
-homepage = "https://your-website-here.com"
+homepage = "https://www.simply-music.ai"
 author = "Simply Chris"
 license = "MIT"
 
