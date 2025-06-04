@@ -1,5 +1,5 @@
 [package]
-name = "simply-droplets"
+name = "simply_droplets"
 version = "0.1.0"
 edition = "2021"
 authors = ["Simply Chris"]
@@ -10,6 +10,16 @@ license = "MIT"
 [lib]
 crate-type = ["cdylib"]
 
+[[bin]]
+name = "standalone"
+required-features = ["standalone"]
+
+[[bin]]
+name = "test_ui"
+
+[[bin]]
+name = "simple_ui"
+
 [workspace]
 members = ["xtask"]
 
@@ -17,12 +27,16 @@ members = ["xtask"]
 # Main NIH-plug framework
 nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["standalone"] }
 
-# Iced GUI integration
-nih_plug_iced = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+# Webview GUI integration  
+wry = "0.24"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+raw-window-handle = "0.5"
 
 # Core dependencies for the plugin
 atomic_float = "0.1"
 rand = { version = "0.8", features = ["small_rng"] }
+fastrand = "2.0"
 
 [features]
 standalone = []
