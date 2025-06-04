@@ -8,3 +8,4 @@ publish = false
 [dependencies]
 # For the bundling tasks, we'll use the nih_plug_xtask crate
 nih_plug_xtask = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+anyhow = "1.0"
