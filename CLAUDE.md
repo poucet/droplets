@@ -63,6 +63,29 @@ The plugin uses `nih-plug` framework with these key components:
 1. **Prototype in SuperCollider**: Use `memory-bank/supercollider/` files for rapid DSP concept validation
 2. **Implement in Rust**: Translate proven concepts to the main plugin codebase
 3. **Bundle and Test**: Use `cargo xtask bundle` to create plugin files for DAW testing
+4. **Git Best Practices**: After each atomic task, commit changes with descriptive messages
+
+### Git Workflow
+**IMPORTANT**: Always commit work atomically after completing discrete tasks:
+
+```bash
+# After each logical unit of work:
+git add <relevant-files>
+git commit -m "Descriptive commit message
+
+🤖 Generated with [Claude Code](https://claude.ai/code)
+
+Co-Authored-By: Claude <noreply@anthropic.com>"
+```
+
+Examples of atomic commits:
+- Add new audio processing feature
+- Update UI component  
+- Fix specific bug
+- Add documentation
+- Update dependencies
+
+**Never** batch unrelated changes into a single commit. Each commit should represent one logical change that could be safely reverted independently.
 
 ## Important Implementation Notes
 
