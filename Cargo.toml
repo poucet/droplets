@@ -30,7 +30,6 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # Core dependencies for the plugin
-atomic_float = "0.1"
 rand = { version = "0.8", features = ["small_rng"] }
 fastrand = "2.0"
 
