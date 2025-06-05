@@ -14,11 +14,6 @@ crate-type = ["cdylib"]
 name = "standalone"
 required-features = ["standalone"]
 
-[[bin]]
-name = "test_ui"
-
-[[bin]]
-name = "simple_ui"
 
 [workspace]
 members = ["xtask"]
@@ -28,10 +23,11 @@ members = ["xtask"]
 nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["standalone"] }
 
 # Webview GUI integration  
-wry = "0.24"
+wry = "0.51"
+winit = "0.30"
+raw-window-handle = "0.6"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-raw-window-handle = "0.5"
 
 # Core dependencies for the plugin
 atomic_float = "0.1"
