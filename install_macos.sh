@@ -30,12 +30,34 @@ CLAP_USER_PATH="$HOME/Library/Audio/Plug-Ins/CLAP"
 SOURCE_VST3="target/bundled/simply_droplets.vst3"
 SOURCE_CLAP="target/bundled/simply_droplets.clap"
 
+echo "🔧 Building plugin..."
+
+# Remove old installation first
+if [ -d "$VST3_USER_PATH/simply_droplets.vst3" ]; then
+    echo "🗑️  Removing old VST3 installation..."
+    rm -rf "$VST3_USER_PATH/simply_droplets.vst3"
+fi
+
+if [ -f "$CLAP_USER_PATH/simply_droplets.clap" ]; then
+    echo "🗑️  Removing old CLAP installation..."
+    rm -f "$CLAP_USER_PATH/simply_droplets.clap"
+fi
+
+echo "Running cargo clean..."
+cargo clean
+
+echo "Running cargo build..."
+cargo build
+
+echo "Running cargo bundle..."
+cargo run --manifest-path xtask/Cargo.toml -- bundle simply_droplets
+
 echo "🔍 Checking for plugin files..."
 
 # Check if plugin files exist
 if [ ! -d "$SOURCE_VST3" ]; then
     echo -e "${RED}❌ VST3 plugin not found at $SOURCE_VST3${NC}"
-    echo -e "${YELLOW}💡 Run this first: cargo run --manifest-path xtask/Cargo.toml -- bundle simply_droplets${NC}"
+    echo -e "${RED}Build process may have failed${NC}"
     exit 1
 fi
 
@@ -60,12 +82,6 @@ fi
 install_vst3() {
     echo "🔧 Installing VST3 plugin..."
     
-    # Remove existing installation if present
-    if [ -d "$VST3_USER_PATH/simply_droplets.vst3" ]; then
-        echo "🗑️  Removing existing installation..."
-        rm -rf "$VST3_USER_PATH/simply_droplets.vst3"
-    fi
-    
     # Copy the plugin
     cp -R "$SOURCE_VST3" "$VST3_USER_PATH/"
     
@@ -81,12 +97,6 @@ install_vst3() {
 install_clap() {
     if [ "$INSTALL_CLAP" = true ]; then
         echo "🔧 Installing CLAP plugin..."
-        
-        # Remove existing installation if present
-        if [ -f "$CLAP_USER_PATH/simply_droplets.clap" ]; then
-            echo "🗑️  Removing existing CLAP installation..."
-            rm -f "$CLAP_USER_PATH/simply_droplets.clap"
-        fi
         
         # Copy the plugin
         cp "$SOURCE_CLAP" "$CLAP_USER_PATH/"
