@@ -1,4 +1,4 @@
-use crate::DropletParams;
+use crate::{DropletParams, logger};
 use nih_plug::prelude::*;
 use std::sync::Arc;
 use wry::{WebView, WebViewBuilder};
@@ -99,34 +99,8 @@ impl DropletEditor {
     }
 
     fn get_frontend_path() -> std::path::PathBuf {
-        // Look for frontend files in plugin bundle location first
-        let exe_path = std::env::current_exe().unwrap_or_default();
-        let bundle_paths = [
-            exe_path.parent().unwrap_or_else(|| std::path::Path::new(".")).join("Contents").join("Resources").join("index.html"),
-            exe_path.parent().unwrap_or_else(|| std::path::Path::new(".")).join("Resources").join("index.html"),
-        ];
-        
-        for p in &bundle_paths {
-            if p.exists() {
-                return p.clone();
-            }
-        }
-        
-        // Development fallback paths
-        let dev_paths = [
-            std::env::current_dir().unwrap_or_default().join("frontend").join("dist").join("index.html"),
-            std::env::current_dir().unwrap_or_default().join("dist").join("index.html"),
-        ];
-        
-        for p in &dev_paths {
-            if p.exists() {
-                return p.clone();
-            }
-        }
-        
-        // Final fallback
-        std::env::current_dir()
-            .unwrap_or_default()
+        // Direct path to frontend/dist/index.html in project directory
+        std::path::PathBuf::from("/Users/simplychris/projects/simply/droplets")
             .join("frontend")
             .join("dist")
             .join("index.html")
@@ -142,17 +116,17 @@ impl Editor for DropletEditor {
         let frontend_path = Self::get_frontend_path();
         let url = format!("file://{}", frontend_path.display());
         
-        println!("Loading webview from: {}", url);
+        logger::log_info(&format!("Loading webview from: {}", url));
         
         // Create webview as child of the parent window
         match self.create_webview_for_parent(&parent, &url) {
             Ok(webview) => {
-                println!("Webview created successfully as child window");
+                logger::log_info("Webview created successfully as child window");
                 Box::new(WebViewWrapper::new(webview))
             }
             Err(e) => {
-                println!("Failed to create webview: {}", e);
-                println!("Falling back to placeholder UI");
+                logger::log_error(&format!("Failed to create webview: {}", e));
+                logger::log_info("Falling back to placeholder UI");
                 Box::new(())
             }
         }
@@ -167,7 +141,7 @@ impl Editor for DropletEditor {
     }
 
     fn param_value_changed(&self, id: &str, normalized_value: f32) {
-        println!("Parameter {} changed to {}", id, normalized_value);
+        logger::log_parameter_change(id, normalized_value, normalized_value);
     }
 
     fn param_modulation_changed(&self, _id: &str, _modulation_offset: f32) {

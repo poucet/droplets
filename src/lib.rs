@@ -4,9 +4,11 @@ use std::collections::VecDeque;
 
 mod droplet;
 mod editor;
+mod logger;
 
 use droplet::{Droplet, RainCatcher, WarpCurve};
 use editor::DropletEditor;
+use logger::{init_logger, log_info, log_error};
 
 // Dummy GuiContext for the webview editor
 struct DummyGuiContext;
@@ -127,6 +129,9 @@ pub struct DropletPlugin {
 
 impl Default for DropletPlugin {
     fn default() -> Self {
+        init_logger();
+        log_info("DropletPlugin::default() called");
+        
         let grain_size = 1024;
         Self {
             params: Arc::new(DropletParams::default()),
@@ -261,6 +266,7 @@ impl Plugin for DropletPlugin {
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+        log_info("Creating editor instance");
         Some(Box::new(DropletEditor::new(self.params.clone(), Arc::new(DummyGuiContext))))
     }
 }
