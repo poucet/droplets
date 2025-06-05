@@ -1,5 +1,5 @@
 [package]
-name = "Granular"
+name = "Simply Droplets"
 version = "0.1.0"
 description = "A granular synthesis audio plugin built with Rust and nih-plug"
 homepage = "https://www.simply-music.ai"
