@@ -20,12 +20,10 @@ members = ["xtask"]
 
 [dependencies]
 # Main NIH-plug framework
-nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", features = ["standalone"] }
+nih_plug = { path = "../../external/nih-plug", features = ["standalone"] }
+nih_plug_webview = { path = "../../external/nih-plug-webview" }
 
-# Webview GUI integration  
-wry = "0.51"
-winit = "0.30"
-raw-window-handle = "0.6"
+# Additional dependencies
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 

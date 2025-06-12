@@ -5,3 +5,4 @@ Cargo.lock
 /.vscode/*
 /frontend/dist/
 .DS_Store
+/frontend/node_modules/

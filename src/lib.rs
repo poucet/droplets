@@ -1,14 +1,14 @@
 use nih_plug::prelude::*;
 use std::sync::Arc;
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 mod droplet;
 mod editor;
 mod logger;
 
 use droplet::{Droplet, RainCatcher, WarpCurve};
-use editor::DropletEditor;
-use logger::{init_logger, log_info, log_error};
+use logger::{init_logger, log_info};
 
 // Dummy GuiContext for the webview editor
 struct DummyGuiContext;
@@ -41,6 +41,9 @@ impl GuiContext for DummyGuiContext {
 
 #[derive(Params)]
 pub struct DropletParams {
+    #[id = "gain"]
+    pub gain: FloatParam,
+    
     #[id = "grain_size"]
     pub grain_size: IntParam,
     
@@ -55,11 +58,47 @@ pub struct DropletParams {
     
     #[id = "dry_wet"]
     pub dry_wet: FloatParam,
+    
+    // Parameter change tracking
+    pub gain_value_changed: Arc<AtomicBool>,
+    pub dry_wet_value_changed: Arc<AtomicBool>,
 }
 
 impl Default for DropletParams {
     fn default() -> Self {
+        let gain_value_changed = Arc::new(AtomicBool::new(false));
+        let dry_wet_value_changed = Arc::new(AtomicBool::new(false));
+        
+        let gain_callback = {
+            let v = gain_value_changed.clone();
+            Arc::new(move |_: f32| {
+                v.store(true, Ordering::Relaxed);
+            })
+        };
+        
+        let dry_wet_callback = {
+            let v = dry_wet_value_changed.clone();
+            Arc::new(move |_: f32| {
+                v.store(true, Ordering::Relaxed);
+            })
+        };
+        
         Self {
+            gain: FloatParam::new(
+                "Gain",
+                util::db_to_gain(0.0),
+                FloatRange::Skewed {
+                    min: util::db_to_gain(-30.0),
+                    max: util::db_to_gain(30.0),
+                    factor: FloatRange::gain_skew_factor(-30.0, 30.0),
+                },
+            )
+            .with_smoother(SmoothingStyle::Logarithmic(50.0))
+            .with_unit(" dB")
+            .with_value_to_string(formatters::v2s_f32_gain_to_db(2))
+            .with_string_to_value(formatters::s2v_f32_gain_to_db())
+            .with_callback(gain_callback),
+            
             grain_size: IntParam::new(
                 "Grain Size",
                 1024,
@@ -106,7 +145,11 @@ impl Default for DropletParams {
                     max: 1.0,
                 },
             )
-            .with_value_to_string(formatters::v2s_f32_percentage(2)),
+            .with_value_to_string(formatters::v2s_f32_percentage(2))
+            .with_callback(dry_wet_callback),
+            
+            gain_value_changed,
+            dry_wet_value_changed,
         }
     }
 }
@@ -195,6 +238,7 @@ impl Plugin for DropletPlugin {
         _aux: &mut AuxiliaryBuffers,
         _context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
+        let gain = self.params.gain.smoothed.next();
         let density = self.params.density.value();
         let time_warp = self.params.time_warp.value();
         let spatial_spread = self.params.spatial_spread.value();
@@ -253,8 +297,12 @@ impl Plugin for DropletPlugin {
             });
             
             // Mix dry and wet signals
-            let output_left = dry_left * (1.0 - dry_wet) + wet_left * dry_wet;
-            let output_right = dry_right * (1.0 - dry_wet) + wet_right * dry_wet;
+            let mixed_left = dry_left * (1.0 - dry_wet) + wet_left * dry_wet;
+            let mixed_right = dry_right * (1.0 - dry_wet) + wet_right * dry_wet;
+            
+            // Apply gain
+            let output_left = mixed_left * gain;
+            let output_right = mixed_right * gain;
             
             *channel_samples.get_mut(0).unwrap() = output_left;
             if channel_samples.len() > 1 {
@@ -267,7 +315,9 @@ impl Plugin for DropletPlugin {
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         log_info("Creating editor instance");
-        Some(Box::new(DropletEditor::new(self.params.clone(), Arc::new(DummyGuiContext))))
+        Some(editor::create_droplet_editor(
+            self.params.clone()
+        ))
     }
 }
 
