@@ -43,13 +43,16 @@ if [ -f "$CLAP_USER_PATH/simply_droplets.clap" ]; then
     rm -f "$CLAP_USER_PATH/simply_droplets.clap"
 fi
 
-echo "Running cargo clean..."
+# Check if npm is available for frontend build
+if ! command -v npm &> /dev/null; then
+    echo -e "${RED}❌ npm is required but not installed. Please install Node.js and npm${NC}"
+    exit 1
+fi
+
+echo "🦀 Running cargo clean..."
 cargo clean
 
-echo "Running cargo build..."
-cargo build
-
-echo "Running cargo bundle..."
+echo "📦 Building and bundling plugin (includes frontend build)..."
 cargo run --manifest-path xtask/Cargo.toml -- bundle simply_droplets
 
 echo "🔍 Checking for plugin files..."
@@ -135,5 +138,5 @@ echo "• Check Console.app for any error messages"
 echo "• Verify plugin architecture matches your Ableton Live (Intel/Apple Silicon)"
 echo ""
 echo -e "${YELLOW}⚠️  Note about UI:${NC}"
-echo "The React UI may have compatibility issues on macOS due to webview limitations."
-echo "The audio processing will work regardless - you can still use parameter automation!"
+echo "The React UI is now embedded directly in the plugin binary."
+echo "If you experience any UI issues, try restarting your DAW completely."
