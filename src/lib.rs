@@ -5,7 +5,6 @@ use crossbeam::channel::{Receiver, Sender};
 
 mod atomic;
 mod audio;
-mod audio_ports;
 mod droplet;
 mod gui;
 pub mod logger;
@@ -85,7 +84,7 @@ impl<'a> PluginMainThread<'a, DropletShared<'a>> for DropletMainThread<'a> {
         while let Ok(message) = self.shared.ipc_receiver.try_recv() {
             message_count += 1;
             logger::log_debug(&format!("Processing IPC message #{}", message_count));
-            self.handle_frontend_message(&message);
+            self.shared.params.handle_ipc_message(&message);
         }
         
         if message_count > 0 {

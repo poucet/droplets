@@ -8,16 +8,12 @@ use wry::dpi::{LogicalSize, PhysicalPosition, Position};
 use wry::raw_window_handle::{
     AppKitWindowHandle, WindowHandle, RawWindowHandle, Win32WindowHandle, XcbWindowHandle,
 };
-use serde_json::json;
 
 mod dpi;
 use dpi::{GuiSizeExtensions, LogicalSizeExtensions};
 
 use crate::DropletMainThread;
-use crate::params::*;
 
-// Include the React bundle generated at build time
-include!(concat!(env!("OUT_DIR"), "/react_bundle.rs"));
 
 pub const DEFAULT_GUI_SIZE: LogicalSize<f64> = LogicalSize::new(800.0, 600.0);
 pub const MIN_GUI_SIZE: LogicalSize<f64> = LogicalSize::new(400.0, 300.0);
@@ -146,88 +142,18 @@ impl<'a> PluginGuiImpl for DropletMainThread<'a> {
             })
         };
 
-        // Create a simple HTML container that will load React dynamically
-        let html_content = r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Simply Droplets</title>
-    <style>
-        body {
-            margin: 0;
-            padding: 0;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-                'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-                sans-serif;
-            -webkit-font-smoothing: antialiased;
-            -moz-osx-font-smoothing: grayscale;
-            background-color: #1a1a1a;
-            color: #ffffff;
-        }
-        #loading {
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            font-size: 18px;
-        }
-    </style>
-</head>
-<body>
-    <div id="loading">Loading Simply Droplets...</div>
-    <div id="root"></div>
-</body>
-</html>"#;
 
         self.gui.web_view = Some(
             WebViewBuilder::new()
-                .with_html(html_content)
+                // Load HTML from frontend build output
+                .with_html(include_str!("../../frontend/dist/index.html"))
                 .with_devtools(cfg!(debug_assertions))
                 .with_bounds(Rect {
                     position: Position::Physical(PhysicalPosition::new(0, 0)),
                     size: self.gui.size.to_webview_size(self.gui.scale_factor),
                 })
-                .with_initialization_script(&format!(r#"
-                    // Setup IPC communication
-                    window.ipc = {{
-                        postMessage: function(message) {{
-                            window.ipc.postMessage(message);
-                        }}
-                    }};
-                    
-                    // Load React bundle
-                    function loadReactBundle() {{
-                        try {{
-                            // Create script element with the embedded React bundle
-                            const script = document.createElement('script');
-                            script.innerHTML = `{}`;
-                            document.head.appendChild(script);
-                            
-                            console.log('React bundle loaded successfully');
-                            
-                            // Hide loading message after React is loaded
-                            setTimeout(() => {{
-                                const loading = document.getElementById('loading');
-                                if (loading) loading.style.display = 'none';
-                            }}, 100);
-                        }} catch (error) {{
-                            console.error('Error loading React bundle:', error);
-                            const loading = document.getElementById('loading');
-                            if (loading) {{
-                                loading.innerHTML = 'Failed to load Simply Droplets UI';
-                                loading.style.color = '#ff6b6b';
-                            }}
-                        }}
-                    }}
-                    
-                    // Load bundle after DOM is ready
-                    if (document.readyState === 'loading') {{
-                        document.addEventListener('DOMContentLoaded', loadReactBundle);
-                    }} else {{
-                        loadReactBundle();
-                    }}
-                "#, REACT_BUNDLE.replace('`', r#"\`"#).replace("${", r#"\${"#)))
+                // Use the same initialization script as vst/
+                .with_initialization_script(include_str!("script.js"))
                 .with_ipc_handler({
                     let sender = self.shared.ipc_sender.clone();
                     move |request: wry::http::Request<String>| {
@@ -255,9 +181,6 @@ impl<'a> PluginGuiImpl for DropletMainThread<'a> {
                 .build_as_child(&parent_handle)?,
         );
 
-        // Send initial parameters to the frontend
-        self.send_all_parameters_to_frontend()?;
-
         crate::logger::log_info("GUI webview created successfully");
         Ok(())
     }
@@ -272,74 +195,5 @@ impl<'a> PluginGuiImpl for DropletMainThread<'a> {
 
     fn hide(&mut self) -> Result<(), PluginError> {
         Ok(())
-    }
-}
-
-impl<'a> DropletMainThread<'a> {
-    pub fn send_all_parameters_to_frontend(&mut self) -> Result<(), PluginError> {
-        let message = json!({
-            "type": "AllParameters",
-            "gain": self.shared.params.get_gain(),
-            "grain_size": self.shared.params.get_grain_size(),
-            "density": self.shared.params.get_density(),
-            "time_warp": self.shared.params.get_time_warp(),
-            "spatial_spread": self.shared.params.get_spatial_spread(),
-            "dry_wet": self.shared.params.get_dry_wet()
-        });
-        self.gui.send_json(message)
-    }
-
-    pub fn send_parameter_change_to_frontend(&mut self, param_id: &str, value: f64) -> Result<(), PluginError> {
-        let message = json!({
-            "type": "ParameterChanged",
-            "id": param_id,
-            "value": value
-        });
-        self.gui.send_json(message)
-    }
-
-    pub fn handle_frontend_message(&mut self, message: &serde_json::Value) {
-        if let Some(msg_type) = message.get("type").and_then(|t| t.as_str()) {
-            match msg_type {
-                "GetAllParameters" => {
-                    if let Err(e) = self.send_all_parameters_to_frontend() {
-                        crate::logger::log_error(&format!("Failed to send all parameters: {}", e));
-                    }
-                }
-                "SetParameter" => {
-                    if let (Some(param_id), Some(value)) = (
-                        message.get("id").and_then(|id| id.as_str()),
-                        message.get("value").and_then(|v| v.as_f64())
-                    ) {
-                        crate::logger::log_debug(&format!("Frontend setting parameter: {} = {}", param_id, value));
-                        
-                        // Convert frontend parameter names to IPC messages for the params module
-                        let param_id_num = match param_id {
-                            "gain" => PARAM_GAIN_ID.get() as u64,
-                            "grain_size" => PARAM_GRAIN_SIZE_ID.get() as u64,
-                            "density" => PARAM_DENSITY_ID.get() as u64,
-                            "time_warp" => PARAM_TIME_WARP_ID.get() as u64,
-                            "spatial_spread" => PARAM_SPATIAL_SPREAD_ID.get() as u64,
-                            "dry_wet" => PARAM_DRY_WET_ID.get() as u64,
-                            _ => {
-                                crate::logger::log_warn(&format!("Unknown parameter from frontend: {}", param_id));
-                                return;
-                            }
-                        };
-
-                        let ipc_message = json!({
-                            "type": "parameter_change",
-                            "parameter_id": param_id_num,
-                            "value": value
-                        });
-
-                        self.shared.params.handle_ipc_message(&ipc_message);
-                    }
-                }
-                _ => {
-                    crate::logger::log_warn(&format!("Unknown message type from frontend: {}", msg_type));
-                }
-            }
-        }
     }
 }

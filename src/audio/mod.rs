@@ -4,6 +4,8 @@ use std::collections::VecDeque;
 
 use crate::{DropletMainThread, DropletShared, droplet::{Droplet, RainCatcher, WarpCurve}};
 
+pub mod ports;
+
 pub struct DropletAudioProcessor<'a> {
     shared: &'a DropletShared<'a>,
     sample_rate: f32,
