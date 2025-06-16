@@ -1,82 +1,93 @@
-use std::fs::OpenOptions;
-use std::io::Write;
-use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-static LOGGER: Mutex<Option<std::fs::File>> = Mutex::new(None);
+use log::{debug, info, warn, error, LevelFilter};
+use simplelog::*;
+use std::fs::File;
 
 pub fn init_logger() {
     let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let log_path = format!("{}/droplets_plugin.log", home_dir);
     
-    match OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-    {
-        Ok(file) => {
-            *LOGGER.lock().unwrap() = Some(file);
-            log_info(&format!("Logger initialized, writing to: {}", log_path));
-            log_info("=== Plugin session started ===");
-        }
-        Err(e) => {
-            eprintln!("Failed to initialize logger: {}", e);
-        }
-    }
-}
-
-fn get_timestamp() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs();
-    let millis = now.subsec_millis();
-    format!("{}.{:03}", secs, millis)
+    let _ = WriteLogger::init(
+        LevelFilter::Debug,
+        Config::default(),
+        File::create(&log_path).unwrap_or_else(|_| File::create("/tmp/droplets_plugin.log").unwrap()),
+    );
+    
+    info!("Droplets plugin initialized, logging to: {}", log_path);
+    info!("=== Plugin session started ===");
 }
 
 pub fn log_info(message: &str) {
-    log_message("INFO", message);
+    info!("{}", message);
 }
 
 pub fn log_warn(message: &str) {
-    log_message("WARN", message);
+    warn!("{}", message);
 }
 
 pub fn log_error(message: &str) {
-    log_message("ERROR", message);
+    error!("{}", message);
 }
 
 pub fn log_debug(message: &str) {
-    log_message("DEBUG", message);
+    debug!("{}", message);
 }
 
-fn log_message(level: &str, message: &str) {
-    let timestamp = get_timestamp();
-    let log_line = format!("[{}] {}: {}\n", timestamp, level, message);
-    
-    // Try to write to file
-    if let Ok(mut logger) = LOGGER.lock() {
-        if let Some(ref mut file) = *logger {
-            if let Err(e) = file.write_all(log_line.as_bytes()) {
-                eprintln!("Failed to write to log file: {}", e);
-            } else {
-                let _ = file.flush();
-            }
-        }
+pub fn log_plugin_initialization(plugin_name: &str, step: &str) {
+    info!("{} plugin: {}", plugin_name, step);
+}
+
+pub fn log_main_thread_tick() {
+    debug!("Main thread tick - processing IPC messages");
+}
+
+pub fn log_ipc_message_received(message: &str) {
+    debug!("Received IPC message from web view: {}", message);
+}
+
+pub fn log_ipc_message_parsed(message: &serde_json::Value) {
+    debug!("Parsed IPC message, sending to channel: {:?}", message);
+}
+
+pub fn log_ipc_send_error(error: &str) {
+    warn!("Failed to send IPC message to channel: {}", error);
+}
+
+pub fn log_ipc_parse_error(message: &str) {
+    warn!("Failed to parse IPC message as JSON: {}", message);
+}
+
+pub fn log_ipc_messages_processed(count: usize) {
+    if count > 0 {
+        info!("Processed {} IPC messages", count);
     }
-    
-    // Also print to console for development
-    print!("{}", log_line);
 }
 
-pub fn log_ipc_message(direction: &str, message: &str) {
-    log_debug(&format!("IPC {}: {}", direction, message));
+pub fn log_ipc_message_processing(count: usize, message: &serde_json::Value) {
+    debug!("Processing IPC message #{}: {}", count, message);
 }
 
-pub fn log_webview_event(event: &str, details: &str) {
-    log_debug(&format!("WebView {}: {}", event, details));
+pub fn log_ipc_channel_created() {
+    info!("Created IPC channel for GUI communication");
 }
 
-pub fn log_parameter_change(param: &str, value: f32, normalized: f32) {
-    log_debug(&format!("Parameter {}: value={}, normalized={}", param, value, normalized));
+pub fn log_parameter_change(param_name: &str, value: f64) {
+    info!("Parameter changed: {} = {}", param_name, value);
+}
+
+pub fn log_audio_processor_activation(sample_rate: f32, grain_size: usize) {
+    info!("Audio processor activated - sample_rate: {}, grain_size: {}", sample_rate, grain_size);
+}
+
+pub fn log_droplet_creation(count: usize, radius: f32, azimuth: f32, elevation: f32) {
+    debug!("Created droplet #{} - radius: {:.3}, azimuth: {:.3}, elevation: {:.3}", count, radius, azimuth, elevation);
+}
+
+pub fn log_active_droplets_count(count: usize) {
+    if count > 0 {
+        debug!("Active droplets: {}", count);
+    }
+}
+
+pub fn log_gui_event(event: &str, details: &str) {
+    debug!("GUI {}: {}", event, details);
 }

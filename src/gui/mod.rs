@@ -10,9 +10,9 @@ use wry::raw_window_handle::{
 };
 
 mod dpi;
-use dpi::{GuiSizeExtensions, LogicalSizeExtensions};
-
 use crate::DropletMainThread;
+use crate::gui::dpi::{GuiSizeExtensions, LogicalSizeExtensions};
+
 
 
 pub const DEFAULT_GUI_SIZE: LogicalSize<f64> = LogicalSize::new(800.0, 600.0);
@@ -61,26 +61,28 @@ impl<'a> PluginGuiImpl for DropletMainThread<'a> {
     fn get_preferred_api(&mut self) -> Option<GuiConfiguration> {
         Some(GuiConfiguration {
             api_type: GuiApiType::default_for_current_platform()?,
+            // no known host supports floating mode at this time
             is_floating: false,
         })
     }
 
     fn create(&mut self, configuration: GuiConfiguration) -> Result<(), PluginError> {
         if !self.is_api_supported(configuration) {
+            crate::logger::log_gui_event("create_failed", "Unsupported GUI configuration");
             return Err(PluginError::Message("Unsupported GUI configuration"));
         }
-        crate::logger::log_info("GUI created");
+        crate::logger::log_gui_event("created", "GUI created successfully");
         Ok(())
     }
 
     fn destroy(&mut self) {
         self.gui.web_view.take();
-        crate::logger::log_info("GUI destroyed");
+        crate::logger::log_gui_event("destroyed", "GUI destroyed");
     }
 
     fn set_scale(&mut self, scale: f64) -> Result<(), PluginError> {
         self.gui.scale_factor = scale;
-        crate::logger::log_debug(&format!("GUI scale set to: {}", scale));
+        crate::logger::log_gui_event("scale_changed", &format!("Scale set to: {}", scale));
         Ok(())
     }
 
@@ -118,13 +120,12 @@ impl<'a> PluginGuiImpl for DropletMainThread<'a> {
                 size: self.gui.size.to_webview_size(self.gui.scale_factor),
             })?;
         }
-        crate::logger::log_debug(&format!("GUI size set to: {}x{}", size.width, size.height));
         Ok(())
     }
 
     fn set_parent(&mut self, parent: Window) -> Result<(), PluginError> {
-        crate::logger::log_info("Setting GUI parent window");
-
+        crate::logger::log_gui_event("set_parent", "Setting parent window");
+        
         // Convert CLAP window to WindowHandle expected by wry
         let parent_handle = unsafe {
             WindowHandle::borrow_raw(if cfg!(target_os = "macos") {
@@ -145,26 +146,27 @@ impl<'a> PluginGuiImpl for DropletMainThread<'a> {
 
         self.gui.web_view = Some(
             WebViewBuilder::new()
-                // Load HTML from frontend build output
-                .with_html(include_str!("../../frontend/dist/index.html"))
+                // Load HTML from simplified GUI file
+                .with_html(include_str!("../../gui.html"))
                 .with_devtools(cfg!(debug_assertions))
                 .with_bounds(Rect {
                     position: Position::Physical(PhysicalPosition::new(0, 0)),
                     size: self.gui.size.to_webview_size(self.gui.scale_factor),
                 })
-                // Use the same initialization script as vst/
+                // Handle IPC messages from the web view
                 .with_initialization_script(include_str!("script.js"))
                 .with_ipc_handler({
                     let sender = self.shared.ipc_sender.clone();
                     move |request: wry::http::Request<String>| {
                         let message = request.body();
-                        crate::logger::log_debug(&format!("Received IPC message: {}", message));
+                        crate::logger::log_ipc_message_received(message);
                         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(message) {
+                            crate::logger::log_ipc_message_parsed(&parsed);
                             if let Err(e) = sender.send(parsed) {
-                                crate::logger::log_error(&format!("Failed to send IPC message: {}", e));
+                                crate::logger::log_ipc_send_error(&e.to_string());
                             }
                         } else {
-                            crate::logger::log_error(&format!("Failed to parse IPC message: {}", message));
+                            crate::logger::log_ipc_parse_error(message);
                         }
                     }
                 })
@@ -181,7 +183,7 @@ impl<'a> PluginGuiImpl for DropletMainThread<'a> {
                 .build_as_child(&parent_handle)?,
         );
 
-        crate::logger::log_info("GUI webview created successfully");
+        crate::logger::log_gui_event("webview_created", "WebView created successfully");
         Ok(())
     }
 

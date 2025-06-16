@@ -3,6 +3,10 @@ use clack_plugin::prelude::*;
 use clack_plugin::plugin::features::*;
 use crossbeam::channel::{Receiver, Sender};
 
+use audio::DropletAudioProcessor;
+use gui::DropletGui;
+use params::DropletParams;
+
 mod atomic;
 mod audio;
 mod droplet;
@@ -10,9 +14,6 @@ mod gui;
 pub mod logger;
 mod params;
 
-use audio::DropletAudioProcessor;
-use gui::DropletGui;
-use params::DropletParams;
 
 pub struct DropletPlugin;
 
@@ -33,16 +34,15 @@ impl DefaultPluginFactory for DropletPlugin {
     fn get_descriptor() -> PluginDescriptor {
         PluginDescriptor::new("com.simply-chris.simply-droplets", "Simply Droplets")
             .with_vendor("Simply Chris")
-            .with_description("3D droplet-based granular synthesis")
-            .with_version(env!("CARGO_PKG_VERSION"))
             .with_features([AUDIO_EFFECT, STEREO])
     }
 
     fn new_shared(host: HostSharedHandle) -> Result<Self::Shared<'_>, PluginError> {
         logger::init_logger();
-        logger::log_info("DropletPlugin shared instance created");
+        logger::log_plugin_initialization("Droplets", "Creating shared instance");
         
         let (sender, receiver) = crossbeam::channel::unbounded();
+        logger::log_ipc_channel_created();
         
         Ok(DropletShared {
             params: DropletParams::new(),
@@ -55,7 +55,9 @@ impl DefaultPluginFactory for DropletPlugin {
     fn new_main_thread<'a>(
         _host: HostMainThreadHandle<'a>,
         shared: &'a Self::Shared<'a>,
-    ) -> Result<Self::MainThread<'a>, PluginError> {        
+    ) -> Result<Self::MainThread<'a>, PluginError> {
+        logger::log_plugin_initialization("Droplets", "Creating main thread instance");
+        
         Ok(Self::MainThread {
             shared,
             gui: DropletGui::new(),  
@@ -79,17 +81,22 @@ pub struct DropletMainThread<'a> {
 
 impl<'a> PluginMainThread<'a, DropletShared<'a>> for DropletMainThread<'a> {
     fn on_main_thread(&mut self) {
+        crate::logger::log_main_thread_tick();
+        
         // Process IPC messages from the GUI
         let mut message_count = 0;
         while let Ok(message) = self.shared.ipc_receiver.try_recv() {
             message_count += 1;
-            logger::log_debug(&format!("Processing IPC message #{}", message_count));
-            self.shared.params.handle_ipc_message(&message);
+            crate::logger::log_ipc_message_processing(message_count, &message);
+            
+            if let Some(response) = self.shared.params.handle_ipc_message(&message) {
+                if let Err(e) = self.gui.send_json(response) {
+                    crate::logger::log_error(&format!("Failed to send GUI response: {}", e));
+                }
+            }
         }
         
-        if message_count > 0 {
-            logger::log_debug(&format!("Processed {} IPC messages", message_count));
-        }
+        crate::logger::log_ipc_messages_processed(message_count);
     }
 }
 

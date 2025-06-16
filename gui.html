@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Simply Droplets</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+            color: #ffffff;
+            overflow: hidden;
+        }
+
+        .app {
+            width: 800px;
+            height: 600px;
+            padding: 20px;
+            box-sizing: border-box;
+            overflow: hidden;
+        }
+
+        .app-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #404040;
+        }
+
+        .app-header h1 {
+            font-size: 2rem;
+            margin: 0;
+            color: #ffffff;
+            font-weight: 300;
+        }
+
+        .subtitle {
+            font-size: 1rem;
+            color: #b0b0b0;
+            font-weight: 300;
+        }
+
+        .app-main {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            height: calc(100% - 120px);
+        }
+
+        .parameters-section,
+        .visualization-section {
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            padding: 25px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .parameters-section h2,
+        .visualization-section h2 {
+            margin: 0 0 20px 0;
+            font-size: 1.3rem;
+            color: #e0e0e0;
+            font-weight: 400;
+        }
+
+        .parameters-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+        }
+
+        .parameter-row {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .parameter-label {
+            font-size: 0.9rem;
+            color: #c0c0c0;
+            font-weight: 500;
+        }
+
+        .parameter-control {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .parameter-slider {
+            flex: 1;
+            height: 6px;
+            background: #404040;
+            border-radius: 3px;
+            outline: none;
+            cursor: pointer;
+            -webkit-appearance: none;
+            appearance: none;
+        }
+
+        .parameter-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            background: linear-gradient(135deg, #4a9eff 0%, #007acc 100%);
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+            transition: all 0.2s ease;
+        }
+
+        .parameter-slider::-webkit-slider-thumb:hover {
+            background: linear-gradient(135deg, #6bb6ff 0%, #0086e6 100%);
+            transform: scale(1.1);
+        }
+
+        .parameter-slider::-moz-range-thumb {
+            width: 18px;
+            height: 18px;
+            background: linear-gradient(135deg, #4a9eff 0%, #007acc 100%);
+            border-radius: 50%;
+            cursor: pointer;
+            border: none;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        .parameter-value {
+            min-width: 80px;
+            text-align: right;
+            font-size: 0.85rem;
+            color: #a0a0a0;
+            font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+        }
+
+        .visualization-placeholder {
+            height: 100%;
+            background: rgba(0, 0, 0, 0.3);
+            border: 2px dashed #505050;
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+
+        .visualization-placeholder p {
+            margin: 0;
+            color: #808080;
+            font-size: 0.9rem;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <header class="app-header">
+            <h1>Simply Droplets</h1>
+            <span class="subtitle">3D Granular Synthesis</span>
+        </header>
+        
+        <main class="app-main">
+            <section class="parameters-section">
+                <h2>Parameters</h2>
+                <div class="parameters-grid">
+                    <div class="parameter-row">
+                        <label class="parameter-label">Grain Size</label>
+                        <div class="parameter-control">
+                            <input type="range" min="64" max="8192" step="1" value="1024" 
+                                   class="parameter-slider" id="grain_size">
+                            <span class="parameter-value" id="grain_size_value">1024 samples</span>
+                        </div>
+                    </div>
+                    
+                    <div class="parameter-row">
+                        <label class="parameter-label">Density</label>
+                        <div class="parameter-control">
+                            <input type="range" min="0.1" max="100.0" step="0.1" value="10.0" 
+                                   class="parameter-slider" id="density">
+                            <span class="parameter-value" id="density_value">10.00 /s</span>
+                        </div>
+                    </div>
+                    
+                    <div class="parameter-row">
+                        <label class="parameter-label">Time Warp</label>
+                        <div class="parameter-control">
+                            <input type="range" min="0.1" max="4.0" step="0.01" value="1.0" 
+                                   class="parameter-slider" id="time_warp">
+                            <span class="parameter-value" id="time_warp_value">1.00</span>
+                        </div>
+                    </div>
+                    
+                    <div class="parameter-row">
+                        <label class="parameter-label">Spatial Spread</label>
+                        <div class="parameter-control">
+                            <input type="range" min="0.0" max="1.0" step="0.01" value="1.0" 
+                                   class="parameter-slider" id="spatial_spread">
+                            <span class="parameter-value" id="spatial_spread_value">1.00%</span>
+                        </div>
+                    </div>
+                    
+                    <div class="parameter-row">
+                        <label class="parameter-label">Dry/Wet</label>
+                        <div class="parameter-control">
+                            <input type="range" min="0.0" max="1.0" step="0.01" value="1.0" 
+                                   class="parameter-slider" id="dry_wet">
+                            <span class="parameter-value" id="dry_wet_value">1.00%</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <section class="visualization-section">
+                <h2>3D Droplet Visualization</h2>
+                <div class="visualization-placeholder">
+                    <p>3D visualization will be implemented here</p>
+                    <p>Showing droplet positions and movement in real-time</p>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script>
+        // Plugin parameter state
+        const params = {
+            grain_size: 1024,
+            density: 10.0,
+            time_warp: 1.0,
+            spatial_spread: 1.0,
+            dry_wet: 1.0
+        };
+
+        // Update parameter value display
+        function updateValueDisplay(id, value) {
+            const valueElement = document.getElementById(id + '_value');
+            if (id === 'grain_size') {
+                valueElement.textContent = Math.round(value) + ' samples';
+            } else if (id === 'density') {
+                valueElement.textContent = value.toFixed(2) + ' /s';
+            } else if (id === 'spatial_spread' || id === 'dry_wet') {
+                valueElement.textContent = value.toFixed(2) + '%';
+            } else {
+                valueElement.textContent = value.toFixed(2);
+            }
+        }
+
+        // Handle parameter change
+        function handleParameterChange(id, value) {
+            const numValue = parseFloat(value);
+            params[id] = numValue;
+            updateValueDisplay(id, numValue);
+            
+            // Send to plugin via IPC if available
+            if (window.ipc) {
+                const message = {
+                    type: 'SetParameter',
+                    id: id,
+                    value: numValue
+                };
+                window.ipc.postMessage(JSON.stringify(message));
+            }
+        }
+
+        // Set up event listeners for all sliders
+        function setupSliders() {
+            const sliders = ['grain_size', 'density', 'time_warp', 'spatial_spread', 'dry_wet'];
+            
+            sliders.forEach(id => {
+                const slider = document.getElementById(id);
+                slider.addEventListener('input', (e) => {
+                    handleParameterChange(id, e.target.value);
+                });
+                
+                // Initialize display
+                updateValueDisplay(id, params[id]);
+            });
+        }
+
+        // Handle messages from plugin
+        function handleMessage(event) {
+            try {
+                const message = JSON.parse(event.data);
+                
+                if (message.type === 'AllParameters') {
+                    // Update all parameters
+                    Object.keys(params).forEach(key => {
+                        if (message[key] !== undefined) {
+                            params[key] = message[key];
+                            const slider = document.getElementById(key);
+                            if (slider) {
+                                slider.value = message[key];
+                                updateValueDisplay(key, message[key]);
+                            }
+                        }
+                    });
+                } else if (message.type === 'ParameterChanged' && message.id && message.value !== undefined) {
+                    // Update single parameter
+                    const id = message.id;
+                    const value = message.value;
+                    params[id] = value;
+                    
+                    const slider = document.getElementById(id);
+                    if (slider) {
+                        slider.value = value;
+                        updateValueDisplay(id, value);
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to parse IPC message:', e);
+            }
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            setupSliders();
+            
+            // Set up message listener
+            window.addEventListener('message', handleMessage);
+            
+            // Request all parameters on startup
+            if (window.ipc) {
+                const message = {
+                    type: 'GetAllParameters'
+                };
+                window.ipc.postMessage(JSON.stringify(message));
+            }
+        });
+    </script>
+</body>
+</html>

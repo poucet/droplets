@@ -38,13 +38,7 @@ const App: React.FC = () => {
   });
 
   useEffect(() => {
-    // Request all parameters on startup
-    if (window.ipc) {
-      const getAllParamsMessage: IpcMessage = {
-        type: 'GetAllParameters'
-      };
-      window.ipc.postMessage(JSON.stringify(getAllParamsMessage));
-    }
+
 
     // Set up message listener for IPC responses
     const handleMessage = (event: MessageEvent) => {
@@ -65,6 +59,14 @@ const App: React.FC = () => {
         console.error('Failed to parse IPC message:', e);
       }
     };
+
+    // Request all parameters on startup
+    if (window.ipc) {
+      const getAllParamsMessage: IpcMessage = {
+        type: 'GetAllParameters'
+      };
+      window.ipc.postMessage(JSON.stringify(getAllParamsMessage));
+    }
 
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);

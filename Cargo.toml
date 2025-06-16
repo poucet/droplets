@@ -30,7 +30,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 crossbeam = "0.8.4"
 
-# Logging
+# Logging (standardized with vst plugin)
 log = "0.4"
 simplelog = "0.12"
 

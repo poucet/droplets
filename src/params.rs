@@ -34,6 +34,26 @@ pub enum IpcMessage {
     GetParameter {
         parameter_id: u64,
     },
+    #[serde(rename = "SetParameter")]
+    SetParameter {
+        id: String,
+        value: f64,
+    },
+    #[serde(rename = "GetAllParameters")]
+    GetAllParameters,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "type")]
+pub enum IpcResponse {
+    #[serde(rename = "AllParameters")]
+    AllParameters {
+        grain_size: i32,
+        density: f32,
+        time_warp: f32,
+        spatial_spread: f32,
+        dry_wet: f32,
+    },
 }
 
 pub struct DropletParams {
@@ -133,7 +153,7 @@ impl DropletParams {
         }
     }
 
-    pub fn handle_ipc_message(&self, message: &serde_json::Value) {
+    pub fn handle_ipc_message(&self, message: &serde_json::Value) -> Option<serde_json::Value> {
         match serde_json::from_value::<IpcMessage>(message.clone()) {
             Ok(IpcMessage::ParameterChange { parameter_id, value }) => {
                 let param_id = ClapId::new(parameter_id as u32);
@@ -193,9 +213,36 @@ impl DropletParams {
                     }
                 }
             }
+            Ok(IpcMessage::SetParameter { id, value }) => {
+                crate::logger::log_debug(&format!("IPC SetParameter: {} = {}", id, value));
+                match id.as_str() {
+                    "grain_size" => self.set_grain_size(value as i32),
+                    "density" => self.set_density(value as f32),
+                    "time_warp" => self.set_time_warp(value as f32),
+                    "spatial_spread" => self.set_spatial_spread(value as f32),
+                    "dry_wet" => self.set_dry_wet(value as f32),
+                    _ => crate::logger::log_warn(&format!("Unknown parameter name from IPC: {}", id)),
+                }
+            }
+            Ok(IpcMessage::GetAllParameters) => {
+                crate::logger::log_debug("IPC GetAllParameters request");
+                let response = IpcResponse::AllParameters {
+                    grain_size: self.get_grain_size(),
+                    density: self.get_density(),
+                    time_warp: self.get_time_warp(),
+                    spatial_spread: self.get_spatial_spread(),
+                    dry_wet: self.get_dry_wet(),
+                };
+                if let Ok(json) = serde_json::to_value(response) {
+                    return Some(json);
+                } else {
+                    crate::logger::log_error("Failed to serialize AllParameters response");
+                }
+            }
             Err(e) => {
                 crate::logger::log_error(&format!("Failed to parse IPC message: {}", e));
             }
         }
+        None
     }
 }
