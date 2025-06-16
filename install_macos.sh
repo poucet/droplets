@@ -112,7 +112,7 @@ install_clap() {
         # Copy the plugin
         cp -R "$SOURCE_CLAP" "$CLAP_USER_PATH/"
         
-        if [ -f "$CLAP_USER_PATH/Simply Droplets.clap" ]; then
+        if [ -d "$CLAP_USER_PATH/Simply Droplets.clap" ]; then
             echo -e "${GREEN}✅ CLAP installed successfully to: $CLAP_USER_PATH${NC}"
         else
             echo -e "${RED}❌ CLAP installation failed${NC}"
