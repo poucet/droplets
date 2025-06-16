@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Simply Droplets - macOS Installation Script for Ableton Live
-# This script will install the VST3 plugin to the correct location for Ableton Live
+# Simply Droplets - macOS Installation Script
+# This script will install the VST3 and CLAP plugins to the correct locations for DAWs
 
 set -e
 
@@ -26,34 +26,42 @@ VST3_USER_PATH="$HOME/Library/Audio/Plug-Ins/VST3"
 VST3_SYSTEM_PATH="/Library/Audio/Plug-Ins/VST3"
 CLAP_USER_PATH="$HOME/Library/Audio/Plug-Ins/CLAP"
 
-# Source plugin file
-SOURCE_VST3="target/bundled/simply_droplets.vst3"
-SOURCE_CLAP="target/bundled/simply_droplets.clap"
+# Source plugin files (from new clack bundle structure)
+SOURCE_VST3="target/bundle/Simply Droplets.vst3"
+SOURCE_CLAP="target/bundle/Simply Droplets.clap"
 
 echo "🔧 Building plugin..."
 
 # Remove old installation first
-if [ -d "$VST3_USER_PATH/simply_droplets.vst3" ]; then
+if [ -d "$VST3_USER_PATH/Simply Droplets.vst3" ]; then
     echo "🗑️  Removing old VST3 installation..."
+    rm -rf "$VST3_USER_PATH/Simply Droplets.vst3"
+fi
+
+# Also remove old nih-plug named versions
+if [ -d "$VST3_USER_PATH/simply_droplets.vst3" ]; then
+    echo "🗑️  Removing old nih-plug VST3 installation..."
     rm -rf "$VST3_USER_PATH/simply_droplets.vst3"
 fi
 
-if [ -f "$CLAP_USER_PATH/simply_droplets.clap" ]; then
+if [ -f "$CLAP_USER_PATH/Simply Droplets.clap" ]; then
     echo "🗑️  Removing old CLAP installation..."
+    rm -f "$CLAP_USER_PATH/Simply Droplets.clap"
+fi
+
+# Also remove old nih-plug named versions
+if [ -f "$CLAP_USER_PATH/simply_droplets.clap" ]; then
+    echo "🗑️  Removing old nih-plug CLAP installation..."
     rm -f "$CLAP_USER_PATH/simply_droplets.clap"
 fi
 
-# Check if npm is available for frontend build
-if ! command -v npm &> /dev/null; then
-    echo -e "${RED}❌ npm is required but not installed. Please install Node.js and npm${NC}"
-    exit 1
-fi
+# Note: Frontend is now embedded directly in the plugin binary, no npm build required
 
 echo "🦀 Running cargo clean..."
 cargo clean
 
-echo "📦 Building and bundling plugin (includes frontend build)..."
-cargo run --manifest-path xtask/Cargo.toml -- bundle simply_droplets
+echo "📦 Building and bundling plugin (embedded GUI)..."
+cargo bundle
 
 echo "🔍 Checking for plugin files..."
 
@@ -88,7 +96,7 @@ install_vst3() {
     # Copy the plugin
     cp -R "$SOURCE_VST3" "$VST3_USER_PATH/"
     
-    if [ -d "$VST3_USER_PATH/simply_droplets.vst3" ]; then
+    if [ -d "$VST3_USER_PATH/Simply Droplets.vst3" ]; then
         echo -e "${GREEN}✅ VST3 installed successfully to: $VST3_USER_PATH${NC}"
     else
         echo -e "${RED}❌ VST3 installation failed${NC}"
@@ -102,9 +110,9 @@ install_clap() {
         echo "🔧 Installing CLAP plugin..."
         
         # Copy the plugin
-        cp "$SOURCE_CLAP" "$CLAP_USER_PATH/"
+        cp -R "$SOURCE_CLAP" "$CLAP_USER_PATH/"
         
-        if [ -f "$CLAP_USER_PATH/simply_droplets.clap" ]; then
+        if [ -f "$CLAP_USER_PATH/Simply Droplets.clap" ]; then
             echo -e "${GREEN}✅ CLAP installed successfully to: $CLAP_USER_PATH${NC}"
         else
             echo -e "${RED}❌ CLAP installation failed${NC}"
@@ -125,9 +133,9 @@ echo "4. Click 'Rescan' to refresh the plugin list"
 echo "5. Look for 'Simply Droplets' in your Audio Effects"
 echo ""
 echo -e "${YELLOW}📍 Plugin installed to:${NC}"
-echo "   VST3: $VST3_USER_PATH/simply_droplets.vst3"
+echo "   VST3: $VST3_USER_PATH/Simply Droplets.vst3"
 if [ "$INSTALL_CLAP" = true ]; then
-    echo "   CLAP: $CLAP_USER_PATH/simply_droplets.clap"
+    echo "   CLAP: $CLAP_USER_PATH/Simply Droplets.clap"
 fi
 echo ""
 echo -e "${GREEN}🎉 Installation complete!${NC}"
@@ -138,5 +146,9 @@ echo "• Check Console.app for any error messages"
 echo "• Verify plugin architecture matches your Ableton Live (Intel/Apple Silicon)"
 echo ""
 echo -e "${YELLOW}⚠️  Note about UI:${NC}"
-echo "The React UI is now embedded directly in the plugin binary."
+echo "The plugin UI is embedded directly in the plugin using WebView with native HTML/CSS/JS."
 echo "If you experience any UI issues, try restarting your DAW completely."
+echo ""
+echo -e "${BLUE}💡 Plugin Framework:${NC}"
+echo "This plugin is built with the CLACK framework (clack-rs)."
+echo "It supports both CLAP and VST3 formats through clap-wrapper."
