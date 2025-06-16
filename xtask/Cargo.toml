@@ -2,10 +2,11 @@
 name = "xtask"
 version = "0.1.0"
 edition = "2021"
-authors = ["Simply Chris"]
-publish = false
+
+[[bin]]
+name = "xtask"
+path = "src/main.rs"
 
 [dependencies]
-# For the bundling tasks, we'll use the nih_plug_xtask crate
-nih_plug_xtask = { git = "https://github.com/robbert-vdh/nih-plug.git" }
+clap = { version = "4.0", features = ["derive"] }
 anyhow = "1.0"
