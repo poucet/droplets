@@ -1,0 +1,16 @@
+[alias]
+# Build and bundle commands
+xtask = "run --package xtask --"
+bundle = "run --package xtask -- build"
+bundle-debug = "run --package xtask -- build --profile debug"
+bundle-release = "run --package xtask -- build --profile release"
+bundle-clap = "run --package xtask -- build --format clap"
+bundle-vst3 = "run --package xtask -- build --format vst3"
+bundle-clap-debug = "run --package xtask -- build --profile debug --format clap"
+bundle-vst3-debug = "run --package xtask -- build --profile debug --format vst3"
+bundle-clap-release = "run --package xtask -- build --profile release --format clap"
+bundle-vst3-release = "run --package xtask -- build --profile release --format vst3"
+
+# Quick development aliases
+dev = "build"
+dev-release = "build --release"

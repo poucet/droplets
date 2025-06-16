@@ -1,7 +1,7 @@
 [package]
 name = "Simply Droplets"
 version = "0.1.0"
-description = "A granular synthesis audio plugin built with Rust and nih-plug"
+description = "A 3D droplet-based granular synthesis plugin built with Rust and clack"
 homepage = "https://www.simply-music.ai"
 author = "Simply Chris"
 license = "MIT"
@@ -9,9 +9,8 @@ license = "MIT"
 [dependencies]
 
 [targets]
-vst3 = { path = "target/release/granular.vst3" }
-clap = { path = "target/release/granular.clap" }
-standalone = { path = "target/release/granular" }
+vst3 = { path = "target/release/simply_droplets.vst3" }
+clap = { path = "target/release/simply_droplets.clap" }
 
 [macos]
-bundle_identifier = "com.simply-chris.granular"
+bundle_identifier = "com.simply-chris.simply-droplets"

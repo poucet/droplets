@@ -10,29 +10,34 @@ license = "MIT"
 [lib]
 crate-type = ["cdylib"]
 
-[[bin]]
-name = "standalone"
-required-features = ["standalone"]
 
 
 [workspace]
 members = ["xtask"]
 
 [dependencies]
-# Main NIH-plug framework
-nih_plug = { path = "../../external/nih-plug", features = ["standalone"] }
-nih_plug_webview = { path = "../../external/nih-plug-webview" }
+# Main CLACK framework
+clack-extensions = { git = "https://github.com/prokopyl/clack.git", version = "0.1.0", features = ["clack-plugin", "audio-ports", "gui", "note-ports", "params", "raw-window-handle_06", "state"] }
+clack-plugin = { git = "https://github.com/prokopyl/clack.git" }
+clap-wrapper = { git = "https://github.com/blepfx/clap-wrapper-rs" }
+
+# GUI dependencies
+wry = "0.51.2"
+open = "5.3.2"
 
 # Additional dependencies
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+crossbeam = "0.8.4"
+
+# Logging
+log = "0.4"
+simplelog = "0.12"
 
 # Core dependencies for the plugin
 rand = { version = "0.8", features = ["small_rng"] }
 fastrand = "2.0"
 
-[features]
-standalone = []
 
 [profile.release]
 lto = "thin"
