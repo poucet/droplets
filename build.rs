@@ -1,10 +1,15 @@
 use std::process::Command;
 use std::path::Path;
 use std::fs;
+use std::env;
 
 fn main() {
     println!("cargo:rerun-if-changed=frontend/src");
     println!("cargo:rerun-if-changed=frontend/package.json");
+    println!("cargo:rerun-if-changed=frontend/dist/bundle.js");
+    
+    let out_dir = env::var("OUT_DIR").unwrap();
+    let dest_path = Path::new(&out_dir).join("react_bundle.rs");
     
     // Build the frontend if we're in development
     let frontend_dir = Path::new("frontend");
@@ -40,6 +45,34 @@ fn main() {
                 println!("cargo:warning=Failed to run npm build: {}", e);
             }
         }
+    }
+    
+    // Generate React bundle constant
+    let bundle_path = "frontend/dist/bundle.js";
+    if Path::new(bundle_path).exists() {
+        match fs::read_to_string(bundle_path) {
+            Ok(bundle_content) => {
+                // Generate a Rust constant with the bundle content
+                let generated_code = format!(
+                    "pub const REACT_BUNDLE: &str = r#\"{}\"#;",
+                    bundle_content.replace("\\", "\\\\").replace("\"", "\\\"")
+                );
+                
+                if let Err(e) = fs::write(&dest_path, generated_code) {
+                    println!("cargo:warning=Failed to write react_bundle.rs: {}", e);
+                }
+            }
+            Err(e) => {
+                println!("cargo:warning=Failed to read React bundle: {}", e);
+                // Create empty bundle constant
+                let generated_code = "pub const REACT_BUNDLE: &str = \"\";";
+                let _ = fs::write(&dest_path, generated_code);
+            }
+        }
+    } else {
+        // Create empty bundle constant
+        let generated_code = "pub const REACT_BUNDLE: &str = \"\";";
+        let _ = fs::write(&dest_path, generated_code);
     }
 }
 
