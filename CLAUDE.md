@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Simply Droplets is a 3D droplet-based granular synthesis audio plugin built in Rust using the `nih-plug` framework. It transforms incoming audio into "droplets" positioned in 3D space with configurable time-warping, offering an innovative extension of traditional granular synthesis.
+Simply Droplets is a 3D droplet-based granular synthesis audio plugin built in Rust using the `clack-plugin` framework. It transforms incoming audio into "droplets" positioned in 3D space with configurable time-warping, offering an innovative extension of traditional granular synthesis.
 
 ## Core Concepts
 
@@ -29,12 +29,12 @@ cargo xtask bundle
 cargo xtask bundle --release
 ```
 
-The bundler uses `nih_plug_xtask` internally and creates plugin files in the `target/` directory.
+The bundler creates both CLAP and VST3 plugin files in the `target/bundle/` directory.
 
 ## Architecture
 
 ### Current Implementation Status
-The project is in early development with a basic gain plugin implementation serving as the foundation. The current `src/lib.rs` provides a simple VST3/CLAP plugin with gain and dry/wet parameters.
+The project now has a fully functional droplet-based granular synthesis engine. The plugin supports both CLAP and VST3 formats and includes comprehensive 3D audio processing with time-warping capabilities.
 
 ### Target Architecture (from design docs)
 - **Droplet Processing Engine**: Core audio processing with 3D positioning
@@ -52,11 +52,17 @@ The project is in early development with a basic gain plugin implementation serv
 
 ## Plugin Framework
 
-The plugin uses `nih-plug` framework with these key components:
-- Plugin struct implementing `Plugin`, `ClapPlugin`, and `Vst3Plugin` traits
-- Parameter system using `FloatParam` for audio parameters
-- Audio processing in the `process()` method with `Buffer` and `ProcessContext`
-- Plugin exports using `nih_export_vst3!()` and `nih_export_clap!()` macros
+The plugin uses `clack-plugin` framework with these key components:
+- Plugin struct implementing `Plugin` trait with `DefaultPluginFactory`
+- Parameter system using atomic values for thread-safe parameter access
+- Audio processing in the `process()` method with CLAP audio and event handling
+- Plugin exports using `clack_export_entry!()` and `clap_wrapper::export_vst3!()` macros
+
+## Important Implementation Notes
+
+- **Parameter Access During Activation**: Never call parameter getters (like `get_grain_size()`) during plugin activation as this breaks UI integration. Use hardcoded defaults instead.
+- **Thread Safety**: All parameter access in audio processing uses atomic operations for thread safety.
+- **Memory Management**: Complex data structures (VecDeque, Vec) are initialized during activation but used safely in the audio thread.
 
 ## Development Workflow
 
