@@ -195,6 +195,9 @@ fn create_clap_bundle(profile: &str) -> anyhow::Result<()> {
     let dylib_dst = macos_path.join("Simply Droplets");
     fs::copy(&dylib_src, &dylib_dst)?;
     
+    // Fix dynamic library paths to make the bundle self-contained
+    fix_dylib_paths(&dylib_dst, &dylib_src)?;
+    
     // Create a basic Info.plist for CLAP
     let info_plist_content = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -285,6 +288,9 @@ fn create_vst3_bundle(profile: &str) -> anyhow::Result<()> {
     let dylib_dst = macos_path.join("Simply Droplets");
     fs::copy(&dylib_src, &dylib_dst)?;
     
+    // Fix dynamic library paths to make the bundle self-contained
+    fix_dylib_paths(&dylib_dst, &dylib_src)?;
+    
     // Create a basic Info.plist for VST3
     let info_plist_content = r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -336,5 +342,50 @@ fn create_vst3_bundle(profile: &str) -> anyhow::Result<()> {
     }
     
     println!("Created VST3 bundle at: {}", bundle_path.display());
+    Ok(())
+}
+
+fn fix_dylib_paths(dylib_path: &std::path::Path, original_dylib: &std::path::Path) -> anyhow::Result<()> {
+    use std::path::Path;
+    
+    // Change the install name to use @loader_path (relative to the bundle executable)
+    let new_id = format!("@loader_path/{}", dylib_path.file_name().unwrap().to_str().unwrap());
+    
+    println!("Fixing dylib install name to: {}", new_id);
+    
+    let install_name_status = Command::new("install_name_tool")
+        .args(["-id", &new_id, dylib_path.to_str().unwrap()])
+        .status();
+    
+    match install_name_status {
+        Ok(status) if status.success() => {
+            println!("Successfully updated dylib install name");
+        }
+        Ok(_) => {
+            println!("Warning: Failed to update dylib install name");
+        }
+        Err(e) => {
+            println!("Warning: install_name_tool not available: {}", e);
+        }
+    }
+    
+    // Also fix any dependencies that might point to the build directory
+    let original_path = original_dylib.to_str().unwrap();
+    let change_status = Command::new("install_name_tool")
+        .args(["-change", original_path, &new_id, dylib_path.to_str().unwrap()])
+        .status();
+    
+    match change_status {
+        Ok(status) if status.success() => {
+            println!("Successfully updated dylib dependency paths");
+        }
+        Ok(_) => {
+            // This is expected to fail if there are no matching dependencies
+        }
+        Err(e) => {
+            println!("Warning: install_name_tool not available: {}", e);
+        }
+    }
+    
     Ok(())
 }
