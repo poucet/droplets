@@ -9,7 +9,6 @@ use params::DropletParams;
 
 mod atomic;
 mod audio;
-mod droplet;
 mod gui;
 pub mod logger;
 mod params;

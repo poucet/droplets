@@ -180,18 +180,21 @@ pub struct RainCatcher {
 }
 
 impl RainCatcher {
-    pub fn new(grain_size: usize) -> Self {
+    pub fn new() -> Self {
         Self {
             input_buffer: VecDeque::new(),
-            grain_size,
+            grain_size: 1024, // Default value, will be updated dynamically
             overlap: 0.5,
             density: 10.0,
             samples_since_last: 0,
         }
     }
     
-    pub fn process_input(&mut self, input: f32, sample_rate: f32) -> Option<Droplet> {
+    pub fn process_input(&mut self, input: f32, sample_rate: f32, current_grain_size: usize) -> Option<Droplet> {
         self.input_buffer.push_back(input);
+        
+        // Update grain size if it has changed
+        self.grain_size = current_grain_size;
         
         // Keep buffer size manageable
         if self.input_buffer.len() > self.grain_size * 4 {

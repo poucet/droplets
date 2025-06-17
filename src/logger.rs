@@ -74,8 +74,8 @@ pub fn log_parameter_change(param_name: &str, value: f64) {
     info!("Parameter changed: {} = {}", param_name, value);
 }
 
-pub fn log_audio_processor_activation(sample_rate: f32, grain_size: usize) {
-    info!("Audio processor activated - sample_rate: {}, grain_size: {}", sample_rate, grain_size);
+pub fn log_audio_processor_activation(sample_rate: f32) {
+    info!("Audio processor activated - sample_rate: {}", sample_rate);
 }
 
 pub fn log_droplet_creation(count: usize, radius: f32, azimuth: f32, elevation: f32) {

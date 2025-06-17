@@ -2,8 +2,10 @@ use clack_plugin::{host::HostAudioProcessorHandle, plugin::{PluginAudioProcessor
 use clack_plugin::process::audio::ChannelPair;
 use std::collections::VecDeque;
 
-use crate::{DropletMainThread, DropletShared, droplet::{Droplet, RainCatcher, WarpCurve}};
+use crate::{DropletMainThread, DropletShared};
+use crate::audio::droplet::{Droplet, RainCatcher, WarpCurve};
 
+pub mod droplet;
 pub mod ports;
 
 pub struct DropletAudioProcessor<'a> {
@@ -18,7 +20,6 @@ pub struct DropletAudioProcessor<'a> {
     // Input delay buffer for dry signal
     dry_buffer_left: VecDeque<f32>,
     dry_buffer_right: VecDeque<f32>,
-    dry_delay_samples: usize,
 }
 
 impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
@@ -31,19 +32,17 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
         let sample_rate = audio_config.sample_rate as f32;
-        let grain_size = shared.params.get_grain_size() as usize;
         
-        crate::logger::log_audio_processor_activation(sample_rate, grain_size);
+        crate::logger::log_audio_processor_activation(sample_rate);
         
         Ok(Self { 
             shared,
             sample_rate,
-            rain_catcher_left: RainCatcher::new(grain_size),
-            rain_catcher_right: RainCatcher::new(grain_size),
+            rain_catcher_left: RainCatcher::new(),
+            rain_catcher_right: RainCatcher::new(),
             active_droplets: Vec::new(),
             dry_buffer_left: VecDeque::new(),
             dry_buffer_right: VecDeque::new(),
-            dry_delay_samples: grain_size / 2,
         })
     }
 
@@ -92,6 +91,7 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
             let time_warp = self.shared.params.get_time_warp();
             let spatial_spread = self.shared.params.get_spatial_spread();
             let dry_wet = self.shared.params.get_dry_wet();
+            let grain_size = self.shared.params.get_grain_size() as usize;
             
             // Update rain catcher parameters
             self.rain_catcher_left.density = density;
@@ -107,11 +107,12 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
                         let input_left = *left_sample;
                         let input_right = *right_sample;
                         
-                        // Store dry samples with delay compensation
+                        // Store dry samples with delay compensation (dynamic grain size)
                         self.dry_buffer_left.push_back(input_left);
                         self.dry_buffer_right.push_back(input_right);
                         
-                        while self.dry_buffer_left.len() > self.dry_delay_samples + 1 {
+                        let dynamic_dry_delay = grain_size / 2;
+                        while self.dry_buffer_left.len() > dynamic_dry_delay + 1 {
                             self.dry_buffer_left.pop_front();
                             self.dry_buffer_right.pop_front();
                         }
@@ -120,14 +121,14 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
                         let dry_right = self.dry_buffer_right.front().copied().unwrap_or(0.0);
                         
                         // Create new droplets
-                        if let Some(mut droplet) = self.rain_catcher_left.process_input(input_left, self.sample_rate) {
+                        if let Some(mut droplet) = self.rain_catcher_left.process_input(input_left, self.sample_rate, grain_size) {
                             droplet.radius *= spatial_spread;
                             droplet.warp_curve = WarpCurve::Exponential(time_warp);
                             crate::logger::log_droplet_creation(self.active_droplets.len() + 1, droplet.radius, droplet.azimuth, droplet.elevation);
                             self.active_droplets.push(droplet);
                         }
                         
-                        if let Some(mut droplet) = self.rain_catcher_right.process_input(input_right, self.sample_rate) {
+                        if let Some(mut droplet) = self.rain_catcher_right.process_input(input_right, self.sample_rate, grain_size) {
                             droplet.radius *= spatial_spread;
                             droplet.warp_curve = WarpCurve::Exponential(time_warp);
                             droplet.azimuth += std::f32::consts::PI / 4.0;
@@ -169,17 +170,18 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
                     for sample in mono_buf.iter_mut() {
                         let input = *sample;
                         
-                        // Store dry sample with delay compensation
+                        // Store dry sample with delay compensation (dynamic grain size)
                         self.dry_buffer_left.push_back(input);
                         
-                        while self.dry_buffer_left.len() > self.dry_delay_samples + 1 {
+                        let dynamic_dry_delay = grain_size / 2;
+                        while self.dry_buffer_left.len() > dynamic_dry_delay + 1 {
                             self.dry_buffer_left.pop_front();
                         }
                         
                         let dry_sample = self.dry_buffer_left.front().copied().unwrap_or(0.0);
                         
                         // Create new droplets
-                        if let Some(mut droplet) = self.rain_catcher_left.process_input(input, self.sample_rate) {
+                        if let Some(mut droplet) = self.rain_catcher_left.process_input(input, self.sample_rate, grain_size) {
                             droplet.radius *= spatial_spread;
                             droplet.warp_curve = WarpCurve::Exponential(time_warp);
                             crate::logger::log_droplet_creation(self.active_droplets.len() + 1, droplet.radius, droplet.azimuth, droplet.elevation);
