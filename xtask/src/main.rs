@@ -22,6 +22,10 @@ enum Commands {
         /// Plugin format to build
         #[arg(long, short, default_value = "both")]
         format: Format,
+        
+        /// Enable development GUI features (devtools, debugging)
+        #[arg(long)]
+        dev_gui: bool,
     },
 }
 
@@ -52,14 +56,14 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     
     match cli.command {
-        Commands::Build { profile, format } => {
+        Commands::Build { profile, format, dev_gui } => {
             let profile_str = profile.as_str();
             
             // Build the React frontend first
             build_frontend()?;
             
             // Then, build the plugin
-            build_plugin(profile_str)?;
+            build_plugin(profile_str, dev_gui)?;
             
             // Finally, create the bundle(s)
             match format {
@@ -123,7 +127,7 @@ fn build_frontend() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build_plugin(profile: &str) -> anyhow::Result<()> {
+fn build_plugin(profile: &str, dev_gui: bool) -> anyhow::Result<()> {
     println!("Building plugin...");
     
     // Determine project root - if we're in xtask directory, go up one level
@@ -140,6 +144,10 @@ fn build_plugin(profile: &str) -> anyhow::Result<()> {
     
     if profile == "release" {
         cmd.arg("--release");
+    }
+    
+    if dev_gui {
+        cmd.arg("--features").arg("dev-gui");
     }
     
     // Check for VST3 SDK environment variable

@@ -3,10 +3,12 @@ use std::collections::VecDeque;
 // Core droplet structure for granular synthesis
 #[derive(Clone)]
 pub struct Droplet {
-    // Audio data
+    // Audio data - streaming buffer
     pub samples: Vec<f32>,
-    pub position: usize,
-    pub grain_size: usize,
+    pub write_position: usize,    // Where new samples are written
+    pub read_position: f32,       // Where playback reads from (can be fractional)
+    pub grain_size: usize,        // Target size when fully filled
+    pub is_fully_filled: bool,    // Whether writing is complete
     
     // 3D positioning (spherical coordinates)
     pub radius: f32,    // Distance from center (0.0 to 1.0)
@@ -22,6 +24,7 @@ pub struct Droplet {
     pub age: usize,
     pub lifetime: usize,
     pub is_active: bool,
+    pub playback_started: bool,   // Whether playback has begun
 }
 
 // Time warp curve types
@@ -34,11 +37,13 @@ pub enum WarpCurve {
 }
 
 impl Droplet {
-    pub fn new(samples: Vec<f32>, grain_size: usize, radius: f32, azimuth: f32, elevation: f32) -> Self {
+    pub fn new(grain_size: usize, radius: f32, azimuth: f32, elevation: f32) -> Self {
         Self {
-            samples,
-            position: 0,
+            samples: Vec::with_capacity(grain_size),
+            write_position: 0,
+            read_position: 0.0,
             grain_size,
+            is_fully_filled: false,
             radius,
             azimuth, 
             elevation,
@@ -48,7 +53,37 @@ impl Droplet {
             age: 0,
             lifetime: grain_size,
             is_active: true,
+            playback_started: false,
         }
+    }
+    
+    // Add a sample to the droplet's buffer
+    pub fn write_sample(&mut self, sample: f32) -> bool {
+        if self.is_fully_filled {
+            return false;
+        }
+        
+        if self.write_position < self.grain_size {
+            if self.samples.len() <= self.write_position {
+                self.samples.push(sample);
+            } else {
+                self.samples[self.write_position] = sample;
+            }
+            self.write_position += 1;
+            
+            if self.write_position >= self.grain_size {
+                self.is_fully_filled = true;
+            }
+            true
+        } else {
+            self.is_fully_filled = true;
+            false
+        }
+    }
+    
+    // Check if droplet has enough samples to start playback
+    pub fn can_start_playback(&self) -> bool {
+        self.samples.len() >= 64 // Minimum buffer for smooth playback
     }
     
     // Process one sample from this droplet with 3D positioning
@@ -58,11 +93,19 @@ impl Droplet {
             return (0.0, 0.0);
         }
         
+        // Check if we can start/continue playback
+        if !self.playback_started {
+            if !self.can_start_playback() {
+                return (0.0, 0.0); // Not enough samples yet
+            }
+            self.playback_started = true;
+        }
+        
         // Apply time warping to position
         let warped_position = self.apply_time_warp();
         
-        // Get interpolated sample
-        let sample = self.get_interpolated_sample(warped_position);
+        // Get interpolated sample, respecting write boundary
+        let sample = self.get_interpolated_sample_bounded(warped_position);
         
         // Apply envelope (simple linear fade in/out)
         let envelope = self.calculate_envelope();
@@ -72,20 +115,30 @@ impl Droplet {
         let (left, right) = self.position_to_stereo(processed_sample);
         
         self.age += 1;
-        self.position = (self.position + 1) % self.samples.len();
+        
+        // Advance read position, respecting playback rate
+        self.read_position += self.playback_rate;
         
         (left, right)
     }
     
     fn apply_time_warp(&self) -> f32 {
         let progress = self.age as f32 / self.lifetime as f32;
+        let available_samples = self.samples.len() as f32;
+        
         match &self.warp_curve {
-            WarpCurve::Linear => progress * self.samples.len() as f32,
-            WarpCurve::Exponential(exp) => progress.powf(*exp) * self.samples.len() as f32,
-            WarpCurve::Sine => ((progress * std::f32::consts::PI / 2.0).sin()) * self.samples.len() as f32,
+            WarpCurve::Linear => self.read_position,
+            WarpCurve::Exponential(exp) => {
+                let warped_progress = progress.powf(*exp);
+                warped_progress * available_samples
+            },
+            WarpCurve::Sine => {
+                let warped_progress = (progress * std::f32::consts::PI / 2.0).sin();
+                warped_progress * available_samples
+            },
             WarpCurve::Custom(control_points) => {
                 let interpolated_value = self.interpolate_curve(progress, control_points);
-                interpolated_value * self.samples.len() as f32
+                interpolated_value * available_samples
             }
         }
     }
@@ -120,18 +173,32 @@ impl Droplet {
         left_point.1 * (1.0 - local_t) + right_point.1 * local_t
     }
     
-    fn get_interpolated_sample(&self, position: f32) -> f32 {
+    fn get_interpolated_sample_bounded(&self, position: f32) -> f32 {
         if self.samples.is_empty() {
             return 0.0;
         }
         
-        let len = self.samples.len() as f32;
-        let pos = position % len;
+        // Clamp position to written samples only
+        let max_pos = (self.write_position as f32 - 1.0).max(0.0);
+        let pos = position.min(max_pos);
+        
+        if pos < 0.0 {
+            return 0.0;
+        }
+        
         let index = pos as usize;
         let frac = pos - index as f32;
         
+        if index >= self.samples.len() {
+            return 0.0;
+        }
+        
         let sample1 = self.samples[index];
-        let sample2 = self.samples[(index + 1) % self.samples.len()];
+        let sample2 = if index + 1 < self.samples.len() {
+            self.samples[index + 1]
+        } else {
+            sample1 // No next sample available yet
+        };
         
         // Linear interpolation
         sample1 * (1.0 - frac) + sample2 * frac
@@ -177,6 +244,7 @@ pub struct RainCatcher {
     pub overlap: f32,
     pub density: f32, // droplets per second
     pub samples_since_last: usize,
+    pub active_droplets: Vec<usize>, // Indices of droplets being filled
 }
 
 impl RainCatcher {
@@ -187,9 +255,11 @@ impl RainCatcher {
             overlap: 0.5,
             density: 10.0,
             samples_since_last: 0,
+            active_droplets: Vec::new(),
         }
     }
     
+    // Process input and manage droplet creation - now returns new droplet if one should be created
     pub fn process_input(&mut self, input: f32, sample_rate: f32, current_grain_size: usize) -> Option<Droplet> {
         self.input_buffer.push_back(input);
         
@@ -205,7 +275,7 @@ impl RainCatcher {
         
         // Check if we should generate a new droplet
         let samples_per_droplet = sample_rate / self.density;
-        if self.samples_since_last as f32 >= samples_per_droplet && self.input_buffer.len() >= self.grain_size {
+        if self.samples_since_last as f32 >= samples_per_droplet {
             self.samples_since_last = 0;
             Some(self.create_droplet())
         } else {
@@ -213,16 +283,39 @@ impl RainCatcher {
         }
     }
     
-    fn create_droplet(&self) -> Droplet {
-        // Extract grain from buffer
-        let start_pos = self.input_buffer.len().saturating_sub(self.grain_size);
-        let samples: Vec<f32> = self.input_buffer.range(start_pos..).cloned().collect();
+    // Feed samples to active droplets that are still filling
+    pub fn feed_droplets(&mut self, droplets: &mut [Droplet], input: f32) {
+        // Remove completed droplets from active list
+        self.active_droplets.retain(|&index| {
+            if index < droplets.len() {
+                !droplets[index].is_fully_filled
+            } else {
+                false
+            }
+        });
         
+        // Feed input to all active droplets
+        for &index in &self.active_droplets {
+            if index < droplets.len() {
+                droplets[index].write_sample(input);
+            }
+        }
+    }
+    
+    // Register a new droplet for feeding
+    pub fn register_droplet(&mut self, droplet_index: usize) {
+        if !self.active_droplets.contains(&droplet_index) {
+            self.active_droplets.push(droplet_index);
+        }
+    }
+    
+    fn create_droplet(&self) -> Droplet {
         // Generate random 3D position
         let radius = fastrand::f32() * 0.8 + 0.2; // 0.2 to 1.0
         let azimuth = (fastrand::f32() - 0.5) * 2.0 * std::f32::consts::PI; // -π to π
         let elevation = (fastrand::f32() - 0.5) * std::f32::consts::PI; // -π/2 to π/2
         
-        Droplet::new(samples, self.grain_size, radius, azimuth, elevation)
+        // Create empty droplet that will be filled gradually
+        Droplet::new(self.grain_size, radius, azimuth, elevation)
     }
 }

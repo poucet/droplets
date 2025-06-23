@@ -38,6 +38,10 @@ simplelog = "0.12"
 rand = { version = "0.8", features = ["small_rng"] }
 fastrand = "2.0"
 
+[features]
+default = []
+dev-gui = []  # Enable GUI development tools and debugging
+
 
 [profile.release]
 lto = "thin"

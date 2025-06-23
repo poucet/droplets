@@ -261,13 +261,13 @@
             updateValueDisplay(id, numValue);
             
             // Send to plugin via IPC if available
-            if (window.ipc) {
+            if (window.simplyvst) {
                 const message = {
                     type: 'SetParameter',
                     id: id,
                     value: numValue
                 };
-                window.ipc.postMessage(JSON.stringify(message));
+                window.simplyvst.sendToPlugin(message);
             }
         }
 
@@ -322,18 +322,30 @@
 
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
+            console.log('DOM Content Loaded');
+            console.log('window.simplyvst available:', !!window.simplyvst);
+            
             setupSliders();
             
             // Set up message listener
             window.addEventListener('message', handleMessage);
             
             // Request all parameters on startup
-            if (window.ipc) {
+            if (window.simplyvst) {
+                console.log('Sending GetAllParameters');
                 const message = {
                     type: 'GetAllParameters'
                 };
-                window.ipc.postMessage(JSON.stringify(message));
+                window.simplyvst.sendToPlugin(message);
+            } else {
+                console.warn('window.simplyvst not available');
             }
+        });
+        
+        // Add debugging
+        console.log('Script loaded');
+        window.addEventListener('load', () => {
+            console.log('Window loaded');
         });
     </script>
 </body>

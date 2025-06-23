@@ -120,20 +120,28 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
                         let dry_left = self.dry_buffer_left.front().copied().unwrap_or(0.0);
                         let dry_right = self.dry_buffer_right.front().copied().unwrap_or(0.0);
                         
+                        // Feed samples to existing droplets that are still filling
+                        self.rain_catcher_left.feed_droplets(&mut self.active_droplets, input_left);
+                        self.rain_catcher_right.feed_droplets(&mut self.active_droplets, input_right);
+                        
                         // Create new droplets
                         if let Some(mut droplet) = self.rain_catcher_left.process_input(input_left, self.sample_rate, grain_size) {
                             droplet.radius *= spatial_spread;
                             droplet.warp_curve = WarpCurve::Exponential(time_warp);
-                            crate::logger::log_droplet_creation(self.active_droplets.len() + 1, droplet.radius, droplet.azimuth, droplet.elevation);
+                            let droplet_index = self.active_droplets.len();
+                            crate::logger::log_droplet_creation(droplet_index + 1, droplet.radius, droplet.azimuth, droplet.elevation);
                             self.active_droplets.push(droplet);
+                            self.rain_catcher_left.register_droplet(droplet_index);
                         }
                         
                         if let Some(mut droplet) = self.rain_catcher_right.process_input(input_right, self.sample_rate, grain_size) {
                             droplet.radius *= spatial_spread;
                             droplet.warp_curve = WarpCurve::Exponential(time_warp);
                             droplet.azimuth += std::f32::consts::PI / 4.0;
-                            crate::logger::log_droplet_creation(self.active_droplets.len() + 1, droplet.radius, droplet.azimuth, droplet.elevation);
+                            let droplet_index = self.active_droplets.len();
+                            crate::logger::log_droplet_creation(droplet_index + 1, droplet.radius, droplet.azimuth, droplet.elevation);
                             self.active_droplets.push(droplet);
+                            self.rain_catcher_right.register_droplet(droplet_index);
                         }
                         
                         // Process active droplets
@@ -180,12 +188,17 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
                         
                         let dry_sample = self.dry_buffer_left.front().copied().unwrap_or(0.0);
                         
+                        // Feed samples to existing droplets that are still filling
+                        self.rain_catcher_left.feed_droplets(&mut self.active_droplets, input);
+                        
                         // Create new droplets
                         if let Some(mut droplet) = self.rain_catcher_left.process_input(input, self.sample_rate, grain_size) {
                             droplet.radius *= spatial_spread;
                             droplet.warp_curve = WarpCurve::Exponential(time_warp);
-                            crate::logger::log_droplet_creation(self.active_droplets.len() + 1, droplet.radius, droplet.azimuth, droplet.elevation);
+                            let droplet_index = self.active_droplets.len();
+                            crate::logger::log_droplet_creation(droplet_index + 1, droplet.radius, droplet.azimuth, droplet.elevation);
                             self.active_droplets.push(droplet);
+                            self.rain_catcher_left.register_droplet(droplet_index);
                         }
                         
                         // Process active droplets

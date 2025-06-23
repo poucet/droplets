@@ -144,46 +144,55 @@ impl<'a> PluginGuiImpl for DropletMainThread<'a> {
         };
 
 
-        self.gui.web_view = Some(
-            WebViewBuilder::new()
-                // Load HTML from simplified GUI file
-                .with_html(include_str!("../../gui.html"))
-                .with_devtools(cfg!(debug_assertions))
-                .with_bounds(Rect {
-                    position: Position::Physical(PhysicalPosition::new(0, 0)),
-                    size: self.gui.size.to_webview_size(self.gui.scale_factor),
-                })
-                // Handle IPC messages from the web view
-                .with_initialization_script(include_str!("script.js"))
-                .with_ipc_handler({
-                    let sender = self.shared.ipc_sender.clone();
-                    move |request: wry::http::Request<String>| {
-                        let message = request.body();
-                        crate::logger::log_ipc_message_received(message);
-                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(message) {
-                            crate::logger::log_ipc_message_parsed(&parsed);
-                            if let Err(e) = sender.send(parsed) {
-                                crate::logger::log_ipc_send_error(&e.to_string());
-                            }
-                        } else {
-                            crate::logger::log_ipc_parse_error(message);
+        crate::logger::log_gui_event("webview_building", "Starting WebView creation");
+        
+        match WebViewBuilder::new()
+            // Load HTML from simplified GUI file
+            .with_html(include_str!("../../gui.html"))
+            .with_devtools(cfg!(debug_assertions) || cfg!(feature = "dev-gui"))
+            .with_bounds(Rect {
+                position: Position::Physical(PhysicalPosition::new(0, 0)),
+                size: self.gui.size.to_webview_size(self.gui.scale_factor),
+            })
+            // Handle IPC messages from the web view
+            .with_initialization_script(include_str!("script.js"))
+            .with_ipc_handler({
+                let sender = self.shared.ipc_sender.clone();
+                move |request: wry::http::Request<String>| {
+                    let message = request.body();
+                    crate::logger::log_ipc_message_received(message);
+                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(message) {
+                        crate::logger::log_ipc_message_parsed(&parsed);
+                        if let Err(e) = sender.send(parsed) {
+                            crate::logger::log_ipc_send_error(&e.to_string());
                         }
-                    }
-                })
-                .with_navigation_handler(|url| {
-                    if url.starts_with("http") {
-                        if let Err(e) = open::that(url) {
-                            crate::logger::log_error(&format!("Failed to open URL: {}", e));
-                        }
-                        false
                     } else {
-                        true
+                        crate::logger::log_ipc_parse_error(message);
                     }
-                })
-                .build_as_child(&parent_handle)?,
-        );
+                }
+            })
+            .with_navigation_handler(|url| {
+                crate::logger::log_gui_event("navigation", &format!("Navigation to: {}", url));
+                if url.starts_with("http") {
+                    if let Err(e) = open::that(url) {
+                        crate::logger::log_error(&format!("Failed to open URL: {}", e));
+                    }
+                    false
+                } else {
+                    true
+                }
+            })
+            .build_as_child(&parent_handle) {
+                Ok(webview) => {
+                    crate::logger::log_gui_event("webview_created", "WebView created successfully");
+                    self.gui.web_view = Some(webview);
+                },
+                Err(e) => {
+                    crate::logger::log_error(&format!("Failed to create WebView: {}", e));
+                    return Err(PluginError::Message("Failed to create WebView"));
+                }
+            }
 
-        crate::logger::log_gui_event("webview_created", "WebView created successfully");
         Ok(())
     }
 

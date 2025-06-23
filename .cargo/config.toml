@@ -14,3 +14,5 @@ bundle-vst3-release = "run --package xtask -- build --profile release --format v
 # Quick development aliases
 dev = "build"
 dev-release = "build --release"
+bundle-dev-gui = "run --package xtask -- build --dev-gui"
+bundle-dev-gui-debug = "run --package xtask -- build --profile debug --dev-gui"
