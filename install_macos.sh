@@ -60,8 +60,8 @@ fi
 echo "🦀 Running cargo clean..."
 cargo clean
 
-echo "📦 Building and bundling plugin (embedded GUI)..."
-cargo bundle
+echo "📦 Building and bundling plugin (embedded GUI with dev tools)..."
+cargo bundle-dev-gui
 
 echo "🔍 Checking for plugin files..."
 
@@ -147,6 +147,7 @@ echo "• Verify plugin architecture matches your Ableton Live (Intel/Apple Sili
 echo ""
 echo -e "${YELLOW}⚠️  Note about UI:${NC}"
 echo "The plugin UI is embedded directly in the plugin using WebView with native HTML/CSS/JS."
+echo "This development build includes devtools - right-click in the plugin UI and select 'Inspect Element' to debug."
 echo "If you experience any UI issues, try restarting your DAW completely."
 echo ""
 echo -e "${BLUE}💡 Plugin Framework:${NC}"
