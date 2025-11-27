@@ -38,6 +38,15 @@ simplelog = "0.12"
 rand = { version = "0.8", features = ["small_rng"] }
 fastrand = "2.0"
 
+# MCP server for AI control
+rmcp = { version = "0.1", features = ["server", "transport-sse-server"] }
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros"] }
+tokio-util = "0.7"
+
+# Lock-free ring buffer for audio thread communication
+rtrb = "0.3"
+
 [features]
 default = []
 dev-gui = []  # Enable GUI development tools and debugging

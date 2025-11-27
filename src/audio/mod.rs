@@ -1,25 +1,23 @@
-use clack_plugin::{host::HostAudioProcessorHandle, plugin::{PluginAudioProcessor, PluginError}, process::{Audio, Events, PluginAudioConfiguration, Process, ProcessStatus}};
-use clack_plugin::process::audio::ChannelPair;
-use std::collections::VecDeque;
+//! Audio processor for Simply Droplets
+//!
+//! This is a pass-through audio processor that outputs MIDI CC from the MCP server.
+//! The plugin acts as an AI-to-MIDI-CC bridge.
 
+use clack_plugin::events::event_types::MidiEvent;
+use clack_plugin::host::HostAudioProcessorHandle;
+use clack_plugin::plugin::{PluginAudioProcessor, PluginError};
+use clack_plugin::process::{Audio, Events, PluginAudioConfiguration, Process, ProcessStatus};
+use rtrb::Consumer;
+
+use crate::mcp::CcMessage;
 use crate::{DropletMainThread, DropletShared};
-use crate::audio::droplet::{Droplet, RainCatcher, WarpCurve};
 
-pub mod droplet;
 pub mod ports;
 
 pub struct DropletAudioProcessor<'a> {
     shared: &'a DropletShared<'a>,
-    sample_rate: f32,
-    
-    // Droplet processing components
-    rain_catcher_left: RainCatcher,
-    rain_catcher_right: RainCatcher,
-    active_droplets: Vec<Droplet>,
-    
-    // Input delay buffer for dry signal
-    dry_buffer_left: VecDeque<f32>,
-    dry_buffer_right: VecDeque<f32>,
+    /// CC consumer - receives CC messages from the MCP server
+    cc_consumer: Consumer<CcMessage>,
 }
 
 impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
@@ -32,201 +30,42 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
         let sample_rate = audio_config.sample_rate as f32;
-        
         crate::logger::log_audio_processor_activation(sample_rate);
-        
-        Ok(Self { 
-            shared,
-            sample_rate,
-            rain_catcher_left: RainCatcher::new(),
-            rain_catcher_right: RainCatcher::new(),
-            active_droplets: Vec::new(),
-            dry_buffer_left: VecDeque::new(),
-            dry_buffer_right: VecDeque::new(),
-        })
+
+        // Take ownership of the CC consumer from shared state
+        let cc_consumer = shared
+            .cc_consumer
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or(PluginError::Message("CC consumer already taken"))?;
+
+        Ok(Self { shared, cc_consumer })
     }
 
     fn process(
         &mut self,
         _process: Process,
-        mut audio: Audio,
-        events: Events,
+        _audio: Audio,
+        mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
+        // Request main thread callback for GUI updates
         self.shared.host.request_callback();
 
-        // Get the first port pair for stereo I/O
-        let mut port_pair = audio
-            .port_pair(0)
-            .ok_or(PluginError::Message("No input/output ports found"))?;
+        // Output MIDI CC from MCP server (lock-free read from ring buffer)
+        while let Ok(cc) = self.cc_consumer.pop() {
+            // MIDI CC status byte: 0xB0 + channel (0-15)
+            let status = 0xB0 | (cc.channel & 0x0F);
+            let midi_data = [status, cc.cc, cc.value];
 
-        let mut output_channels = port_pair
-            .channels()?
-            .into_f32()
-            .ok_or(PluginError::Message("Expected f32 input/output"))?;
-
-        let mut channel_buffers = [None, None];
-
-        // Extract buffer slices
-        for (pair, buf) in output_channels.iter_mut().zip(&mut channel_buffers) {
-            *buf = match pair {
-                ChannelPair::InputOnly(_) => None,
-                ChannelPair::OutputOnly(_) => None,
-                ChannelPair::InPlace(b) => Some(b),
-                ChannelPair::InputOutput(i, o) => {
-                    o.copy_from_slice(i);
-                    Some(o)
-                }
+            // Output on note port 0, at sample time 0
+            let midi_event = MidiEvent::new(0, 0, midi_data);
+            if let Err(e) = events.output.try_push(&midi_event) {
+                log::warn!("Failed to push MIDI CC event: {:?}", e);
             }
         }
 
-        // Process parameter events
-        for event_batch in events.input.batch() {
-            for event in event_batch.events() {
-                self.shared.params.handle_event(event)
-            }
-
-            // Get parameter values after processing events
-            let gain = self.shared.params.get_gain();
-            let density = self.shared.params.get_density();
-            let time_warp = self.shared.params.get_time_warp();
-            let spatial_spread = self.shared.params.get_spatial_spread();
-            let dry_wet = self.shared.params.get_dry_wet();
-            let grain_size = self.shared.params.get_grain_size() as usize;
-            
-            // Update rain catcher parameters
-            self.rain_catcher_left.density = density;
-            self.rain_catcher_right.density = density;
-
-            // Process audio samples
-            let channel_0 = channel_buffers[0].take();
-            let channel_1 = channel_buffers[1].take();
-            match (channel_0, channel_1) {
-                (Some(left_buf), Some(right_buf)) => {
-                    // Stereo processing
-                    for (left_sample, right_sample) in left_buf.iter_mut().zip(right_buf.iter_mut()) {
-                        let input_left = *left_sample;
-                        let input_right = *right_sample;
-                        
-                        // Store dry samples with delay compensation (dynamic grain size)
-                        self.dry_buffer_left.push_back(input_left);
-                        self.dry_buffer_right.push_back(input_right);
-                        
-                        let dynamic_dry_delay = grain_size / 2;
-                        while self.dry_buffer_left.len() > dynamic_dry_delay + 1 {
-                            self.dry_buffer_left.pop_front();
-                            self.dry_buffer_right.pop_front();
-                        }
-                        
-                        let dry_left = self.dry_buffer_left.front().copied().unwrap_or(0.0);
-                        let dry_right = self.dry_buffer_right.front().copied().unwrap_or(0.0);
-                        
-                        // Feed samples to existing droplets that are still filling
-                        self.rain_catcher_left.feed_droplets(&mut self.active_droplets, input_left);
-                        self.rain_catcher_right.feed_droplets(&mut self.active_droplets, input_right);
-                        
-                        // Create new droplets
-                        if let Some(mut droplet) = self.rain_catcher_left.process_input(input_left, self.sample_rate, grain_size) {
-                            droplet.radius *= spatial_spread;
-                            droplet.warp_curve = WarpCurve::Exponential(time_warp);
-                            let droplet_index = self.active_droplets.len();
-                            crate::logger::log_droplet_creation(droplet_index + 1, droplet.radius, droplet.azimuth, droplet.elevation);
-                            self.active_droplets.push(droplet);
-                            self.rain_catcher_left.register_droplet(droplet_index);
-                        }
-                        
-                        if let Some(mut droplet) = self.rain_catcher_right.process_input(input_right, self.sample_rate, grain_size) {
-                            droplet.radius *= spatial_spread;
-                            droplet.warp_curve = WarpCurve::Exponential(time_warp);
-                            droplet.azimuth += std::f32::consts::PI / 4.0;
-                            let droplet_index = self.active_droplets.len();
-                            crate::logger::log_droplet_creation(droplet_index + 1, droplet.radius, droplet.azimuth, droplet.elevation);
-                            self.active_droplets.push(droplet);
-                            self.rain_catcher_right.register_droplet(droplet_index);
-                        }
-                        
-                        // Process active droplets
-                        let mut wet_left = 0.0;
-                        let mut wet_right = 0.0;
-                        let initial_droplet_count = self.active_droplets.len();
-                        
-                        self.active_droplets.retain_mut(|droplet| {
-                            if droplet.is_active {
-                                let (left, right) = droplet.process_sample();
-                                wet_left += left;
-                                wet_right += right;
-                                droplet.is_active
-                            } else {
-                                false
-                            }
-                        });
-                        
-                        if initial_droplet_count != self.active_droplets.len() {
-                            crate::logger::log_active_droplets_count(self.active_droplets.len());
-                        }
-                        
-                        // Mix dry and wet signals
-                        let mixed_left = dry_left * (1.0 - dry_wet) + wet_left * dry_wet;
-                        let mixed_right = dry_right * (1.0 - dry_wet) + wet_right * dry_wet;
-                        
-                        // Apply gain
-                        *left_sample = mixed_left * gain;
-                        *right_sample = mixed_right * gain;
-                    }
-                }
-                (Some(mono_buf), None) => {
-                    // Mono processing
-                    for sample in mono_buf.iter_mut() {
-                        let input = *sample;
-                        
-                        // Store dry sample with delay compensation (dynamic grain size)
-                        self.dry_buffer_left.push_back(input);
-                        
-                        let dynamic_dry_delay = grain_size / 2;
-                        while self.dry_buffer_left.len() > dynamic_dry_delay + 1 {
-                            self.dry_buffer_left.pop_front();
-                        }
-                        
-                        let dry_sample = self.dry_buffer_left.front().copied().unwrap_or(0.0);
-                        
-                        // Feed samples to existing droplets that are still filling
-                        self.rain_catcher_left.feed_droplets(&mut self.active_droplets, input);
-                        
-                        // Create new droplets
-                        if let Some(mut droplet) = self.rain_catcher_left.process_input(input, self.sample_rate, grain_size) {
-                            droplet.radius *= spatial_spread;
-                            droplet.warp_curve = WarpCurve::Exponential(time_warp);
-                            let droplet_index = self.active_droplets.len();
-                            crate::logger::log_droplet_creation(droplet_index + 1, droplet.radius, droplet.azimuth, droplet.elevation);
-                            self.active_droplets.push(droplet);
-                            self.rain_catcher_left.register_droplet(droplet_index);
-                        }
-                        
-                        // Process active droplets
-                        let mut wet_sample = 0.0;
-                        
-                        self.active_droplets.retain_mut(|droplet| {
-                            if droplet.is_active {
-                                let (left, right) = droplet.process_sample();
-                                wet_sample += (left + right) * 0.5; // Mix to mono
-                                droplet.is_active
-                            } else {
-                                false
-                            }
-                        });
-                        
-                        // Mix dry and wet signals
-                        let mixed = dry_sample * (1.0 - dry_wet) + wet_sample * dry_wet;
-                        
-                        // Apply gain
-                        *sample = mixed * gain;
-                    }
-                }
-                _ => {
-                    // No valid channels
-                }
-            }
-        }
-
-        Ok(ProcessStatus::ContinueIfNotQuiet)   
+        // Pass through audio unchanged (this plugin is just a MIDI CC bridge)
+        Ok(ProcessStatus::ContinueIfNotQuiet)
     }
 }

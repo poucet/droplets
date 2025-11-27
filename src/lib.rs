@@ -1,21 +1,19 @@
-use clack_extensions::{audio_ports::*, gui::*};
+use clack_extensions::{audio_ports::*, gui::*, note_ports::*};
 use clack_plugin::prelude::*;
 use clack_plugin::plugin::features::*;
 use crossbeam::channel::{Receiver, Sender};
+use rtrb::Consumer;
 
 use audio::DropletAudioProcessor;
 use gui::DropletGui;
-use params::DropletParams;
+use mcp::{CcBridge, CcMessage};
 
-mod atomic;
 mod audio;
 mod gui;
 pub mod logger;
-mod params;
-
+pub mod mcp;
 
 pub struct DropletPlugin;
-
 
 impl Plugin for DropletPlugin {
     type AudioProcessor<'a> = DropletAudioProcessor<'a>;
@@ -25,6 +23,7 @@ impl Plugin for DropletPlugin {
     fn declare_extensions(builder: &mut PluginExtensions<Self>, _shared: Option<&Self::Shared<'_>>) {
         builder
             .register::<PluginAudioPorts>()
+            .register::<PluginNotePorts>()
             .register::<PluginGui>();
     }
 }
@@ -39,15 +38,25 @@ impl DefaultPluginFactory for DropletPlugin {
     fn new_shared(host: HostSharedHandle) -> Result<Self::Shared<'_>, PluginError> {
         logger::init_logger();
         logger::log_plugin_initialization("Droplets", "Creating shared instance");
-        
+
+        // GUI IPC channel
         let (sender, receiver) = crossbeam::channel::unbounded();
         logger::log_ipc_channel_created();
-        
+
+        // Generate unique instance ID and register with CcBridge
+        let instance_id = format!("droplets-{:08x}", fastrand::u32(..));
+        let cc_consumer = CcBridge::register(&instance_id);
+        log::info!("Registered MCP instance: {}", instance_id);
+
+        // Start singleton MCP server (only first instance actually starts it)
+        mcp::start_server(mcp::DEFAULT_MCP_PORT);
+
         Ok(DropletShared {
-            params: DropletParams::new(),
             host,
             ipc_sender: sender,
             ipc_receiver: receiver,
+            instance_id,
+            cc_consumer: std::sync::Mutex::new(Some(cc_consumer)),
         })
     }
 
@@ -56,22 +65,31 @@ impl DefaultPluginFactory for DropletPlugin {
         shared: &'a Self::Shared<'a>,
     ) -> Result<Self::MainThread<'a>, PluginError> {
         logger::log_plugin_initialization("Droplets", "Creating main thread instance");
-        
+
         Ok(Self::MainThread {
             shared,
-            gui: DropletGui::new(),  
+            gui: DropletGui::new(),
         })
     }
 }
 
 pub struct DropletShared<'a> {
-    pub params: DropletParams,
     pub host: HostSharedHandle<'a>,
     pub ipc_sender: Sender<serde_json::Value>,
     pub ipc_receiver: Receiver<serde_json::Value>,
+    pub instance_id: String,
+    /// CC consumer - taken by audio processor during activation
+    pub cc_consumer: std::sync::Mutex<Option<Consumer<CcMessage>>>,
 }
 
 impl<'a> PluginShared<'a> for DropletShared<'a> {}
+
+impl Drop for DropletShared<'_> {
+    fn drop(&mut self) {
+        CcBridge::unregister(&self.instance_id);
+        log::info!("Unregistered MCP instance: {}", self.instance_id);
+    }
+}
 
 pub struct DropletMainThread<'a> {
     shared: &'a DropletShared<'a>,
@@ -81,20 +99,36 @@ pub struct DropletMainThread<'a> {
 impl<'a> PluginMainThread<'a, DropletShared<'a>> for DropletMainThread<'a> {
     fn on_main_thread(&mut self) {
         crate::logger::log_main_thread_tick();
-        
+
         // Process IPC messages from the GUI
         let mut message_count = 0;
         while let Ok(message) = self.shared.ipc_receiver.try_recv() {
             message_count += 1;
             crate::logger::log_ipc_message_processing(message_count, &message);
-            
-            if let Some(response) = self.shared.params.handle_ipc_message(&message) {
-                if let Err(e) = self.gui.send_json(response) {
-                    crate::logger::log_error(&format!("Failed to send GUI response: {}", e));
+
+            // Handle GUI messages (e.g., request for activity data)
+            if let Some(msg_type) = message.get("type").and_then(|v| v.as_str()) {
+                if msg_type == "get_activity" {
+                    let activity = CcBridge::recent_activity();
+                    let response = serde_json::json!({
+                        "type": "activity",
+                        "data": activity.iter().map(|e| {
+                            serde_json::json!({
+                                "timestamp": e.timestamp_ms,
+                                "instance": e.instance,
+                                "channel": e.channel + 1,
+                                "cc": e.cc,
+                                "value": e.value
+                            })
+                        }).collect::<Vec<_>>()
+                    });
+                    if let Err(e) = self.gui.send_json(response) {
+                        crate::logger::log_error(&format!("Failed to send activity: {}", e));
+                    }
                 }
             }
         }
-        
+
         crate::logger::log_ipc_messages_processed(message_count);
     }
 }

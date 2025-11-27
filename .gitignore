@@ -6,3 +6,5 @@ Cargo.lock
 /frontend/dist/
 .DS_Store
 /frontend/node_modules/
+.jj-worskpaces
+/frontend/package-lock.json
