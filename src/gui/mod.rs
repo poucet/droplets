@@ -1,10 +1,12 @@
 use std::num::{NonZeroIsize, NonZeroU32};
 use std::ptr::NonNull;
+use std::sync::Arc;
 
 use clack_extensions::gui::*;
 use clack_plugin::prelude::*;
 use wry::{Rect, WebViewBuilder};
 use wry::dpi::{LogicalSize, PhysicalPosition, Position};
+use wry::http::{Response, header::CONTENT_TYPE};
 use wry::raw_window_handle::{
     AppKitWindowHandle, WindowHandle, RawWindowHandle, Win32WindowHandle, XcbWindowHandle,
 };
@@ -33,19 +35,6 @@ impl DropletGui {
             web_view: None,
         }
     }
-
-    pub fn send_json(&mut self, message: serde_json::Value) -> Result<(), PluginError> {
-        if let Some(web_view) = &mut self.web_view {
-            let json_string = serde_json::to_string(&message)
-                .map_err(|_e| PluginError::Message("Failed to serialize GUI message"))?;
-            let script = format!("window.postMessage({}, '*');", json_string);
-            web_view.evaluate_script(&script)?;
-            Ok(())
-        } else {
-            Err(PluginError::Message("WebView not initialized"))
-        }
-    }
-
 }
 
 /// Implements the CLAP GUI extension
@@ -174,35 +163,88 @@ impl<'a> PluginGuiImpl for DropletMainThread<'a> {
         #[cfg(not(any(debug_assertions, feature = "dev-gui")))]
         let webview_builder = webview_builder.with_html(include_str!("../../frontend/dist/index.html"));
 
+        // Custom protocol handler for API requests (synchronous request/response)
+        let params_for_protocol = Arc::clone(&self.shared.params);
+
         match webview_builder
             .with_devtools(cfg!(debug_assertions) || cfg!(feature = "dev-gui"))
             .with_bounds(Rect {
                 position: Position::Physical(PhysicalPosition::new(0, 0)),
                 size: self.gui.size.to_webview_size(self.gui.scale_factor),
             })
-            // Handle IPC messages from the web view
             .with_initialization_script(include_str!("script.js"))
+            // Custom protocol for API requests - frontend fetches droplets://api/slots etc.
+            .with_asynchronous_custom_protocol("droplets".to_string(), move |_webview_id, request, responder| {
+                let params = Arc::clone(&params_for_protocol);
+                let uri = request.uri();
+                let path = uri.path();
+                crate::logger::log_gui_event("api_request", &format!("uri={} path={:?} host={:?}", uri, path, uri.host()));
+
+                // URL droplets://api/slots has host="api" and path="/slots"
+                let response_body = match path {
+                    "/slots" => {
+                        let slots = params.get_all_slots();
+                        let json = serde_json::json!({
+                            "type": "slots",
+                            "data": slots
+                        });
+                        let result = serde_json::to_string(&json).unwrap_or_else(|_| r#"{"error":"serialize failed"}"#.to_string());
+                        crate::logger::log_gui_event("slots_response", &format!("{} slots, len={}", slots.len(), result.len()));
+                        result
+                    }
+                    "/activity" => {
+                        let activity = crate::mcp::CcBridge::recent_activity();
+                        serde_json::to_string(&serde_json::json!({
+                            "type": "activity",
+                            "data": activity.iter().map(|e| {
+                                serde_json::json!({
+                                    "timestamp": e.timestamp_ms,
+                                    "instance": e.instance,
+                                    "channel": e.channel + 1,
+                                    "cc": e.cc,
+                                    "value": e.value
+                                })
+                            }).collect::<Vec<_>>()
+                        })).unwrap_or_else(|_| r#"{"error":"serialize failed"}"#.to_string())
+                    }
+                    path if path.starts_with("/start_learn/") => {
+                        if let Some(slot_str) = path.strip_prefix("/start_learn/") {
+                            if let Ok(slot) = slot_str.parse::<usize>() {
+                                params.start_learning(slot);
+                                crate::logger::log_gui_event("learn_started", &format!("Slot {}", slot));
+                                r#"{"ok":true}"#.to_string()
+                            } else {
+                                r#"{"error":"invalid slot"}"#.to_string()
+                            }
+                        } else {
+                            r#"{"error":"missing slot"}"#.to_string()
+                        }
+                    }
+                    "/cancel_learn" => {
+                        params.cancel_learning();
+                        crate::logger::log_gui_event("learn_cancelled", "All slots");
+                        r#"{"ok":true}"#.to_string()
+                    }
+                    _ => r#"{"error":"not found"}"#.to_string()
+                };
+
+                let response = Response::builder()
+                    .header(CONTENT_TYPE, "application/json")
+                    .header("Access-Control-Allow-Origin", "*")
+                    .body(response_body.into_bytes())
+                    .unwrap();
+                responder.respond(response);
+            })
+            // Keep IPC handler for any other messages (like navigation commands)
             .with_ipc_handler({
                 let sender = self.shared.ipc_sender.clone();
                 move |request: wry::http::Request<String>| {
-                    // Use a separate thread to handle IPC to avoid blocking WebKit
                     let sender = sender.clone();
                     let message = request.body().clone();
                     std::thread::spawn(move || {
-                        // Catch any panics to prevent crashing the host
-                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            crate::logger::log_ipc_message_received(&message);
-                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&message) {
-                                crate::logger::log_ipc_message_parsed(&parsed);
-                                if let Err(e) = sender.send(parsed) {
-                                    crate::logger::log_ipc_send_error(&e.to_string());
-                                }
-                            } else {
-                                crate::logger::log_ipc_parse_error(&message);
-                            }
-                        }));
-                        if let Err(e) = result {
-                            crate::logger::log_error(&format!("IPC handler panic: {:?}", e));
+                        crate::logger::log_ipc_message_received(&message);
+                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&message) {
+                            let _ = sender.send(parsed);
                         }
                     });
                 }

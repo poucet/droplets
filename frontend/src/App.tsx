@@ -4,7 +4,10 @@ import './App.css';
 interface SlotInfo {
   index: number;
   name: string;
+  cc: number | null;
+  channel: number;
   value: number;
+  learning: boolean;
 }
 
 interface ActivityEvent {
@@ -15,65 +18,74 @@ interface ActivityEvent {
   value: number;
 }
 
-interface IpcMessage {
-  type: string;
-  data?: SlotInfo[] | ActivityEvent[];
-}
-
-declare global {
-  interface Window {
-    ipc: {
-      postMessage: (message: string) => void;
-    };
-  }
-}
-
 const App: React.FC = () => {
   const [slots, setSlots] = useState<SlotInfo[]>([]);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
-  const [serverStatus, setServerStatus] = useState<'connecting' | 'connected' | 'offline'>('connecting');
+  const [serverStatus, setServerStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
 
-  const requestData = useCallback(() => {
-    if (window.ipc) {
-      window.ipc.postMessage(JSON.stringify({ type: 'get_slots' }));
-      window.ipc.postMessage(JSON.stringify({ type: 'get_activity' }));
+  const fetchSlots = useCallback(async () => {
+    try {
+      // Custom protocol: droplets://api/slots -> host="api", path="/slots"
+      const response = await fetch('droplets://api/slots');
+      const text = await response.text();
+      console.log('Slots response:', text);
+      const data = JSON.parse(text);
+      if (data.type === 'slots' && data.data) {
+        setSlots(data.data);
+        setServerStatus('connected');
+      } else if (data.error) {
+        console.error('Slots error:', data.error);
+        setServerStatus('error');
+      }
+    } catch (e) {
+      console.error('Failed to fetch slots:', e);
+      setServerStatus('error');
     }
   }, []);
 
-  useEffect(() => {
-    const handleMessage = (event: MessageEvent) => {
-      try {
-        const message: IpcMessage = JSON.parse(event.data);
-        if (message.type === 'slots' && message.data) {
-          setSlots(message.data as SlotInfo[]);
-          setServerStatus('connected');
-        } else if (message.type === 'activity' && message.data) {
-          setActivity(message.data as ActivityEvent[]);
-          setServerStatus('connected');
-        }
-      } catch (e) {
-        console.error('Failed to parse IPC message:', e);
+  const fetchActivity = useCallback(async () => {
+    try {
+      const response = await fetch('droplets://api/activity');
+      const data = await response.json();
+      if (data.type === 'activity' && data.data) {
+        setActivity(data.data);
       }
-    };
+    } catch (e) {
+      console.error('Failed to fetch activity:', e);
+    }
+  }, []);
 
-    window.addEventListener('message', handleMessage);
+  const startLearn = useCallback(async (slot: number) => {
+    try {
+      await fetch(`droplets://api/start_learn/${slot}`);
+      fetchSlots(); // Refresh to show learning state
+    } catch (e) {
+      console.error('Failed to start learn:', e);
+    }
+  }, [fetchSlots]);
+
+  const cancelLearn = useCallback(async () => {
+    try {
+      await fetch('droplets://api/cancel_learn');
+      fetchSlots();
+    } catch (e) {
+      console.error('Failed to cancel learn:', e);
+    }
+  }, [fetchSlots]);
+
+  useEffect(() => {
+    // Initial fetch
+    fetchSlots();
+    fetchActivity();
 
     // Poll for updates
-    const interval = setInterval(requestData, 500);
-    requestData();
+    const interval = setInterval(() => {
+      fetchSlots();
+      fetchActivity();
+    }, 500);
 
-    // Set connected after initial request
-    setTimeout(() => {
-      if (serverStatus === 'connecting') {
-        setServerStatus('connected');
-      }
-    }, 1000);
-
-    return () => {
-      window.removeEventListener('message', handleMessage);
-      clearInterval(interval);
-    };
-  }, [requestData, serverStatus]);
+    return () => clearInterval(interval);
+  }, [fetchSlots, fetchActivity]);
 
   const formatTimestamp = (ts: number) => {
     const date = new Date(ts);
@@ -101,6 +113,12 @@ const App: React.FC = () => {
       <main className="app-main">
         <section className="slots-section">
           <h2>Parameter Slots</h2>
+          {slots.some(s => s.learning) && (
+            <div className="learning-banner">
+              <span>Waiting for MIDI CC input...</span>
+              <button onClick={cancelLearn} className="cancel-learn-btn">Cancel</button>
+            </div>
+          )}
           <div className="slots-list">
             {slots.length === 0 ? (
               <div className="no-slots">
@@ -108,9 +126,16 @@ const App: React.FC = () => {
               </div>
             ) : (
               slots.map((slot) => (
-                <div key={slot.index} className="slot-item">
+                <div key={slot.index} className={`slot-item ${slot.learning ? 'learning' : ''}`}>
                   <span className="slot-index">{slot.index}</span>
                   <span className="slot-name">{slot.name}</span>
+                  <div className="slot-cc">
+                    {slot.cc !== null ? (
+                      <span className="cc-mapped">CC{slot.cc} Ch{slot.channel + 1}</span>
+                    ) : (
+                      <span className="cc-unmapped">unmapped</span>
+                    )}
+                  </div>
                   <div className="slot-bar-container">
                     <div
                       className="slot-bar"
@@ -118,13 +143,20 @@ const App: React.FC = () => {
                     />
                   </div>
                   <span className="slot-value">{Math.round(slot.value * 100)}%</span>
+                  <button
+                    onClick={() => startLearn(slot.index)}
+                    className={`map-btn ${slot.learning ? 'learning' : ''}`}
+                    disabled={slot.learning}
+                  >
+                    {slot.learning ? 'Learning...' : 'Map'}
+                  </button>
                 </div>
               ))
             )}
           </div>
           <div className="slots-hint">
-            <p>Map these slots to other plugin parameters using DAW modulation</p>
-            <p>AI can rename slots via <code>rename_slot</code> tool</p>
+            <p>Click "Map" then send MIDI CC from your controller to assign it to a slot</p>
+            <p>AI can set values via <code>set_param</code> - outputs the mapped CC</p>
           </div>
         </section>
 

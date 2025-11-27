@@ -4,6 +4,7 @@ use clack_plugin::plugin::features::*;
 use crossbeam::channel::{Receiver, Sender};
 use rtrb::Consumer;
 use std::sync::Arc;
+use std::sync::Mutex;
 
 use audio::DropletAudioProcessor;
 use gui::DropletGui;
@@ -63,7 +64,7 @@ impl DefaultPluginFactory for DropletPlugin {
             ipc_sender: sender,
             ipc_receiver: receiver,
             instance_id,
-            cc_consumer: std::sync::Mutex::new(Some(cc_consumer)),
+            cc_consumer: Mutex::new(Some(cc_consumer)),
         })
     }
 
@@ -87,7 +88,7 @@ pub struct DropletShared<'a> {
     pub ipc_receiver: Receiver<serde_json::Value>,
     pub instance_id: String,
     /// CC consumer - taken by audio processor during activation
-    pub cc_consumer: std::sync::Mutex<Option<Consumer<CcMessage>>>,
+    pub cc_consumer: Mutex<Option<Consumer<CcMessage>>>,
 }
 
 impl<'a> PluginShared<'a> for DropletShared<'a> {}
@@ -106,51 +107,11 @@ pub struct DropletMainThread<'a> {
 
 impl<'a> PluginMainThread<'a, DropletShared<'a>> for DropletMainThread<'a> {
     fn on_main_thread(&mut self) {
-        crate::logger::log_main_thread_tick();
+        // IPC is now handled via custom protocol in gui/mod.rs
+        // This callback can be used for any future main-thread-only operations
 
-        // Process IPC messages from the GUI
-        let mut message_count = 0;
-        while let Ok(message) = self.shared.ipc_receiver.try_recv() {
-            message_count += 1;
-            crate::logger::log_ipc_message_processing(message_count, &message);
-
-            // Handle GUI messages
-            if let Some(msg_type) = message.get("type").and_then(|v| v.as_str()) {
-                match msg_type {
-                    "get_activity" => {
-                        let activity = CcBridge::recent_activity();
-                        let response = serde_json::json!({
-                            "type": "activity",
-                            "data": activity.iter().map(|e| {
-                                serde_json::json!({
-                                    "timestamp": e.timestamp_ms,
-                                    "instance": e.instance,
-                                    "channel": e.channel + 1,
-                                    "cc": e.cc,
-                                    "value": e.value
-                                })
-                            }).collect::<Vec<_>>()
-                        });
-                        if let Err(e) = self.gui.send_json(response) {
-                            crate::logger::log_error(&format!("Failed to send activity: {}", e));
-                        }
-                    }
-                    "get_slots" => {
-                        let slots = self.shared.params.get_all_slots();
-                        let response = serde_json::json!({
-                            "type": "slots",
-                            "data": slots
-                        });
-                        if let Err(e) = self.gui.send_json(response) {
-                            crate::logger::log_error(&format!("Failed to send slots: {}", e));
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        crate::logger::log_ipc_messages_processed(message_count);
+        // Drain any old IPC messages (no longer used, but prevents queue buildup)
+        while self.shared.ipc_receiver.try_recv().is_ok() {}
     }
 }
 

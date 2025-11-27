@@ -252,19 +252,22 @@ impl ServerHandler for DropletsMcp {
             server_info: Implementation::from_build_env(),
             instructions: Some(
                 "Simply Droplets MCP Server - AI-controlled MIDI CC output for DAW automation.\n\n\
-                 How it works:\n\
-                 1. Load Simply Droplets (instrument plugin) on a track in your DAW\n\
-                 2. In the plugin UI, click 'Map' on a slot, then move a CC controller to learn the CC number\n\
-                 3. Route the plugin's MIDI output to the target plugin you want to control\n\
-                 4. Use rename_slot() to label what each slot controls (e.g., 'Vital Filter Cutoff')\n\
-                 5. Use set_param() to output MIDI CC - the plugin sends CC messages that your DAW routes to target\n\n\
                  Tools:\n\
                  - list_instances(): See connected plugin instances\n\
                  - list_slots(): See slots with names, CC mappings, and values\n\
-                 - set_param(): Set slot value (0.0-1.0) - outputs MIDI CC if slot is mapped\n\
-                 - rename_slot(): Name a slot for clarity\n\
-                 - send_cc(): Send raw MIDI CC directly (bypass slot system)\n\n\
-                 The plugin is an instrument that outputs MIDI CC - your DAW routes this to control other plugins."
+                 - set_param(slot, value): Set slot value (0.0-1.0) - outputs MIDI CC\n\
+                 - rename_slot(slot, name): Label a slot (e.g., 'Filter Cutoff')\n\
+                 - send_cc(cc, value, channel): Send raw MIDI CC directly\n\n\
+                 ABLETON SETUP:\n\
+                 1. Add Simply Droplets to your track (as audio effect)\n\
+                 2. Create a MIDI track, set 'MIDI From' to the track with Simply Droplets\n\
+                 3. On target plugin, enter MIDI Map mode (Cmd+M), click parameter, move CC\n\
+                 4. Simply Droplets sends CC -> MIDI track receives -> maps to parameter\n\n\
+                 BITWIG SETUP:\n\
+                 1. Add Simply Droplets to your track\n\
+                 2. On target parameter, right-click -> 'Learn CC'\n\
+                 3. Use send_cc() to send the CC - Bitwig routes it to the learned parameter\n\
+                 4. Or: Use Bitwig's HW CC modulator, set source to Simply Droplets MIDI out"
                     .to_string(),
             ),
         }
