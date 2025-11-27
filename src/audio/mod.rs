@@ -3,9 +3,11 @@
 //! This is a pass-through audio processor that outputs MIDI CC from the MCP server.
 //! The plugin acts as an AI-to-MIDI-CC bridge.
 
+use clack_extensions::params::PluginAudioProcessorParams;
 use clack_plugin::events::event_types::MidiEvent;
 use clack_plugin::host::HostAudioProcessorHandle;
 use clack_plugin::plugin::{PluginAudioProcessor, PluginError};
+use clack_plugin::prelude::{InputEvents, OutputEvents};
 use clack_plugin::process::{Audio, Events, PluginAudioConfiguration, Process, ProcessStatus};
 use rtrb::Consumer;
 
@@ -47,7 +49,7 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
         &mut self,
         _process: Process,
         _audio: Audio,
-        mut events: Events,
+        events: Events,
     ) -> Result<ProcessStatus, PluginError> {
         // Request main thread callback for GUI updates
         self.shared.host.request_callback();
@@ -67,5 +69,18 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
 
         // Pass through audio unchanged (this plugin is just a MIDI CC bridge)
         Ok(ProcessStatus::ContinueIfNotQuiet)
+    }
+}
+
+impl PluginAudioProcessorParams for DropletAudioProcessor<'_> {
+    fn flush(
+        &mut self,
+        input_parameter_changes: &InputEvents,
+        _output_parameter_changes: &mut OutputEvents,
+    ) {
+        // Handle parameter changes from the host during non-processing flush
+        for event in input_parameter_changes.iter() {
+            self.shared.params.handle_event(&event);
+        }
     }
 }

@@ -1,17 +1,20 @@
-use clack_extensions::{audio_ports::*, gui::*, note_ports::*};
+use clack_extensions::{audio_ports::*, gui::*, note_ports::*, params::*};
 use clack_plugin::prelude::*;
 use clack_plugin::plugin::features::*;
 use crossbeam::channel::{Receiver, Sender};
 use rtrb::Consumer;
+use std::sync::Arc;
 
 use audio::DropletAudioProcessor;
 use gui::DropletGui;
 use mcp::{CcBridge, CcMessage};
+use params::DropletParams;
 
 mod audio;
 mod gui;
 pub mod logger;
 pub mod mcp;
+mod params;
 
 pub struct DropletPlugin;
 
@@ -24,6 +27,7 @@ impl Plugin for DropletPlugin {
         builder
             .register::<PluginAudioPorts>()
             .register::<PluginNotePorts>()
+            .register::<PluginParams>()
             .register::<PluginGui>();
     }
 }
@@ -43,9 +47,12 @@ impl DefaultPluginFactory for DropletPlugin {
         let (sender, receiver) = crossbeam::channel::unbounded();
         logger::log_ipc_channel_created();
 
+        // Create shared params (Arc for MCP bridge access)
+        let params = Arc::new(DropletParams::new());
+
         // Generate unique instance ID and register with CcBridge
         let instance_id = format!("droplets-{:08x}", fastrand::u32(..));
-        let cc_consumer = CcBridge::register(&instance_id);
+        let cc_consumer = CcBridge::register(&instance_id, Arc::clone(&params));
         log::info!("Registered MCP instance: {}", instance_id);
 
         // Start singleton MCP server (only first instance actually starts it)
@@ -53,6 +60,7 @@ impl DefaultPluginFactory for DropletPlugin {
 
         Ok(DropletShared {
             host,
+            params,
             ipc_sender: sender,
             ipc_receiver: receiver,
             instance_id,
@@ -75,6 +83,7 @@ impl DefaultPluginFactory for DropletPlugin {
 
 pub struct DropletShared<'a> {
     pub host: HostSharedHandle<'a>,
+    pub params: Arc<DropletParams>,
     pub ipc_sender: Sender<serde_json::Value>,
     pub ipc_receiver: Receiver<serde_json::Value>,
     pub instance_id: String,
@@ -92,7 +101,7 @@ impl Drop for DropletShared<'_> {
 }
 
 pub struct DropletMainThread<'a> {
-    shared: &'a DropletShared<'a>,
+    pub shared: &'a DropletShared<'a>,
     gui: DropletGui,
 }
 
@@ -106,25 +115,48 @@ impl<'a> PluginMainThread<'a, DropletShared<'a>> for DropletMainThread<'a> {
             message_count += 1;
             crate::logger::log_ipc_message_processing(message_count, &message);
 
-            // Handle GUI messages (e.g., request for activity data)
+            // Handle GUI messages
             if let Some(msg_type) = message.get("type").and_then(|v| v.as_str()) {
-                if msg_type == "get_activity" {
-                    let activity = CcBridge::recent_activity();
-                    let response = serde_json::json!({
-                        "type": "activity",
-                        "data": activity.iter().map(|e| {
-                            serde_json::json!({
-                                "timestamp": e.timestamp_ms,
-                                "instance": e.instance,
-                                "channel": e.channel + 1,
-                                "cc": e.cc,
-                                "value": e.value
-                            })
-                        }).collect::<Vec<_>>()
-                    });
-                    if let Err(e) = self.gui.send_json(response) {
-                        crate::logger::log_error(&format!("Failed to send activity: {}", e));
+                match msg_type {
+                    "get_activity" => {
+                        let activity = CcBridge::recent_activity();
+                        let response = serde_json::json!({
+                            "type": "activity",
+                            "data": activity.iter().map(|e| {
+                                serde_json::json!({
+                                    "timestamp": e.timestamp_ms,
+                                    "instance": e.instance,
+                                    "channel": e.channel + 1,
+                                    "cc": e.cc,
+                                    "value": e.value
+                                })
+                            }).collect::<Vec<_>>()
+                        });
+                        if let Err(e) = self.gui.send_json(response) {
+                            crate::logger::log_error(&format!("Failed to send activity: {}", e));
+                        }
                     }
+                    "get_slots" => {
+                        let slots: Vec<_> = (0..params::NUM_CC_SLOTS)
+                            .filter_map(|i| {
+                                self.shared.params.get_slot_info(i).map(|(name, value)| {
+                                    serde_json::json!({
+                                        "index": i,
+                                        "name": name,
+                                        "value": value
+                                    })
+                                })
+                            })
+                            .collect();
+                        let response = serde_json::json!({
+                            "type": "slots",
+                            "data": slots
+                        });
+                        if let Err(e) = self.gui.send_json(response) {
+                            crate::logger::log_error(&format!("Failed to send slots: {}", e));
+                        }
+                    }
+                    _ => {}
                 }
             }
         }

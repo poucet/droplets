@@ -5,13 +5,13 @@
 ### Method 1: One-Command Install
 ```bash
 # Build and install in one command
-cargo run --manifest-path xtask/Cargo.toml -- bundle simply_droplets && ./install_macos.sh
+cargo run --manifest-path xtask/Cargo.toml -- build && ./install_macos.sh
 ```
 
 ### Method 2: Step-by-Step
 ```bash
 # 1. Build the plugin
-cargo run --manifest-path xtask/Cargo.toml -- bundle simply_droplets
+cargo run --manifest-path xtask/Cargo.toml -- build
 
 # 2. Run the installer
 ./install_macos.sh

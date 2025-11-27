@@ -1,7 +1,7 @@
 [package]
 name = "Simply Droplets"
 version = "0.1.0"
-description = "A 3D droplet-based granular synthesis plugin built with Rust and clack"
+description = "An AI powered expression sequencer"
 homepage = "https://www.simply-music.ai"
 author = "Simply Chris"
 license = "MIT"

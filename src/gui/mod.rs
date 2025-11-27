@@ -145,10 +145,28 @@ impl<'a> PluginGuiImpl for DropletMainThread<'a> {
 
 
         crate::logger::log_gui_event("webview_building", "Starting WebView creation");
-        
-        match WebViewBuilder::new()
-            // Load HTML from simplified GUI file
-            .with_html(include_str!("../../gui.html"))
+
+        // In dev mode, load from file system for hot reload. In release, use bundled HTML.
+        let webview_builder = WebViewBuilder::new();
+
+        #[cfg(any(debug_assertions, feature = "dev-gui"))]
+        let webview_builder = {
+            // Try to load from file system for live editing
+            let dev_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("frontend/dist/index.html");
+            if dev_path.exists() {
+                crate::logger::log_gui_event("webview_dev_mode", &format!("Loading from: {:?}", dev_path));
+                webview_builder.with_url(format!("file://{}", dev_path.display()))
+            } else {
+                crate::logger::log_gui_event("webview_dev_mode", "Dev path not found, using bundled HTML");
+                webview_builder.with_html(include_str!("../../frontend/dist/index.html"))
+            }
+        };
+
+        #[cfg(not(any(debug_assertions, feature = "dev-gui")))]
+        let webview_builder = webview_builder.with_html(include_str!("../../frontend/dist/index.html"));
+
+        match webview_builder
             .with_devtools(cfg!(debug_assertions) || cfg!(feature = "dev-gui"))
             .with_bounds(Rect {
                 position: Position::Physical(PhysicalPosition::new(0, 0)),

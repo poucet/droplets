@@ -61,6 +61,49 @@ pub struct RenameRequest {
     pub name: String,
 }
 
+/// Request to set a parameter slot value
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetParamRequest {
+    /// Target plugin instance name or "default" for first available
+    #[serde(default = "default_instance")]
+    #[schemars(description = "Target plugin instance name or 'default' for first available")]
+    pub instance: String,
+
+    /// Slot index (0-15)
+    #[schemars(description = "Parameter slot index (0-15)")]
+    pub slot: usize,
+
+    /// Value (0.0-1.0 normalized)
+    #[schemars(description = "Parameter value (0.0-1.0 normalized)")]
+    pub value: f64,
+}
+
+/// Request to rename a parameter slot
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RenameSlotRequest {
+    /// Target plugin instance name or "default" for first available
+    #[serde(default = "default_instance")]
+    #[schemars(description = "Target plugin instance name or 'default' for first available")]
+    pub instance: String,
+
+    /// Slot index (0-15)
+    #[schemars(description = "Parameter slot index (0-15)")]
+    pub slot: usize,
+
+    /// New name for the slot (e.g., "Vital Filter Cutoff")
+    #[schemars(description = "New name for the slot (e.g., 'Vital Filter Cutoff')")]
+    pub name: String,
+}
+
+/// Request to get slots for an instance
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetSlotsRequest {
+    /// Target plugin instance name or "default" for first available
+    #[serde(default = "default_instance")]
+    #[schemars(description = "Target plugin instance name or 'default' for first available")]
+    pub instance: String,
+}
+
 fn default_instance() -> String {
     "default".to_string()
 }
@@ -133,6 +176,51 @@ impl DropletsMcp {
             formatted.join("\n")
         }
     }
+
+    /// Set a parameter slot value for DAW automation/modulation.
+    #[tool(description = "Set a parameter slot value (0.0-1.0). These slots are automatable parameters that can be mapped via your DAW's modulation system (Ableton LFOs, Bitwig modulators) to control any plugin on the same track.")]
+    fn set_param(&self, #[tool(aggr)] req: SetParamRequest) -> String {
+        match CcBridge::set_param(&req.instance, req.slot, req.value) {
+            Ok(()) => format!(
+                "Set slot {} = {:.2} ({:.0}%) on instance '{}'",
+                req.slot, req.value, req.value * 100.0, req.instance
+            ),
+            Err(e) => format!("Error: {}", e),
+        }
+    }
+
+    /// Rename a parameter slot for easier identification.
+    #[tool(description = "Rename a parameter slot to describe what it controls. For example, if slot 0 is mapped to 'Vital Filter Cutoff' in your DAW, rename it so both the UI and AI can identify it clearly.")]
+    fn rename_slot(&self, #[tool(aggr)] req: RenameSlotRequest) -> String {
+        match CcBridge::rename_slot(&req.instance, req.slot, &req.name) {
+            Ok(old_name) => format!(
+                "Renamed slot {} from '{}' to '{}' on instance '{}'",
+                req.slot, old_name, req.name, req.instance
+            ),
+            Err(e) => format!("Error: {}", e),
+        }
+    }
+
+    /// List all parameter slots for an instance with their names and current values.
+    #[tool(description = "List all parameter slots for an instance with their current names and values. Use this to see what slots are available and how they're named.")]
+    fn list_slots(&self, #[tool(aggr)] req: GetSlotsRequest) -> String {
+        match CcBridge::get_slots(&req.instance) {
+            Ok(slots) => {
+                if slots.is_empty() {
+                    "No slots available.".to_string()
+                } else {
+                    let formatted: Vec<String> = slots
+                        .iter()
+                        .map(|(idx, name, value)| {
+                            format!("  [{}] {} = {:.2} ({:.0}%)", idx, name, value, value * 100.0)
+                        })
+                        .collect();
+                    format!("Parameter slots on '{}':\n{}", req.instance, formatted.join("\n"))
+                }
+            }
+            Err(e) => format!("Error: {}", e),
+        }
+    }
 }
 
 #[tool(tool_box)]
@@ -140,13 +228,20 @@ impl ServerHandler for DropletsMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
             instructions: Some(
-                "Simply Droplets MCP Server - Control any DAW plugin via MIDI CC.\n\n\
+                "Simply Droplets MCP Server - AI-controlled DAW automation bridge.\n\n\
+                 Setup:\n\
                  1. Load Simply Droplets plugin on a track in your DAW\n\
-                 2. Route its MIDI output to the plugin you want to control\n\
-                 3. Use send_cc() to send MIDI CC messages\n\
-                 4. The target plugin receives the CC for parameter control\n\n\
-                 Use list_instances() to see available plugin instances.\n\
-                 Use set_instance_name() to give them memorable names."
+                 2. Map Simply Droplets parameter slots to target plugin parameters using DAW modulation\n\
+                    (Ableton: use device modulators, Bitwig: use modulators)\n\
+                 3. Use rename_slot() to label each slot with what it controls\n\
+                 4. Use set_param() to control the target parameters via AI\n\n\
+                 Tools:\n\
+                 - list_instances(): See connected plugin instances\n\
+                 - list_slots(): See parameter slots with names and values\n\
+                 - set_param(): Set a parameter slot value (0.0-1.0)\n\
+                 - rename_slot(): Name a slot (e.g., 'Vital Filter Cutoff')\n\
+                 - send_cc(): Send MIDI CC for direct MIDI routing\n\n\
+                 The parameter slots are automatable and show up in your DAW's modulation system."
                     .to_string(),
             ),
             ..Default::default()

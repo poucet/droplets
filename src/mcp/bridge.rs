@@ -6,8 +6,10 @@
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::collections::HashMap;
 use std::collections::VecDeque;
-use std::sync::{Mutex, OnceLock, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::params::DropletParams;
 
 /// A MIDI CC message (3 bytes, Copy, no heap allocation)
 #[derive(Clone, Copy, Debug)]
@@ -27,10 +29,14 @@ pub struct ActivityEvent {
     pub value: u8,
 }
 
+/// Shared parameter access for MCP server
+pub type ParamsRef = Arc<DropletParams>;
+
 /// Instance entry stored in the registry
 struct InstanceEntry {
     name: String,
     producer: Mutex<Producer<CcMessage>>,
+    params: ParamsRef,
 }
 
 /// Global registry of plugin instances
@@ -58,7 +64,7 @@ impl CcBridge {
     ///
     /// Returns the Consumer that the audio thread uses to receive CC messages.
     /// The Producer is stored in the registry for the MCP server to write to.
-    pub fn register(id: &str) -> Consumer<CcMessage> {
+    pub fn register(id: &str, params: ParamsRef) -> Consumer<CcMessage> {
         let (producer, consumer) = RingBuffer::new(RING_BUFFER_SIZE);
 
         let mut reg = registry().write().unwrap();
@@ -67,6 +73,7 @@ impl CcBridge {
             InstanceEntry {
                 name: id.to_string(),
                 producer: Mutex::new(producer),
+                params,
             },
         );
 
@@ -165,6 +172,49 @@ impl CcBridge {
         if let Ok(mut log) = activity_log().lock() {
             log.clear();
         }
+    }
+
+    /// Set a parameter slot value (called from MCP server)
+    pub fn set_param(instance: &str, slot: usize, value: f64) -> Result<(), &'static str> {
+        let reg = registry().read().unwrap();
+        let entry = Self::find_entry(&reg, instance)?;
+
+        if slot >= crate::params::NUM_CC_SLOTS {
+            return Err("Slot index out of range (0-15)");
+        }
+
+        entry.params.set_slot(slot, value);
+        log::info!("CcBridge: Set slot {} = {:.2} on '{}'", slot, value, entry.name);
+        Ok(())
+    }
+
+    /// Rename a parameter slot (called from MCP server)
+    pub fn rename_slot(instance: &str, slot: usize, name: &str) -> Result<String, &'static str> {
+        let reg = registry().read().unwrap();
+        let entry = Self::find_entry(&reg, instance)?;
+
+        if slot >= crate::params::NUM_CC_SLOTS {
+            return Err("Slot index out of range (0-15)");
+        }
+
+        let old_name = entry.params.slots[slot].get_name();
+        entry.params.rename_slot(slot, name);
+        log::info!("CcBridge: Renamed slot {} from '{}' to '{}' on '{}'", slot, old_name, name, entry.name);
+        Ok(old_name)
+    }
+
+    /// Get all parameter slots info for an instance
+    pub fn get_slots(instance: &str) -> Result<Vec<(usize, String, f64)>, &'static str> {
+        let reg = registry().read().unwrap();
+        let entry = Self::find_entry(&reg, instance)?;
+
+        let slots: Vec<_> = (0..crate::params::NUM_CC_SLOTS)
+            .filter_map(|i| {
+                entry.params.get_slot_info(i).map(|(name, value)| (i, name, value))
+            })
+            .collect();
+
+        Ok(slots)
     }
 
     /// Find an instance entry by name or ID
