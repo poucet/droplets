@@ -1,4 +1,4 @@
-use clack_extensions::{audio_ports::*, gui::*, note_ports::*, params::*};
+use clack_extensions::{audio_ports::*, gui::*, note_ports::*};
 use clack_plugin::prelude::*;
 use clack_plugin::plugin::features::*;
 use crossbeam::channel::{Receiver, Sender};
@@ -27,7 +27,6 @@ impl Plugin for DropletPlugin {
         builder
             .register::<PluginAudioPorts>()
             .register::<PluginNotePorts>()
-            .register::<PluginParams>()
             .register::<PluginGui>();
     }
 }
@@ -36,7 +35,7 @@ impl DefaultPluginFactory for DropletPlugin {
     fn get_descriptor() -> PluginDescriptor {
         PluginDescriptor::new("com.simply-chris.simply-droplets", "Simply Droplets")
             .with_vendor("Simply Chris")
-            .with_features([AUDIO_EFFECT, STEREO])
+            .with_features([UTILITY])
     }
 
     fn new_shared(host: HostSharedHandle) -> Result<Self::Shared<'_>, PluginError> {
@@ -137,17 +136,7 @@ impl<'a> PluginMainThread<'a, DropletShared<'a>> for DropletMainThread<'a> {
                         }
                     }
                     "get_slots" => {
-                        let slots: Vec<_> = (0..params::NUM_CC_SLOTS)
-                            .filter_map(|i| {
-                                self.shared.params.get_slot_info(i).map(|(name, value)| {
-                                    serde_json::json!({
-                                        "index": i,
-                                        "name": name,
-                                        "value": value
-                                    })
-                                })
-                            })
-                            .collect();
+                        let slots = self.shared.params.get_all_slots();
                         let response = serde_json::json!({
                             "type": "slots",
                             "data": slots

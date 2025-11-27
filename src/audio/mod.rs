@@ -1,13 +1,12 @@
 //! Audio processor for Simply Droplets
 //!
-//! This is a pass-through audio processor that outputs MIDI CC from the MCP server.
-//! The plugin acts as an AI-to-MIDI-CC bridge.
+//! This is a pass-through audio processor that:
+//! - Listens for incoming MIDI CC for learning mode
+//! - Outputs MIDI CC from the MCP server when AI sets slot values
 
-use clack_extensions::params::PluginAudioProcessorParams;
 use clack_plugin::events::event_types::MidiEvent;
 use clack_plugin::host::HostAudioProcessorHandle;
 use clack_plugin::plugin::{PluginAudioProcessor, PluginError};
-use clack_plugin::prelude::{InputEvents, OutputEvents};
 use clack_plugin::process::{Audio, Events, PluginAudioConfiguration, Process, ProcessStatus};
 use rtrb::Consumer;
 
@@ -54,6 +53,28 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
         // Request main thread callback for GUI updates
         self.shared.host.request_callback();
 
+        // Process incoming MIDI events for CC learning
+        for event in events.input.iter() {
+            if let Some(midi) = event.as_event::<MidiEvent>() {
+                let data = midi.data();
+                let status = data[0];
+                // CC message: 0xB0-0xBF (176-191)
+                if (0xB0..=0xBF).contains(&status) {
+                    let channel = status & 0x0F;
+                    let cc = data[1];
+                    // Process learning - if a slot is in learning mode, assign this CC
+                    if let Some(slot_idx) = self.shared.params.process_learn(channel, cc) {
+                        log::info!(
+                            "Learned CC{} on channel {} for slot {}",
+                            cc,
+                            channel + 1,
+                            slot_idx
+                        );
+                    }
+                }
+            }
+        }
+
         // Output MIDI CC from MCP server (lock-free read from ring buffer)
         while let Ok(cc) = self.cc_consumer.pop() {
             // MIDI CC status byte: 0xB0 + channel (0-15)
@@ -69,18 +90,5 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
 
         // Pass through audio unchanged (this plugin is just a MIDI CC bridge)
         Ok(ProcessStatus::ContinueIfNotQuiet)
-    }
-}
-
-impl PluginAudioProcessorParams for DropletAudioProcessor<'_> {
-    fn flush(
-        &mut self,
-        input_parameter_changes: &InputEvents,
-        _output_parameter_changes: &mut OutputEvents,
-    ) {
-        // Handle parameter changes from the host during non-processing flush
-        for event in input_parameter_changes.iter() {
-            self.shared.params.handle_event(&event);
-        }
     }
 }

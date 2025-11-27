@@ -141,6 +141,7 @@ impl<'a> PluginGuiImpl for DropletMainThread<'a> {
                     NonZeroU32::new(parent.as_x11_handle().unwrap() as u32).unwrap(),
                 ))
             })
+            
         };
 
 
@@ -156,7 +157,14 @@ impl<'a> PluginGuiImpl for DropletMainThread<'a> {
                 .join("frontend/dist/index.html");
             if dev_path.exists() {
                 crate::logger::log_gui_event("webview_dev_mode", &format!("Loading from: {:?}", dev_path));
-                webview_builder.with_url(format!("file://{}", dev_path.display()))
+                // Read file content instead of using file:// URL to avoid security issues
+                match std::fs::read_to_string(&dev_path) {
+                    Ok(html) => webview_builder.with_html(html),
+                    Err(e) => {
+                        crate::logger::log_error(&format!("Failed to read dev HTML: {}", e));
+                        webview_builder.with_html(include_str!("../../frontend/dist/index.html"))
+                    }
+                }
             } else {
                 crate::logger::log_gui_event("webview_dev_mode", "Dev path not found, using bundled HTML");
                 webview_builder.with_html(include_str!("../../frontend/dist/index.html"))
@@ -177,16 +185,26 @@ impl<'a> PluginGuiImpl for DropletMainThread<'a> {
             .with_ipc_handler({
                 let sender = self.shared.ipc_sender.clone();
                 move |request: wry::http::Request<String>| {
-                    let message = request.body();
-                    crate::logger::log_ipc_message_received(message);
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(message) {
-                        crate::logger::log_ipc_message_parsed(&parsed);
-                        if let Err(e) = sender.send(parsed) {
-                            crate::logger::log_ipc_send_error(&e.to_string());
+                    // Use a separate thread to handle IPC to avoid blocking WebKit
+                    let sender = sender.clone();
+                    let message = request.body().clone();
+                    std::thread::spawn(move || {
+                        // Catch any panics to prevent crashing the host
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            crate::logger::log_ipc_message_received(&message);
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&message) {
+                                crate::logger::log_ipc_message_parsed(&parsed);
+                                if let Err(e) = sender.send(parsed) {
+                                    crate::logger::log_ipc_send_error(&e.to_string());
+                                }
+                            } else {
+                                crate::logger::log_ipc_parse_error(&message);
+                            }
+                        }));
+                        if let Err(e) = result {
+                            crate::logger::log_error(&format!("IPC handler panic: {:?}", e));
                         }
-                    } else {
-                        crate::logger::log_ipc_parse_error(message);
-                    }
+                    });
                 }
             })
             .with_navigation_handler(|url| {

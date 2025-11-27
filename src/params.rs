@@ -1,23 +1,20 @@
-//! Automatable parameters for Simply Droplets
+//! CC Slot mapping system for Simply Droplets
 //!
-//! Exposes CC slots that can be:
-//! - Set via MCP by AI
-//! - Mapped to other plugin parameters via DAW modulation
-//! - Renamed to reflect what they control
+//! Each slot represents a CC mapping:
+//! - CC number (learned from incoming MIDI CC)
+//! - Target name (label like "Vital Filter Cutoff")
+//! - Current value (0.0 - 1.0, set by AI via MCP)
+//!
+//! When the AI sets a slot value, the plugin outputs the corresponding
+//! MIDI CC message which the DAW routes to the target plugin.
 
-use clack_extensions::params::*;
-use clack_plugin::events::event_types::ParamValueEvent;
-use clack_plugin::events::UnknownEvent;
-use clack_plugin::prelude::*;
-use clack_plugin::utils::Cookie;
-use std::ffi::CStr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::RwLock;
 
 /// Number of CC slots available
 pub const NUM_CC_SLOTS: usize = 16;
 
-/// Atomic f64 storage for real-time safe parameter access
+/// Atomic f64 storage for real-time safe value access
 #[repr(transparent)]
 pub struct AtomicF64(AtomicU64);
 
@@ -35,20 +32,54 @@ impl AtomicF64 {
     }
 }
 
-/// A single CC slot with value and custom name
+/// A single CC slot with mapping info
 pub struct CcSlot {
+    /// CC number this slot is mapped to (0-127, or 255 for unmapped)
+    pub cc_number: AtomicU8,
+    /// MIDI channel for this slot (0-15)
+    pub channel: AtomicU8,
     /// Current value (0.0 - 1.0, normalized)
     pub value: AtomicF64,
     /// Custom name for this slot (e.g., "Vital Filter Cutoff")
     pub name: RwLock<String>,
+    /// Is this slot in learning mode (waiting for incoming CC)?
+    pub learning: AtomicBool,
 }
 
 impl CcSlot {
     pub fn new(index: usize) -> Self {
         Self {
+            cc_number: AtomicU8::new(255), // 255 = unmapped
+            channel: AtomicU8::new(0),     // Default to channel 1
             value: AtomicF64::new(0.0),
-            name: RwLock::new(format!("CC Slot {}", index + 1)),
+            name: RwLock::new(format!("Slot {}", index + 1)),
+            learning: AtomicBool::new(false),
         }
+    }
+
+    pub fn is_mapped(&self) -> bool {
+        self.cc_number.load(Ordering::Relaxed) < 128
+    }
+
+    pub fn get_cc(&self) -> Option<u8> {
+        let cc = self.cc_number.load(Ordering::Relaxed);
+        if cc < 128 { Some(cc) } else { None }
+    }
+
+    pub fn set_cc(&self, cc: u8) {
+        self.cc_number.store(cc.min(127), Ordering::Relaxed);
+    }
+
+    pub fn clear_cc(&self) {
+        self.cc_number.store(255, Ordering::Relaxed);
+    }
+
+    pub fn get_channel(&self) -> u8 {
+        self.channel.load(Ordering::Relaxed)
+    }
+
+    pub fn set_channel(&self, ch: u8) {
+        self.channel.store(ch.min(15), Ordering::Relaxed);
     }
 
     pub fn get_name(&self) -> String {
@@ -58,40 +89,57 @@ impl CcSlot {
     pub fn set_name(&self, name: &str) {
         *self.name.write().unwrap() = name.to_string();
     }
+
+    pub fn start_learning(&self) {
+        self.learning.store(true, Ordering::Relaxed);
+    }
+
+    pub fn stop_learning(&self) {
+        self.learning.store(false, Ordering::Relaxed);
+    }
+
+    pub fn is_learning(&self) -> bool {
+        self.learning.load(Ordering::Relaxed)
+    }
 }
 
-/// All plugin parameters
+/// All plugin slots and AI message log
 pub struct DropletParams {
     pub slots: [CcSlot; NUM_CC_SLOTS],
+    /// Recent AI messages (for UI display)
+    ai_messages: RwLock<Vec<AiMessage>>,
+}
+
+/// An AI message to display in the UI
+#[derive(Clone, serde::Serialize)]
+pub struct AiMessage {
+    pub timestamp_ms: u64,
+    pub tool_name: String,
+    pub message: String,
 }
 
 impl DropletParams {
     pub fn new() -> Self {
         Self {
             slots: std::array::from_fn(|i| CcSlot::new(i)),
+            ai_messages: RwLock::new(Vec::new()),
         }
     }
 
-    /// Get parameter ID for a slot index
-    pub fn slot_id(index: usize) -> ClapId {
-        ClapId::new(index as u32)
-    }
-
-    /// Get slot index from parameter ID
-    pub fn slot_index(id: ClapId) -> Option<usize> {
-        let index = id.get() as usize;
+    /// Set a slot value (called from MCP) - returns the CC info if mapped
+    pub fn set_slot(&self, index: usize, value: f64) -> Option<(u8, u8, u8)> {
         if index < NUM_CC_SLOTS {
-            Some(index)
-        } else {
-            None
-        }
-    }
+            let clamped = value.clamp(0.0, 1.0);
+            self.slots[index].value.store(clamped);
 
-    /// Set a slot value (called from MCP)
-    pub fn set_slot(&self, index: usize, value: f64) {
-        if index < NUM_CC_SLOTS {
-            self.slots[index].value.store(value.clamp(0.0, 1.0));
+            // Return (channel, cc, value) if mapped
+            if let Some(cc) = self.slots[index].get_cc() {
+                let channel = self.slots[index].get_channel();
+                let midi_value = (clamped * 127.0).round() as u8;
+                return Some((channel, cc, midi_value));
+            }
         }
+        None
     }
 
     /// Get a slot value
@@ -104,30 +152,101 @@ impl DropletParams {
     }
 
     /// Rename a slot
-    pub fn rename_slot(&self, index: usize, name: &str) {
+    pub fn rename_slot(&self, index: usize, name: &str) -> Option<String> {
         if index < NUM_CC_SLOTS {
+            let old_name = self.slots[index].get_name();
             self.slots[index].set_name(name);
-        }
-    }
-
-    /// Get slot info for GUI/MCP
-    pub fn get_slot_info(&self, index: usize) -> Option<(String, f64)> {
-        if index < NUM_CC_SLOTS {
-            Some((self.slots[index].get_name(), self.slots[index].value.load()))
+            Some(old_name)
         } else {
             None
         }
     }
 
-    /// Handle parameter events from the host
-    pub fn handle_event(&self, event: &UnknownEvent) {
-        if let Some(param_event) = event.as_event::<ParamValueEvent>() {
-            if let Some(param_id) = param_event.param_id() {
-                if let Some(index) = Self::slot_index(param_id) {
-                    self.slots[index].value.store(param_event.value());
+    /// Start learning mode for a slot
+    pub fn start_learning(&self, index: usize) {
+        if index < NUM_CC_SLOTS {
+            // Stop learning on all other slots
+            for (i, slot) in self.slots.iter().enumerate() {
+                if i == index {
+                    slot.start_learning();
+                } else {
+                    slot.stop_learning();
                 }
             }
         }
+    }
+
+    /// Check if any slot is learning and process incoming CC
+    /// Returns the slot index that learned, if any
+    pub fn process_learn(&self, channel: u8, cc: u8) -> Option<usize> {
+        for (i, slot) in self.slots.iter().enumerate() {
+            if slot.is_learning() {
+                slot.set_cc(cc);
+                slot.set_channel(channel);
+                slot.stop_learning();
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Cancel all learning
+    pub fn cancel_learning(&self) {
+        for slot in self.slots.iter() {
+            slot.stop_learning();
+        }
+    }
+
+    /// Get slot info for GUI/MCP
+    pub fn get_slot_info(&self, index: usize) -> Option<SlotInfo> {
+        if index < NUM_CC_SLOTS {
+            let slot = &self.slots[index];
+            Some(SlotInfo {
+                index,
+                name: slot.get_name(),
+                cc: slot.get_cc(),
+                channel: slot.get_channel(),
+                value: slot.value.load(),
+                learning: slot.is_learning(),
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Get all slots info
+    pub fn get_all_slots(&self) -> Vec<SlotInfo> {
+        (0..NUM_CC_SLOTS)
+            .filter_map(|i| self.get_slot_info(i))
+            .collect()
+    }
+
+    /// Add an AI message to the log
+    pub fn add_ai_message(&self, tool_name: &str, message: &str) {
+        let timestamp_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let msg = AiMessage {
+            timestamp_ms,
+            tool_name: tool_name.to_string(),
+            message: message.to_string(),
+        };
+
+        let mut messages = self.ai_messages.write().unwrap();
+        messages.push(msg);
+
+        // Keep only last 50 messages
+        if messages.len() > 50 {
+            let drain_count = messages.len() - 50;
+            messages.drain(0..drain_count);
+        }
+    }
+
+    /// Get recent AI messages
+    pub fn get_ai_messages(&self) -> Vec<AiMessage> {
+        self.ai_messages.read().unwrap().clone()
     }
 }
 
@@ -137,61 +256,13 @@ impl Default for DropletParams {
     }
 }
 
-use crate::DropletMainThread;
-
-impl<'a> PluginMainThreadParams for DropletMainThread<'a> {
-    fn count(&mut self) -> u32 {
-        NUM_CC_SLOTS as u32
-    }
-
-    fn get_info(&mut self, param_index: u32, info: &mut ParamInfoWriter) {
-        let index = param_index as usize;
-        if index < NUM_CC_SLOTS {
-            let name = self.shared.params.slots[index].get_name();
-            let name_bytes = name.as_bytes();
-
-            info.set(&ParamInfo {
-                id: DropletParams::slot_id(index),
-                flags: ParamInfoFlags::IS_AUTOMATABLE | ParamInfoFlags::IS_MODULATABLE,
-                cookie: Cookie::empty(),
-                name: name_bytes,
-                module: b"CC Slots",
-                min_value: 0.0,
-                max_value: 1.0,
-                default_value: 0.0,
-            });
-        }
-    }
-
-    fn get_value(&mut self, param_id: ClapId) -> Option<f64> {
-        DropletParams::slot_index(param_id).map(|i| self.shared.params.get_slot(i))
-    }
-
-    fn value_to_text(
-        &mut self,
-        _param_id: ClapId,
-        value: f64,
-        writer: &mut ParamDisplayWriter,
-    ) -> core::fmt::Result {
-        use core::fmt::Write;
-        // Display as percentage
-        write!(writer, "{:.1}%", value * 100.0)
-    }
-
-    fn text_to_value(&mut self, _param_id: ClapId, text: &CStr) -> Option<f64> {
-        let text = text.to_str().ok()?;
-        let text = text.trim().trim_end_matches('%');
-        let value: f64 = text.parse().ok()?;
-        Some((value / 100.0).clamp(0.0, 1.0))
-    }
-
-    fn flush(
-        &mut self,
-        input_parameter_changes: &InputEvents,
-        _output_parameter_changes: &mut OutputEvents,
-    ) {
-        for event in input_parameter_changes.iter() {
-            self.shared.params.handle_event(&event);
-        }
-    }
+/// Slot info for serialization
+#[derive(Clone, serde::Serialize)]
+pub struct SlotInfo {
+    pub index: usize,
+    pub name: String,
+    pub cc: Option<u8>,
+    pub channel: u8,
+    pub value: f64,
+    pub learning: bool,
 }

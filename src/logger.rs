@@ -5,13 +5,26 @@ use std::fs::File;
 pub fn init_logger() {
     let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let log_path = format!("{}/droplets_plugin.log", home_dir);
-    
+
     let _ = WriteLogger::init(
         LevelFilter::Debug,
         Config::default(),
         File::create(&log_path).unwrap_or_else(|_| File::create("/tmp/droplets_plugin.log").unwrap()),
     );
-    
+
+    // Set up custom panic hook to log panics instead of aborting
+    std::panic::set_hook(Box::new(|panic_info| {
+        let location = panic_info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())).unwrap_or_else(|| "unknown".to_string());
+        let message = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic".to_string()
+        };
+        error!("PANIC at {}: {}", location, message);
+    }));
+
     info!("Droplets plugin initialized, logging to: {}", log_path);
     info!("=== Plugin session started ===");
 }

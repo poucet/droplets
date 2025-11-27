@@ -175,6 +175,8 @@ impl CcBridge {
     }
 
     /// Set a parameter slot value (called from MCP server)
+    ///
+    /// If the slot is mapped to a CC, sends the MIDI CC message through the ring buffer.
     pub fn set_param(instance: &str, slot: usize, value: f64) -> Result<(), &'static str> {
         let reg = registry().read().unwrap();
         let entry = Self::find_entry(&reg, instance)?;
@@ -183,8 +185,38 @@ impl CcBridge {
             return Err("Slot index out of range (0-15)");
         }
 
-        entry.params.set_slot(slot, value);
-        log::info!("CcBridge: Set slot {} = {:.2} on '{}'", slot, value, entry.name);
+        // Set the slot value and get CC info if mapped
+        if let Some((channel, cc, midi_value)) = entry.params.set_slot(slot, value) {
+            // Send MIDI CC through the ring buffer
+            let msg = CcMessage { channel, cc, value: midi_value };
+            let mut producer = entry.producer.lock().map_err(|_| "Producer lock poisoned")?;
+            producer.push(msg).map_err(|_| "Queue full")?;
+
+            // Log activity
+            if let Ok(mut log) = activity_log().try_lock() {
+                let timestamp_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+
+                log.push_back(ActivityEvent {
+                    timestamp_ms,
+                    instance: entry.name.clone(),
+                    channel,
+                    cc,
+                    value: midi_value,
+                });
+
+                while log.len() > MAX_ACTIVITY_LOG_SIZE {
+                    log.pop_front();
+                }
+            }
+
+            log::info!("CcBridge: Set slot {} = {:.2} -> CC{} = {} on '{}'", slot, value, cc, midi_value, entry.name);
+        } else {
+            log::info!("CcBridge: Set slot {} = {:.2} (unmapped) on '{}'", slot, value, entry.name);
+        }
+
         Ok(())
     }
 
@@ -203,18 +235,63 @@ impl CcBridge {
         Ok(old_name)
     }
 
-    /// Get all parameter slots info for an instance
-    pub fn get_slots(instance: &str) -> Result<Vec<(usize, String, f64)>, &'static str> {
+    /// Get all parameter slots info for an instance (includes CC mapping info)
+    pub fn get_slots(instance: &str) -> Result<Vec<crate::params::SlotInfo>, &'static str> {
+        let reg = registry().read().unwrap();
+        let entry = Self::find_entry(&reg, instance)?;
+        Ok(entry.params.get_all_slots())
+    }
+
+    /// Start CC learning mode for a slot
+    pub fn start_learn(instance: &str, slot: usize) -> Result<(), &'static str> {
         let reg = registry().read().unwrap();
         let entry = Self::find_entry(&reg, instance)?;
 
-        let slots: Vec<_> = (0..crate::params::NUM_CC_SLOTS)
-            .filter_map(|i| {
-                entry.params.get_slot_info(i).map(|(name, value)| (i, name, value))
-            })
-            .collect();
+        if slot >= crate::params::NUM_CC_SLOTS {
+            return Err("Slot index out of range (0-15)");
+        }
 
-        Ok(slots)
+        entry.params.start_learning(slot);
+        log::info!("CcBridge: Started learning for slot {} on '{}'", slot, entry.name);
+        Ok(())
+    }
+
+    /// Cancel CC learning mode on all slots
+    pub fn cancel_learn(instance: &str) -> Result<(), &'static str> {
+        let reg = registry().read().unwrap();
+        let entry = Self::find_entry(&reg, instance)?;
+        entry.params.cancel_learning();
+        log::info!("CcBridge: Cancelled learning on '{}'", entry.name);
+        Ok(())
+    }
+
+    /// Manually map a CC number to a slot
+    pub fn map_slot(instance: &str, slot: usize, cc: u8, channel: u8) -> Result<(), &'static str> {
+        let reg = registry().read().unwrap();
+        let entry = Self::find_entry(&reg, instance)?;
+
+        if slot >= crate::params::NUM_CC_SLOTS {
+            return Err("Slot index out of range (0-15)");
+        }
+
+        entry.params.slots[slot].set_cc(cc);
+        entry.params.slots[slot].set_channel(channel);
+        log::info!("CcBridge: Mapped slot {} to CC{} ch{} on '{}'", slot, cc, channel + 1, entry.name);
+        Ok(())
+    }
+
+    /// Clear CC mapping from a slot
+    pub fn unmap_slot(instance: &str, slot: usize) -> Result<(), &'static str> {
+        let reg = registry().read().unwrap();
+        let entry = Self::find_entry(&reg, instance)?;
+
+        if slot >= crate::params::NUM_CC_SLOTS {
+            return Err("Slot index out of range (0-15)");
+        }
+
+        entry.params.slots[slot].clear_cc();
+        log::info!("CcBridge: Unmapped slot {} on '{}'", slot, entry.name);
+        Ok(())
     }
 
     /// Find an instance entry by name or ID

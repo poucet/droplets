@@ -28,22 +28,28 @@ impl<'a> PluginAudioPortsImpl for DropletMainThread<'a> {
 }
 
 impl<'a> PluginNotePortsImpl for DropletMainThread<'a> {
-    fn count(&mut self, is_input: bool) -> u32 {
-        if is_input {
-            0 // No input note ports
-        } else {
-            1 // One output note port for MIDI CC
-        }
+    fn count(&mut self, _is_input: bool) -> u32 {
+        // One input (for CC learning) and one output (for CC commands)
+        1
     }
 
     fn get(&mut self, index: u32, is_input: bool, writer: &mut NotePortInfoWriter) {
-        if !is_input && index == 0 {
-            writer.set(&NotePortInfo {
-                id: ClapId::new(1), // Different from audio port ID
-                name: b"MIDI CC Out",
-                supported_dialects: NoteDialects::MIDI,
-                preferred_dialect: Some(NoteDialect::Midi),
-            });
+        if index == 0 {
+            if is_input {
+                writer.set(&NotePortInfo {
+                    id: ClapId::new(1),
+                    name: b"MIDI Learn",
+                    supported_dialects: NoteDialects::MIDI,
+                    preferred_dialect: Some(NoteDialect::Midi),
+                });
+            } else {
+                writer.set(&NotePortInfo {
+                    id: ClapId::new(2),
+                    name: b"MIDI CC Out",
+                    supported_dialects: NoteDialects::MIDI,
+                    preferred_dialect: Some(NoteDialect::Midi),
+                });
+            }
         }
     }
 }

@@ -3,7 +3,7 @@ name = "simply_droplets"
 version = "0.1.0"
 edition = "2021"
 authors = ["Simply Chris"]
-description = "A 3D droplet-based granular synthesis audio plugin built with Rust and nih-plug"
+description = "An AI powered VST plugin that can control any parameter in your DAW."
 license = "MIT"
 
 # Build dynamic library for VST/CLAP plugin
@@ -35,14 +35,15 @@ log = "0.4"
 simplelog = "0.12"
 
 # Core dependencies for the plugin
-rand = { version = "0.8", features = ["small_rng"] }
 fastrand = "2.0"
 
 # MCP server for AI control
-rmcp = { version = "0.1", features = ["server", "transport-sse-server"] }
+rmcp = { version = "0.9.1", features = ["server", "transport-streamable-http-server"] }
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros"] }
 tokio-util = "0.7"
+tower = "0.5"
+http-body-util = "0.1"
 
 # Lock-free ring buffer for audio thread communication
 rtrb = "0.3"

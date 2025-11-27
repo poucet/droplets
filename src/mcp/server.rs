@@ -3,9 +3,13 @@
 //! Exposes tools for AI to send MIDI CC through plugin instances.
 
 use rmcp::{
-    ServerHandler,
-    model::ServerInfo,
-    schemars, tool,
+    ErrorData as McpError, RoleServer, ServerHandler,
+    handler::server::router::tool::ToolRouter,
+    handler::server::tool::ToolCallContext,
+    handler::server::wrapper::Parameters,
+    model::*,
+    schemars, tool, tool_router,
+    service::RequestContext,
 };
 use serde::Deserialize;
 
@@ -13,11 +17,15 @@ use super::bridge::{CcBridge, CcMessage};
 
 /// MCP Server for Simply Droplets
 #[derive(Clone)]
-pub struct DropletsMcp;
+pub struct DropletsMcp {
+    tool_router: ToolRouter<DropletsMcp>,
+}
 
 impl DropletsMcp {
     pub fn new() -> Self {
-        Self
+        Self {
+            tool_router: Self::tool_router(),
+        }
     }
 }
 
@@ -112,11 +120,11 @@ fn default_channel() -> u8 {
     1
 }
 
-#[tool(tool_box)]
+#[tool_router]
 impl DropletsMcp {
     /// Send a MIDI CC message through a plugin instance.
     #[tool(description = "Send a MIDI CC message through a Simply Droplets plugin instance. The plugin outputs MIDI CC that your DAW can route to control any other plugin's parameters. Use 'default' for instance to target the first available plugin.")]
-    fn send_cc(&self, #[tool(aggr)] req: SendCcRequest) -> String {
+    fn send_cc(&self, Parameters(req): Parameters<SendCcRequest>) -> Result<CallToolResult, McpError> {
         let msg = CcMessage {
             // Convert 1-16 to 0-15, clamping to valid range
             channel: req.channel.saturating_sub(1).min(15),
@@ -124,43 +132,46 @@ impl DropletsMcp {
             value: req.value.min(127),
         };
 
-        match CcBridge::send(&req.instance, msg) {
+        let result = match CcBridge::send(&req.instance, msg) {
             Ok(()) => format!(
                 "Sent CC{} = {} on channel {} via instance '{}'",
                 req.cc, req.value, req.channel, req.instance
             ),
             Err(e) => format!("Error: {}", e),
-        }
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
     /// List all connected Simply Droplets plugin instances.
     #[tool(description = "List all connected Simply Droplets plugin instances. Returns the names that can be used with send_cc.")]
-    fn list_instances(&self) -> String {
+    fn list_instances(&self) -> Result<CallToolResult, McpError> {
         let instances = CcBridge::list_instances();
 
-        if instances.is_empty() {
+        let result = if instances.is_empty() {
             "No plugin instances connected. Load Simply Droplets in your DAW first.".to_string()
         } else {
             serde_json::to_string_pretty(&instances)
                 .unwrap_or_else(|_| format!("{:?}", instances))
-        }
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
     /// Rename a plugin instance for easier reference.
     #[tool(description = "Rename a Simply Droplets instance for easier reference. Use names like 'bass', 'pad', 'lead' to make targeting clearer.")]
-    fn set_instance_name(&self, #[tool(aggr)] req: RenameRequest) -> String {
-        match CcBridge::rename(&req.instance, &req.name) {
+    fn set_instance_name(&self, Parameters(req): Parameters<RenameRequest>) -> Result<CallToolResult, McpError> {
+        let result = match CcBridge::rename(&req.instance, &req.name) {
             Ok(old_name) => format!("Renamed '{}' to '{}'", old_name, req.name),
             Err(e) => format!("Error: {}", e),
-        }
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
     /// Get recent CC activity for debugging/visualization.
     #[tool(description = "Get recent MIDI CC activity sent through Simply Droplets instances. Useful for debugging and seeing what was sent.")]
-    fn get_activity(&self) -> String {
+    fn get_activity(&self) -> Result<CallToolResult, McpError> {
         let activity = CcBridge::recent_activity();
 
-        if activity.is_empty() {
+        let result = if activity.is_empty() {
             "No recent activity.".to_string()
         } else {
             let formatted: Vec<String> = activity
@@ -174,77 +185,112 @@ impl DropletsMcp {
                 .collect();
 
             formatted.join("\n")
-        }
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
     /// Set a parameter slot value for DAW automation/modulation.
     #[tool(description = "Set a parameter slot value (0.0-1.0). These slots are automatable parameters that can be mapped via your DAW's modulation system (Ableton LFOs, Bitwig modulators) to control any plugin on the same track.")]
-    fn set_param(&self, #[tool(aggr)] req: SetParamRequest) -> String {
-        match CcBridge::set_param(&req.instance, req.slot, req.value) {
+    fn set_param(&self, Parameters(req): Parameters<SetParamRequest>) -> Result<CallToolResult, McpError> {
+        let result = match CcBridge::set_param(&req.instance, req.slot, req.value) {
             Ok(()) => format!(
                 "Set slot {} = {:.2} ({:.0}%) on instance '{}'",
                 req.slot, req.value, req.value * 100.0, req.instance
             ),
             Err(e) => format!("Error: {}", e),
-        }
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
     /// Rename a parameter slot for easier identification.
     #[tool(description = "Rename a parameter slot to describe what it controls. For example, if slot 0 is mapped to 'Vital Filter Cutoff' in your DAW, rename it so both the UI and AI can identify it clearly.")]
-    fn rename_slot(&self, #[tool(aggr)] req: RenameSlotRequest) -> String {
-        match CcBridge::rename_slot(&req.instance, req.slot, &req.name) {
+    fn rename_slot(&self, Parameters(req): Parameters<RenameSlotRequest>) -> Result<CallToolResult, McpError> {
+        let result = match CcBridge::rename_slot(&req.instance, req.slot, &req.name) {
             Ok(old_name) => format!(
                 "Renamed slot {} from '{}' to '{}' on instance '{}'",
                 req.slot, old_name, req.name, req.instance
             ),
             Err(e) => format!("Error: {}", e),
-        }
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
-    /// List all parameter slots for an instance with their names and current values.
-    #[tool(description = "List all parameter slots for an instance with their current names and values. Use this to see what slots are available and how they're named.")]
-    fn list_slots(&self, #[tool(aggr)] req: GetSlotsRequest) -> String {
-        match CcBridge::get_slots(&req.instance) {
+    /// List all parameter slots for an instance with their names, CC mappings, and current values.
+    #[tool(description = "List all parameter slots for an instance with their names, CC mappings, and values. Shows which slots are mapped to MIDI CC and can output CC when set.")]
+    fn list_slots(&self, Parameters(req): Parameters<GetSlotsRequest>) -> Result<CallToolResult, McpError> {
+        let result = match CcBridge::get_slots(&req.instance) {
             Ok(slots) => {
                 if slots.is_empty() {
                     "No slots available.".to_string()
                 } else {
                     let formatted: Vec<String> = slots
                         .iter()
-                        .map(|(idx, name, value)| {
-                            format!("  [{}] {} = {:.2} ({:.0}%)", idx, name, value, value * 100.0)
+                        .map(|s| {
+                            let cc_info = match s.cc {
+                                Some(cc) => format!("CC{} ch{}", cc, s.channel + 1),
+                                None => "unmapped".to_string(),
+                            };
+                            format!("  [{}] {} ({}) = {:.2} ({:.0}%)", s.index, s.name, cc_info, s.value, s.value * 100.0)
                         })
                         .collect();
                     format!("Parameter slots on '{}':\n{}", req.instance, formatted.join("\n"))
                 }
             }
             Err(e) => format!("Error: {}", e),
-        }
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 }
 
-#[tool(tool_box)]
 impl ServerHandler for DropletsMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
+            protocol_version: ProtocolVersion::V_2024_11_05,
+            capabilities: ServerCapabilities::builder()
+                .enable_tools()
+                .build(),
+            server_info: Implementation::from_build_env(),
             instructions: Some(
-                "Simply Droplets MCP Server - AI-controlled DAW automation bridge.\n\n\
-                 Setup:\n\
-                 1. Load Simply Droplets plugin on a track in your DAW\n\
-                 2. Map Simply Droplets parameter slots to target plugin parameters using DAW modulation\n\
-                    (Ableton: use device modulators, Bitwig: use modulators)\n\
-                 3. Use rename_slot() to label each slot with what it controls\n\
-                 4. Use set_param() to control the target parameters via AI\n\n\
+                "Simply Droplets MCP Server - AI-controlled MIDI CC output for DAW automation.\n\n\
+                 How it works:\n\
+                 1. Load Simply Droplets (instrument plugin) on a track in your DAW\n\
+                 2. In the plugin UI, click 'Map' on a slot, then move a CC controller to learn the CC number\n\
+                 3. Route the plugin's MIDI output to the target plugin you want to control\n\
+                 4. Use rename_slot() to label what each slot controls (e.g., 'Vital Filter Cutoff')\n\
+                 5. Use set_param() to output MIDI CC - the plugin sends CC messages that your DAW routes to target\n\n\
                  Tools:\n\
                  - list_instances(): See connected plugin instances\n\
-                 - list_slots(): See parameter slots with names and values\n\
-                 - set_param(): Set a parameter slot value (0.0-1.0)\n\
-                 - rename_slot(): Name a slot (e.g., 'Vital Filter Cutoff')\n\
-                 - send_cc(): Send MIDI CC for direct MIDI routing\n\n\
-                 The parameter slots are automatable and show up in your DAW's modulation system."
+                 - list_slots(): See slots with names, CC mappings, and values\n\
+                 - set_param(): Set slot value (0.0-1.0) - outputs MIDI CC if slot is mapped\n\
+                 - rename_slot(): Name a slot for clarity\n\
+                 - send_cc(): Send raw MIDI CC directly (bypass slot system)\n\n\
+                 The plugin is an instrument that outputs MIDI CC - your DAW routes this to control other plugins."
                     .to_string(),
             ),
-            ..Default::default()
         }
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParam>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, McpError> {
+        log::debug!("MCP: list_tools called");
+        let tools = self.tool_router.list_all();
+        log::info!("MCP: Returning {} tools", tools.len());
+        Ok(ListToolsResult {
+            tools,
+            next_cursor: None,
+        })
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParam,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        log::info!("MCP: call_tool '{}' with args: {:?}", request.name, request.arguments);
+        let tool_context = ToolCallContext::new(self, request, context);
+        self.tool_router.call(tool_context).await
     }
 }
