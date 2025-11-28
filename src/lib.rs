@@ -1,4 +1,5 @@
-use clack_extensions::{audio_ports::*, gui::*, note_ports::*};
+use clack_extensions::{audio_ports::*, gui::*, note_ports::*, params::*};
+use clack_plugin::utils::Cookie;
 use clack_plugin::prelude::*;
 use clack_plugin::plugin::features::*;
 use crossbeam::channel::{Receiver, Sender};
@@ -28,7 +29,8 @@ impl Plugin for DropletPlugin {
         builder
             .register::<PluginAudioPorts>()
             .register::<PluginNotePorts>()
-            .register::<PluginGui>();
+            .register::<PluginGui>()
+            .register::<PluginParams>();
     }
 }
 
@@ -112,6 +114,96 @@ impl<'a> PluginMainThread<'a, DropletShared<'a>> for DropletMainThread<'a> {
 
         // Drain any old IPC messages (no longer used, but prevents queue buildup)
         while self.shared.ipc_receiver.try_recv().is_ok() {}
+    }
+}
+
+/// Base ID for slot parameters (CLAP IDs can't be 0, so we start at 1)
+const SLOT_PARAM_ID_BASE: u32 = 1;
+
+/// Convert slot index to CLAP param ID
+fn slot_to_param_id(slot_index: usize) -> Option<ClapId> {
+    ClapId::from_raw(slot_index as u32 + SLOT_PARAM_ID_BASE)
+}
+
+/// Convert CLAP param ID to slot index
+fn param_id_to_slot(param_id: ClapId) -> Option<usize> {
+    let raw = param_id.get();
+    if raw >= SLOT_PARAM_ID_BASE {
+        let index = (raw - SLOT_PARAM_ID_BASE) as usize;
+        if index < params::NUM_CC_SLOTS {
+            return Some(index);
+        }
+    }
+    None
+}
+
+/// CLAP Params extension - exposes slot values as automatable parameters
+impl<'a> PluginMainThreadParams for DropletMainThread<'a> {
+    fn count(&mut self) -> u32 {
+        params::NUM_CC_SLOTS as u32
+    }
+
+    fn get_info(&mut self, param_index: u32, info: &mut ParamInfoWriter) {
+        let index = param_index as usize;
+        if index < params::NUM_CC_SLOTS {
+            let name = self.shared.params.slots[index].get_name();
+            if let Some(id) = slot_to_param_id(index) {
+                info.set(&ParamInfo {
+                    id,
+                    flags: ParamInfoFlags::IS_AUTOMATABLE | ParamInfoFlags::IS_MODULATABLE,
+                    cookie: Cookie::empty(),
+                    name: name.as_bytes(),
+                    module: b"Slots",
+                    min_value: 0.0,
+                    max_value: 1.0,
+                    default_value: 0.0,
+                });
+            }
+        }
+    }
+
+    fn get_value(&mut self, param_id: ClapId) -> Option<f64> {
+        param_id_to_slot(param_id).map(|index| self.shared.params.get_slot(index))
+    }
+
+    fn value_to_text(
+        &mut self,
+        param_id: ClapId,
+        value: f64,
+        writer: &mut ParamDisplayWriter,
+    ) -> std::fmt::Result {
+        use std::fmt::Write;
+        if param_id_to_slot(param_id).is_some() {
+            write!(writer, "{:.1}%", value * 100.0)
+        } else {
+            Err(std::fmt::Error)
+        }
+    }
+
+    fn text_to_value(&mut self, param_id: ClapId, text: &core::ffi::CStr) -> Option<f64> {
+        param_id_to_slot(param_id)?;
+        let input = text.to_str().ok()?;
+        // Handle percentage values (strip % and divide by 100)
+        let trimmed = input.trim().trim_end_matches('%').trim();
+        trimmed.parse::<f64>().ok().map(|v| (v / 100.0).clamp(0.0, 1.0))
+    }
+
+    fn flush(
+        &mut self,
+        input_parameter_changes: &InputEvents,
+        _output_parameter_changes: &mut OutputEvents,
+    ) {
+        for event in input_parameter_changes {
+            if let Some(clack_plugin::events::spaces::CoreEventSpace::ParamValue(pv)) =
+                event.as_core_event()
+            {
+                if let Some(param_id) = pv.param_id() {
+                    if let Some(index) = param_id_to_slot(param_id) {
+                        self.shared.params.slots[index].value.store(pv.value());
+                    }
+                }
+            }
+        }
     }
 }
 

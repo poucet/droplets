@@ -2,11 +2,13 @@
 //!
 //! This is a pass-through audio processor that:
 //! - Listens for incoming MIDI CC for learning mode
-//! - Outputs MIDI CC from the MCP server when AI sets slot values
+//! - Handles parameter automation from the DAW
 
+use clack_extensions::params::PluginAudioProcessorParams;
 use clack_plugin::events::event_types::MidiEvent;
 use clack_plugin::host::HostAudioProcessorHandle;
 use clack_plugin::plugin::{PluginAudioProcessor, PluginError};
+use clack_plugin::prelude::{InputEvents, OutputEvents};
 use clack_plugin::process::{Audio, Events, PluginAudioConfiguration, Process, ProcessStatus};
 use rtrb::Consumer;
 
@@ -88,7 +90,24 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
             }
         }
 
-        // Pass through audio unchanged (this plugin is just a MIDI CC bridge)
+        // Pass through audio unchanged (this plugin is a parameter bridge)
         Ok(ProcessStatus::ContinueIfNotQuiet)
+    }
+}
+
+/// Handle parameter changes from the DAW during audio processing
+impl<'a> PluginAudioProcessorParams for DropletAudioProcessor<'a> {
+    fn flush(&mut self, input_parameter_changes: &InputEvents, _output_parameter_changes: &mut OutputEvents) {
+        for event in input_parameter_changes {
+            if let Some(clack_plugin::events::spaces::CoreEventSpace::ParamValue(pv)) =
+                event.as_core_event()
+            {
+                if let Some(param_id) = pv.param_id() {
+                    if let Some(index) = crate::param_id_to_slot(param_id) {
+                        self.shared.params.slots[index].value.store(pv.value());
+                    }
+                }
+            }
+        }
     }
 }

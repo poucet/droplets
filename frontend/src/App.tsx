@@ -4,17 +4,13 @@ import './App.css';
 interface SlotInfo {
   index: number;
   name: string;
-  cc: number | null;
-  channel: number;
   value: number;
-  learning: boolean;
 }
 
 interface ActivityEvent {
   timestamp: number;
   instance: string;
-  channel: number;
-  cc: number;
+  slot: number;
   value: number;
 }
 
@@ -25,10 +21,8 @@ const App: React.FC = () => {
 
   const fetchSlots = useCallback(async () => {
     try {
-      // Custom protocol: droplets://api/slots -> host="api", path="/slots"
       const response = await fetch('droplets://api/slots');
       const text = await response.text();
-      console.log('Slots response:', text);
       const data = JSON.parse(text);
       if (data.type === 'slots' && data.data) {
         setSlots(data.data);
@@ -55,34 +49,14 @@ const App: React.FC = () => {
     }
   }, []);
 
-  const startLearn = useCallback(async (slot: number) => {
-    try {
-      await fetch(`droplets://api/start_learn/${slot}`);
-      fetchSlots(); // Refresh to show learning state
-    } catch (e) {
-      console.error('Failed to start learn:', e);
-    }
-  }, [fetchSlots]);
-
-  const cancelLearn = useCallback(async () => {
-    try {
-      await fetch('droplets://api/cancel_learn');
-      fetchSlots();
-    } catch (e) {
-      console.error('Failed to cancel learn:', e);
-    }
-  }, [fetchSlots]);
-
   useEffect(() => {
-    // Initial fetch
     fetchSlots();
     fetchActivity();
 
-    // Poll for updates
     const interval = setInterval(() => {
       fetchSlots();
       fetchActivity();
-    }, 500);
+    }, 100); // Faster polling for smoother parameter updates
 
     return () => clearInterval(interval);
   }, [fetchSlots, fetchActivity]);
@@ -112,13 +86,7 @@ const App: React.FC = () => {
 
       <main className="app-main">
         <section className="slots-section">
-          <h2>Parameter Slots</h2>
-          {slots.some(s => s.learning) && (
-            <div className="learning-banner">
-              <span>Waiting for MIDI CC input...</span>
-              <button onClick={cancelLearn} className="cancel-learn-btn">Cancel</button>
-            </div>
-          )}
+          <h2>Automatable Parameters</h2>
           <div className="slots-list">
             {slots.length === 0 ? (
               <div className="no-slots">
@@ -126,16 +94,9 @@ const App: React.FC = () => {
               </div>
             ) : (
               slots.map((slot) => (
-                <div key={slot.index} className={`slot-item ${slot.learning ? 'learning' : ''}`}>
+                <div key={slot.index} className="slot-item">
                   <span className="slot-index">{slot.index}</span>
                   <span className="slot-name">{slot.name}</span>
-                  <div className="slot-cc">
-                    {slot.cc !== null ? (
-                      <span className="cc-mapped">CC{slot.cc} Ch{slot.channel + 1}</span>
-                    ) : (
-                      <span className="cc-unmapped">unmapped</span>
-                    )}
-                  </div>
                   <div className="slot-bar-container">
                     <div
                       className="slot-bar"
@@ -143,25 +104,20 @@ const App: React.FC = () => {
                     />
                   </div>
                   <span className="slot-value">{Math.round(slot.value * 100)}%</span>
-                  <button
-                    onClick={() => startLearn(slot.index)}
-                    className={`map-btn ${slot.learning ? 'learning' : ''}`}
-                    disabled={slot.learning}
-                  >
-                    {slot.learning ? 'Learning...' : 'Map'}
-                  </button>
                 </div>
               ))
             )}
           </div>
           <div className="slots-hint">
-            <p>Click "Map" then send MIDI CC from your controller to assign it to a slot</p>
-            <p>AI can set values via <code>set_param</code> - outputs the mapped CC</p>
+            <p><strong>How to use:</strong></p>
+            <p>1. In your DAW, map these parameters to any plugin using modulation</p>
+            <p>2. AI sets values via MCP <code>set_param</code> tool</p>
+            <p>3. DAW routes the parameter changes to your target plugin</p>
           </div>
         </section>
 
         <section className="activity-section">
-          <h2>Recent Activity</h2>
+          <h2>Recent AI Activity</h2>
           <div className="activity-list">
             {activity.length === 0 ? (
               <div className="no-activity">
@@ -173,9 +129,8 @@ const App: React.FC = () => {
                 <div key={`${event.timestamp}-${idx}`} className="activity-item">
                   <span className="activity-time">{formatTimestamp(event.timestamp)}</span>
                   <span className="activity-instance">{event.instance}</span>
-                  <span className="activity-cc">CC{event.cc}</span>
-                  <span className="activity-value">{event.value}</span>
-                  <span className="activity-channel">Ch{event.channel}</span>
+                  <span className="activity-slot">Slot {event.slot}</span>
+                  <span className="activity-value">{Math.round(event.value * 100)}%</span>
                 </div>
               ))
             )}

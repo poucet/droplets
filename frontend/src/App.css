@@ -409,20 +409,15 @@
   white-space: nowrap;
 }
 
-.activity-cc {
+.activity-slot {
   color: #7ed321;
-  min-width: 45px;
+  min-width: 55px;
 }
 
 .activity-value {
   color: #f5a623;
-  min-width: 35px;
+  min-width: 45px;
   text-align: right;
-}
-
-.activity-channel {
-  color: #606060;
-  min-width: 30px;
 }
 
 /* Scrollbar styling */
