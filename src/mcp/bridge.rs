@@ -60,11 +60,102 @@ impl NoteMessage {
     }
 }
 
+/// Per-note expression message (MIDI 2.0 only)
+/// These are expressions that target a specific note that is currently playing
+#[derive(Clone, Copy, Debug)]
+pub struct PerNoteExpressionMessage {
+    pub channel: u8,           // 0-15
+    pub note: u8,              // 0-127 (note number to target)
+    pub expression_type: PerNoteExpressionType,
+}
+
+/// Types of per-note expressions in MIDI 2.0
+#[derive(Clone, Copy, Debug)]
+pub enum PerNoteExpressionType {
+    /// Per-note pitch bend: 32-bit value (0x80000000 = center/no bend)
+    /// Range: 0x00000000 (-max) to 0xFFFFFFFF (+max), 0x80000000 = center
+    PitchBend { value: u32 },
+    /// Per-note pressure/aftertouch: 32-bit value (0 to 0xFFFFFFFF)
+    Pressure { value: u32 },
+    /// Registered per-note controller (indexed)
+    RegisteredController { index: u8, value: u32 },
+    /// Assignable per-note controller (indexed)
+    AssignableController { index: u8, value: u32 },
+    /// Per-note management: detach/reset
+    Management { flags: u8 },
+}
+
+impl PerNoteExpressionMessage {
+    /// Create a per-note pitch bend message
+    /// value: 32-bit pitch bend (0x80000000 = center)
+    pub fn pitch_bend(channel: u8, note: u8, value: u32) -> Self {
+        Self {
+            channel,
+            note,
+            expression_type: PerNoteExpressionType::PitchBend { value },
+        }
+    }
+
+    /// Create a per-note pitch bend from semitones (-64.0 to +64.0 range)
+    pub fn pitch_bend_semitones(channel: u8, note: u8, semitones: f32) -> Self {
+        // Map -64.0..+64.0 to 0..0xFFFFFFFF with 0.0 at center
+        let normalized = (semitones / 64.0).clamp(-1.0, 1.0);
+        let value = ((normalized * 0.5 + 0.5) * (u32::MAX as f32)) as u32;
+        Self::pitch_bend(channel, note, value)
+    }
+
+    /// Create a per-note pressure/aftertouch message
+    /// value: 32-bit pressure (0 to 0xFFFFFFFF)
+    pub fn pressure(channel: u8, note: u8, value: u32) -> Self {
+        Self {
+            channel,
+            note,
+            expression_type: PerNoteExpressionType::Pressure { value },
+        }
+    }
+
+    /// Create a per-note pressure from normalized value (0.0 to 1.0)
+    pub fn pressure_normalized(channel: u8, note: u8, normalized: f32) -> Self {
+        let value = (normalized.clamp(0.0, 1.0) * (u32::MAX as f32)) as u32;
+        Self::pressure(channel, note, value)
+    }
+
+    /// Create a registered per-note controller message
+    pub fn registered_controller(channel: u8, note: u8, index: u8, value: u32) -> Self {
+        Self {
+            channel,
+            note,
+            expression_type: PerNoteExpressionType::RegisteredController { index, value },
+        }
+    }
+
+    /// Create an assignable per-note controller message
+    pub fn assignable_controller(channel: u8, note: u8, index: u8, value: u32) -> Self {
+        Self {
+            channel,
+            note,
+            expression_type: PerNoteExpressionType::AssignableController { index, value },
+        }
+    }
+
+    /// Create a per-note management message
+    /// flags: bit 0 = detach, bit 1 = reset
+    pub fn management(channel: u8, note: u8, detach: bool, reset: bool) -> Self {
+        let flags = (detach as u8) | ((reset as u8) << 1);
+        Self {
+            channel,
+            note,
+            expression_type: PerNoteExpressionType::Management { flags },
+        }
+    }
+}
+
 /// Combined MIDI message type for the ring buffer
 #[derive(Clone, Copy, Debug)]
 pub enum MidiMessage {
     Cc(CcMessage),
     Note(NoteMessage),
+    PerNoteExpression(PerNoteExpressionMessage),
 }
 
 /// Activity event for GUI visualization
@@ -77,6 +168,7 @@ pub struct ActivityEvent {
     pub value: u8,            // CC value or velocity
     pub note: Option<u8>,     // Note number (for note messages)
     pub is_note_on: Option<bool>, // true = note on, false = note off
+    pub expression_type: Option<String>, // Per-note expression type (pitch_bend, pressure, etc.)
 }
 
 /// Shared parameter access for MCP server
@@ -176,6 +268,23 @@ impl CcBridge {
         Ok(())
     }
 
+    /// Send a per-note expression message to an instance (called from MCP server thread)
+    /// These are MIDI 2.0 only - they target specific notes that are currently playing
+    pub fn send_per_note_expression(instance: &str, msg: PerNoteExpressionMessage) -> Result<(), &'static str> {
+        let reg = registry().read().unwrap();
+        let entry = Self::find_entry(&reg, instance)?;
+        let instance_name = entry.name.clone();
+
+        let mut producer = entry.producer.lock().map_err(|_| "Producer lock poisoned")?;
+        producer
+            .push(MidiMessage::PerNoteExpression(msg))
+            .map_err(|_| "Queue full - audio thread not consuming fast enough")?;
+
+        Self::log_expression_activity(&instance_name, &msg);
+
+        Ok(())
+    }
+
     /// Log CC activity for GUI visualization
     fn log_cc_activity(instance_name: &str, msg: &CcMessage) {
         if let Ok(mut log) = activity_log().try_lock() {
@@ -192,6 +301,7 @@ impl CcBridge {
                 value: msg.value,
                 note: None,
                 is_note_on: None,
+                expression_type: None,
             });
 
             while log.len() > MAX_ACTIVITY_LOG_SIZE {
@@ -216,6 +326,46 @@ impl CcBridge {
                 value: msg.velocity,
                 note: Some(msg.note),
                 is_note_on: Some(msg.is_note_on),
+                expression_type: None,
+            });
+
+            while log.len() > MAX_ACTIVITY_LOG_SIZE {
+                log.pop_front();
+            }
+        }
+    }
+
+    /// Log per-note expression activity for GUI visualization
+    fn log_expression_activity(instance_name: &str, msg: &PerNoteExpressionMessage) {
+        if let Ok(mut log) = activity_log().try_lock() {
+            let timestamp_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+
+            let (expr_name, value) = match msg.expression_type {
+                PerNoteExpressionType::PitchBend { value } => ("pitch_bend", (value >> 24) as u8),
+                PerNoteExpressionType::Pressure { value } => ("pressure", (value >> 24) as u8),
+                PerNoteExpressionType::RegisteredController { index, value } => {
+                    let _ = index; // Displayed in expr_name would need allocation
+                    ("reg_ctrl", (value >> 24) as u8)
+                }
+                PerNoteExpressionType::AssignableController { index, value } => {
+                    let _ = index;
+                    ("assign_ctrl", (value >> 24) as u8)
+                }
+                PerNoteExpressionType::Management { flags } => ("management", flags),
+            };
+
+            log.push_back(ActivityEvent {
+                timestamp_ms,
+                instance: instance_name.to_string(),
+                channel: msg.channel,
+                cc: None,
+                value,
+                note: Some(msg.note),
+                is_note_on: None,
+                expression_type: Some(expr_name.to_string()),
             });
 
             while log.len() > MAX_ACTIVITY_LOG_SIZE {

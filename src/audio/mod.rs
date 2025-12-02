@@ -13,7 +13,7 @@ use clack_plugin::prelude::{InputEvents, OutputEvents};
 use clack_plugin::process::{Audio, Events, PluginAudioConfiguration, Process, ProcessStatus};
 use rtrb::Consumer;
 
-use crate::mcp::{MidiMessage, CcMessage, NoteMessage};
+use crate::mcp::{MidiMessage, CcMessage, NoteMessage, PerNoteExpressionMessage, PerNoteExpressionType};
 use crate::{DropletMainThread, DropletShared};
 
 pub mod ports;
@@ -25,6 +25,12 @@ const UMP_MSG_TYPE_MIDI2_CHANNEL_VOICE: u8 = 0x4;
 const UMP_OPCODE_NOTE_OFF: u8 = 0x8;
 const UMP_OPCODE_NOTE_ON: u8 = 0x9;
 const UMP_OPCODE_CONTROL_CHANGE: u8 = 0xB;
+
+/// MIDI 2.0 Per-Note Expression Opcodes
+const UMP_OPCODE_REG_PER_NOTE_CTRL: u8 = 0x0;    // Registered Per-Note Controller
+const UMP_OPCODE_ASSIGN_PER_NOTE_CTRL: u8 = 0x1; // Assignable Per-Note Controller
+const UMP_OPCODE_PER_NOTE_MGMT: u8 = 0xF;        // Per-Note Management
+const UMP_OPCODE_PER_NOTE_PITCH_BEND: u8 = 0x6;  // Per-Note Pitch Bend
 
 /// Build a MIDI 2.0 UMP packet for Note On/Off
 /// Format: Word1 = [4g][Xc][nn][tt], Word2 = [vvvv][aaaa]
@@ -63,6 +69,63 @@ fn build_ump_cc(group: u8, channel: u8, cc: u8, value_32bit: u32) -> [u32; 4] {
 
     [word1, word2, 0, 0]
 }
+
+/// Build a MIDI 2.0 UMP packet for Per-Note Pitch Bend
+/// Format: Word1 = [4g][6c][nn][00], Word2 = [32-bit pitch bend]
+/// Value: 0x80000000 = center (no bend), full 32-bit range
+fn build_ump_per_note_pitch_bend(group: u8, channel: u8, note: u8, value_32bit: u32) -> [u32; 4] {
+    let word1 = ((UMP_MSG_TYPE_MIDI2_CHANNEL_VOICE as u32) << 28)
+        | ((group as u32 & 0x0F) << 24)
+        | ((UMP_OPCODE_PER_NOTE_PITCH_BEND as u32) << 20)
+        | ((channel as u32 & 0x0F) << 16)
+        | ((note as u32) << 8);
+
+    [word1, value_32bit, 0, 0]
+}
+
+/// Build a MIDI 2.0 UMP packet for Registered Per-Note Controller
+/// Format: Word1 = [4g][0c][nn][ii], Word2 = [32-bit value]
+/// Index 0x07 = Per-Note Pressure/Aftertouch
+fn build_ump_reg_per_note_ctrl(group: u8, channel: u8, note: u8, index: u8, value_32bit: u32) -> [u32; 4] {
+    let word1 = ((UMP_MSG_TYPE_MIDI2_CHANNEL_VOICE as u32) << 28)
+        | ((group as u32 & 0x0F) << 24)
+        | ((UMP_OPCODE_REG_PER_NOTE_CTRL as u32) << 20)
+        | ((channel as u32 & 0x0F) << 16)
+        | ((note as u32) << 8)
+        | (index as u32);
+
+    [word1, value_32bit, 0, 0]
+}
+
+/// Build a MIDI 2.0 UMP packet for Assignable Per-Note Controller
+/// Format: Word1 = [4g][1c][nn][ii], Word2 = [32-bit value]
+fn build_ump_assign_per_note_ctrl(group: u8, channel: u8, note: u8, index: u8, value_32bit: u32) -> [u32; 4] {
+    let word1 = ((UMP_MSG_TYPE_MIDI2_CHANNEL_VOICE as u32) << 28)
+        | ((group as u32 & 0x0F) << 24)
+        | ((UMP_OPCODE_ASSIGN_PER_NOTE_CTRL as u32) << 20)
+        | ((channel as u32 & 0x0F) << 16)
+        | ((note as u32) << 8)
+        | (index as u32);
+
+    [word1, value_32bit, 0, 0]
+}
+
+/// Build a MIDI 2.0 UMP packet for Per-Note Management
+/// Format: Word1 = [4g][Fc][nn][ff], Word2 = 0
+/// Flags: bit 0 = Detach, bit 1 = Reset
+fn build_ump_per_note_mgmt(group: u8, channel: u8, note: u8, flags: u8) -> [u32; 4] {
+    let word1 = ((UMP_MSG_TYPE_MIDI2_CHANNEL_VOICE as u32) << 28)
+        | ((group as u32 & 0x0F) << 24)
+        | ((UMP_OPCODE_PER_NOTE_MGMT as u32) << 20)
+        | ((channel as u32 & 0x0F) << 16)
+        | ((note as u32) << 8)
+        | (flags as u32 & 0x03);
+
+    [word1, 0, 0, 0]
+}
+
+/// Registered Per-Note Controller index for Pressure/Aftertouch
+const RPN_PER_NOTE_PRESSURE: u8 = 0x07;
 
 pub struct DropletAudioProcessor<'a> {
     shared: &'a DropletShared<'a>,
@@ -134,6 +197,10 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
                 MidiMessage::Note(note) => {
                     self.output_note(&note, &mut events);
                 }
+                MidiMessage::PerNoteExpression(expr) => {
+                    // Per-note expressions are MIDI 2.0 only - no MIDI 1.0 equivalent
+                    self.output_per_note_expression(&expr, &mut events);
+                }
             }
         }
 
@@ -189,6 +256,33 @@ impl<'a> DropletAudioProcessor<'a> {
         let midi2_event = Midi2Event::new(0, 0, ump_data);
         if let Err(e) = events.output.try_push(&midi2_event) {
             log::warn!("Failed to push MIDI 2.0 note event: {:?}", e);
+        }
+    }
+
+    /// Output a per-note expression as MIDI 2.0 only (no MIDI 1.0 equivalent)
+    fn output_per_note_expression(&self, expr: &PerNoteExpressionMessage, events: &mut Events) {
+        let ump_data = match expr.expression_type {
+            PerNoteExpressionType::PitchBend { value } => {
+                build_ump_per_note_pitch_bend(0, expr.channel, expr.note, value)
+            }
+            PerNoteExpressionType::Pressure { value } => {
+                // Per-note pressure uses Registered Per-Note Controller index 0x07
+                build_ump_reg_per_note_ctrl(0, expr.channel, expr.note, RPN_PER_NOTE_PRESSURE, value)
+            }
+            PerNoteExpressionType::RegisteredController { index, value } => {
+                build_ump_reg_per_note_ctrl(0, expr.channel, expr.note, index, value)
+            }
+            PerNoteExpressionType::AssignableController { index, value } => {
+                build_ump_assign_per_note_ctrl(0, expr.channel, expr.note, index, value)
+            }
+            PerNoteExpressionType::Management { flags } => {
+                build_ump_per_note_mgmt(0, expr.channel, expr.note, flags)
+            }
+        };
+
+        let midi2_event = Midi2Event::new(0, 0, ump_data);
+        if let Err(e) = events.output.try_push(&midi2_event) {
+            log::warn!("Failed to push MIDI 2.0 per-note expression event: {:?}", e);
         }
     }
 }

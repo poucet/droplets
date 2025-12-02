@@ -13,7 +13,7 @@ use rmcp::{
 };
 use serde::Deserialize;
 
-use super::bridge::{CcBridge, CcMessage, NoteMessage};
+use super::bridge::{CcBridge, CcMessage, NoteMessage, PerNoteExpressionMessage};
 
 /// MCP Server for Simply Droplets
 #[derive(Clone)]
@@ -157,6 +157,88 @@ pub struct RenameSlotData {
 }
 
 // =============================================================================
+// Per-note expression types (MIDI 2.0 only)
+// =============================================================================
+
+/// Per-note pitch bend data (MIDI 2.0)
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PerNotePitchBendData {
+    /// MIDI channel (1-16, default: 1)
+    #[serde(default = "default_channel")]
+    #[schemars(description = "MIDI channel (1-16, default: 1)")]
+    pub channel: u8,
+
+    /// MIDI note number to bend (0-127, where 60 = C4/middle C)
+    #[schemars(description = "MIDI note number to bend (0-127, where 60 = C4/middle C)")]
+    pub note: u8,
+
+    /// Pitch bend in semitones (-64.0 to +64.0, 0 = no bend)
+    #[schemars(description = "Pitch bend in semitones (-64.0 to +64.0, 0 = no bend)")]
+    pub semitones: f32,
+}
+
+/// Per-note pressure/aftertouch data (MIDI 2.0)
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PerNotePressureData {
+    /// MIDI channel (1-16, default: 1)
+    #[serde(default = "default_channel")]
+    #[schemars(description = "MIDI channel (1-16, default: 1)")]
+    pub channel: u8,
+
+    /// MIDI note number (0-127, where 60 = C4/middle C)
+    #[schemars(description = "MIDI note number (0-127, where 60 = C4/middle C)")]
+    pub note: u8,
+
+    /// Pressure value (0.0-1.0 normalized)
+    #[schemars(description = "Pressure value (0.0-1.0 normalized)")]
+    pub pressure: f32,
+}
+
+/// Per-note controller data (MIDI 2.0)
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PerNoteControllerData {
+    /// MIDI channel (1-16, default: 1)
+    #[serde(default = "default_channel")]
+    #[schemars(description = "MIDI channel (1-16, default: 1)")]
+    pub channel: u8,
+
+    /// MIDI note number (0-127, where 60 = C4/middle C)
+    #[schemars(description = "MIDI note number (0-127, where 60 = C4/middle C)")]
+    pub note: u8,
+
+    /// Controller index (0-255)
+    #[schemars(description = "Controller index (0-255)")]
+    pub index: u8,
+
+    /// Controller value (0.0-1.0 normalized)
+    #[schemars(description = "Controller value (0.0-1.0 normalized)")]
+    pub value: f32,
+}
+
+/// Per-note management data (MIDI 2.0)
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PerNoteManagementData {
+    /// MIDI channel (1-16, default: 1)
+    #[serde(default = "default_channel")]
+    #[schemars(description = "MIDI channel (1-16, default: 1)")]
+    pub channel: u8,
+
+    /// MIDI note number (0-127, where 60 = C4/middle C)
+    #[schemars(description = "MIDI note number (0-127, where 60 = C4/middle C)")]
+    pub note: u8,
+
+    /// Detach this note from prior note-on (default: false)
+    #[serde(default)]
+    #[schemars(description = "Detach this note from prior note-on")]
+    pub detach: bool,
+
+    /// Reset all controllers on this note (default: false)
+    #[serde(default)]
+    #[schemars(description = "Reset all controllers on this note")]
+    pub reset: bool,
+}
+
+// =============================================================================
 // Instance management types (these don't use the wrapper since instance is the subject)
 // =============================================================================
 
@@ -182,6 +264,12 @@ pub type SendNoteOnHiresRequest = InstanceRequest<NoteOnHiresData>;
 pub type SendNoteOffRequest = InstanceRequest<NoteOffData>;
 pub type SetParamRequest = InstanceRequest<SetParamData>;
 pub type RenameSlotRequest = InstanceRequest<RenameSlotData>;
+
+// Per-note expression request types (MIDI 2.0)
+pub type PerNotePitchBendRequest = InstanceRequest<PerNotePitchBendData>;
+pub type PerNotePressureRequest = InstanceRequest<PerNotePressureData>;
+pub type PerNoteControllerRequest = InstanceRequest<PerNoteControllerData>;
+pub type PerNoteManagementRequest = InstanceRequest<PerNoteManagementData>;
 
 /// Request to get slots for an instance (no additional data needed)
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -258,7 +346,7 @@ impl DropletsMcp {
     }
 
     /// Get recent MIDI activity for debugging/visualization.
-    #[tool(description = "Get recent MIDI activity (CC and notes) sent through Simply Droplets instances. Useful for debugging and seeing what was sent.")]
+    #[tool(description = "Get recent MIDI activity (CC, notes, and per-note expressions) sent through Simply Droplets instances. Useful for debugging and seeing what was sent.")]
     fn get_activity(&self) -> Result<CallToolResult, McpError> {
         let activity = CcBridge::recent_activity();
 
@@ -272,6 +360,13 @@ impl DropletsMcp {
                         format!(
                             "[{}] {} -> CC{} = {} (ch{})",
                             e.timestamp_ms, e.instance, cc, e.value, e.channel + 1
+                        )
+                    } else if let Some(expr_type) = &e.expression_type {
+                        // Per-note expression
+                        let note = e.note.unwrap_or(0);
+                        format!(
+                            "[{}] {} -> {} note={} val={} (ch{})",
+                            e.timestamp_ms, e.instance, expr_type, note, e.value, e.channel + 1
                         )
                     } else if let Some(note) = e.note {
                         let note_type = if e.is_note_on.unwrap_or(false) { "NoteOn" } else { "NoteOff" };
@@ -401,6 +496,117 @@ impl DropletsMcp {
         };
         Ok(CallToolResult::success(vec![Content::text(result)]))
     }
+
+    // =========================================================================
+    // MIDI 2.0 Per-Note Expression Tools
+    // =========================================================================
+
+    /// Send per-note pitch bend (MIDI 2.0 only).
+    #[tool(description = "Send MIDI 2.0 per-note pitch bend. Unlike channel pitch bend, this affects only a specific note that is currently playing. Range is -64 to +64 semitones. Requires MIDI 2.0 compatible host/instrument.")]
+    fn send_per_note_pitch_bend(&self, Parameters(req): Parameters<PerNotePitchBendRequest>) -> Result<CallToolResult, McpError> {
+        let msg = PerNoteExpressionMessage::pitch_bend_semitones(
+            req.data.channel.saturating_sub(1).min(15),
+            req.data.note.min(127),
+            req.data.semitones.clamp(-64.0, 64.0),
+        );
+
+        let result = match CcBridge::send_per_note_expression(&req.instance, msg) {
+            Ok(()) => format!(
+                "Sent per-note pitch bend {:.2} semitones on note {} ch{} via '{}'",
+                req.data.semitones, req.data.note, req.data.channel, req.instance
+            ),
+            Err(e) => format!("Error: {}", e),
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
+    }
+
+    /// Send per-note pressure/aftertouch (MIDI 2.0 only).
+    #[tool(description = "Send MIDI 2.0 per-note pressure (polyphonic aftertouch). Unlike channel aftertouch, this affects only a specific note. Use 0.0-1.0 for pressure intensity. Requires MIDI 2.0 compatible host/instrument.")]
+    fn send_per_note_pressure(&self, Parameters(req): Parameters<PerNotePressureRequest>) -> Result<CallToolResult, McpError> {
+        let msg = PerNoteExpressionMessage::pressure_normalized(
+            req.data.channel.saturating_sub(1).min(15),
+            req.data.note.min(127),
+            req.data.pressure.clamp(0.0, 1.0),
+        );
+
+        let result = match CcBridge::send_per_note_expression(&req.instance, msg) {
+            Ok(()) => format!(
+                "Sent per-note pressure {:.2} on note {} ch{} via '{}'",
+                req.data.pressure, req.data.note, req.data.channel, req.instance
+            ),
+            Err(e) => format!("Error: {}", e),
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
+    }
+
+    /// Send per-note registered controller (MIDI 2.0 only).
+    #[tool(description = "Send MIDI 2.0 registered per-note controller. These are standardized controllers that apply to individual notes. Index 7 is per-note pressure (use send_per_note_pressure instead). Requires MIDI 2.0 compatible host/instrument.")]
+    fn send_per_note_registered_controller(&self, Parameters(req): Parameters<PerNoteControllerRequest>) -> Result<CallToolResult, McpError> {
+        let value_32bit = (req.data.value.clamp(0.0, 1.0) * (u32::MAX as f32)) as u32;
+        let msg = PerNoteExpressionMessage::registered_controller(
+            req.data.channel.saturating_sub(1).min(15),
+            req.data.note.min(127),
+            req.data.index,
+            value_32bit,
+        );
+
+        let result = match CcBridge::send_per_note_expression(&req.instance, msg) {
+            Ok(()) => format!(
+                "Sent per-note registered controller {} = {:.2} on note {} ch{} via '{}'",
+                req.data.index, req.data.value, req.data.note, req.data.channel, req.instance
+            ),
+            Err(e) => format!("Error: {}", e),
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
+    }
+
+    /// Send per-note assignable controller (MIDI 2.0 only).
+    #[tool(description = "Send MIDI 2.0 assignable per-note controller. These are custom controllers that apply to individual notes, similar to registered controllers but vendor/implementation specific. Requires MIDI 2.0 compatible host/instrument.")]
+    fn send_per_note_assignable_controller(&self, Parameters(req): Parameters<PerNoteControllerRequest>) -> Result<CallToolResult, McpError> {
+        let value_32bit = (req.data.value.clamp(0.0, 1.0) * (u32::MAX as f32)) as u32;
+        let msg = PerNoteExpressionMessage::assignable_controller(
+            req.data.channel.saturating_sub(1).min(15),
+            req.data.note.min(127),
+            req.data.index,
+            value_32bit,
+        );
+
+        let result = match CcBridge::send_per_note_expression(&req.instance, msg) {
+            Ok(()) => format!(
+                "Sent per-note assignable controller {} = {:.2} on note {} ch{} via '{}'",
+                req.data.index, req.data.value, req.data.note, req.data.channel, req.instance
+            ),
+            Err(e) => format!("Error: {}", e),
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
+    }
+
+    /// Send per-note management message (MIDI 2.0 only).
+    #[tool(description = "Send MIDI 2.0 per-note management message. Use detach=true to separate this note from its Note On (for legato/portamento). Use reset=true to reset all controllers on this note. Requires MIDI 2.0 compatible host/instrument.")]
+    fn send_per_note_management(&self, Parameters(req): Parameters<PerNoteManagementRequest>) -> Result<CallToolResult, McpError> {
+        let msg = PerNoteExpressionMessage::management(
+            req.data.channel.saturating_sub(1).min(15),
+            req.data.note.min(127),
+            req.data.detach,
+            req.data.reset,
+        );
+
+        let flags_desc = match (req.data.detach, req.data.reset) {
+            (true, true) => "detach+reset",
+            (true, false) => "detach",
+            (false, true) => "reset",
+            (false, false) => "no-op",
+        };
+
+        let result = match CcBridge::send_per_note_expression(&req.instance, msg) {
+            Ok(()) => format!(
+                "Sent per-note management ({}) on note {} ch{} via '{}'",
+                flags_desc, req.data.note, req.data.channel, req.instance
+            ),
+            Err(e) => format!("Error: {}", e),
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
+    }
 }
 
 impl ServerHandler for DropletsMcp {
@@ -413,19 +619,24 @@ impl ServerHandler for DropletsMcp {
             server_info: Implementation::from_build_env(),
             instructions: Some(
                 "Simply Droplets MCP Server - AI-controlled MIDI 1.0/2.0 output for DAW automation.\n\n\
-                 MIDI Tools:\n\
+                 MIDI Note/CC Tools:\n\
                  - send_note_on(note, velocity, channel): MIDI 1.0 Note On (7-bit velocity)\n\
                  - send_note_on_hires(note, velocity, channel): MIDI 2.0 Note On (16-bit velocity)\n\
                  - send_note_off(note, channel): Send MIDI Note Off\n\
                  - send_cc(cc, value, channel): Send MIDI CC message\n\n\
+                 MIDI 2.0 Per-Note Expression Tools:\n\
+                 - send_per_note_pitch_bend(note, semitones, channel): Pitch bend individual notes (-64 to +64 semitones)\n\
+                 - send_per_note_pressure(note, pressure, channel): Per-note aftertouch (0.0-1.0)\n\
+                 - send_per_note_registered_controller(note, index, value, channel): Registered per-note controller\n\
+                 - send_per_note_assignable_controller(note, index, value, channel): Assignable per-note controller\n\
+                 - send_per_note_management(note, detach, reset, channel): Note management (detach/reset)\n\n\
                  Instance Tools:\n\
                  - list_instances(): See connected plugin instances\n\
                  - list_slots(): See slots with names, CC mappings, and values\n\
                  - set_param(slot, value): Set slot value (0.0-1.0)\n\
                  - rename_slot(slot, name): Label a slot\n\
                  - get_activity(): See recent MIDI activity\n\n\
-                 MIDI 2.0: Plugin outputs both MIDI 1.0 and 2.0 (UMP) events. \
-                 Hosts that support MIDI 2.0 will use 16-bit velocity for smoother dynamics."
+                 Note: Per-note expressions require MIDI 2.0 compatible host/instruments."
                     .to_string(),
             ),
         }

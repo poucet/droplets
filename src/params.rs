@@ -46,13 +46,36 @@ pub struct CcSlot {
     pub learning: AtomicBool,
 }
 
+fn default_cc_config(index: usize) -> (u8, String) {
+    match index {
+        0 => (1, "Mod Wheel".to_string()),
+        1 => (2, "Breath".to_string()),
+        2 => (7, "Volume".to_string()),
+        3 => (10, "Pan".to_string()),
+        4 => (11, "Expression".to_string()),
+        5 => (71, "Filter Resonance".to_string()),
+        6 => (74, "Filter Cutoff".to_string()),
+        7 => (73, "Attack".to_string()),
+        8 => (75, "Decay".to_string()),
+        9 => (72, "Release".to_string()),
+        10 => (91, "Reverb".to_string()),
+        11 => (93, "Chorus".to_string()),
+        12 => (94, "Detune".to_string()),
+        13 => (95, "Phaser".to_string()),
+        14 => (14, "Slot 15".to_string()),
+        15 => (15, "Slot 16".to_string()),
+        _ => ((16 + index - 16).min(127) as u8, format!("Slot {}", index + 1)),
+    }
+}
+
 impl CcSlot {
     pub fn new(index: usize) -> Self {
+        let (default_cc, name) = default_cc_config(index);
         Self {
-            cc_number: AtomicU8::new(255), // 255 = unmapped
-            channel: AtomicU8::new(0),     // Default to channel 1
+            cc_number: AtomicU8::new(default_cc),
+            channel: AtomicU8::new(0), // Default to channel 1
             value: AtomicF64::new(0.0),
-            name: RwLock::new(format!("Slot {}", index + 1)),
+            name: RwLock::new(name),
             learning: AtomicBool::new(false),
         }
     }
