@@ -12,7 +12,7 @@ use wry::raw_window_handle::{
 };
 
 mod dpi;
-mod routes;
+pub mod routes;
 
 use crate::DropletMainThread;
 use crate::gui::dpi::{GuiSizeExtensions, LogicalSizeExtensions};

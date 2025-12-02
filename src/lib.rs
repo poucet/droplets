@@ -14,10 +14,10 @@ use mcp::{CcBridge, MidiMessage};
 use params::DropletParams;
 
 mod audio;
-mod gui;
+pub mod gui;
 pub mod logger;
 pub mod mcp;
-mod params;
+pub mod params;
 
 pub struct DropletPlugin;
 
