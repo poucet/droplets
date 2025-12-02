@@ -12,6 +12,8 @@ use wry::raw_window_handle::{
 };
 
 mod dpi;
+mod routes;
+
 use crate::DropletMainThread;
 use crate::gui::dpi::{GuiSizeExtensions, LogicalSizeExtensions};
 
@@ -180,53 +182,7 @@ impl<'a> PluginGuiImpl for DropletMainThread<'a> {
                 let path = uri.path();
                 crate::logger::log_gui_event("api_request", &format!("uri={} path={:?} host={:?}", uri, path, uri.host()));
 
-                // URL droplets://api/slots has host="api" and path="/slots"
-                let response_body = match path {
-                    "/slots" => {
-                        let slots = params.get_all_slots();
-                        let json = serde_json::json!({
-                            "type": "slots",
-                            "data": slots
-                        });
-                        let result = serde_json::to_string(&json).unwrap_or_else(|_| r#"{"error":"serialize failed"}"#.to_string());
-                        crate::logger::log_gui_event("slots_response", &format!("{} slots, len={}", slots.len(), result.len()));
-                        result
-                    }
-                    "/activity" => {
-                        let activity = crate::mcp::CcBridge::recent_activity();
-                        serde_json::to_string(&serde_json::json!({
-                            "type": "activity",
-                            "data": activity.iter().map(|e| {
-                                serde_json::json!({
-                                    "timestamp": e.timestamp_ms,
-                                    "instance": e.instance,
-                                    "channel": e.channel + 1,
-                                    "cc": e.cc,
-                                    "value": e.value
-                                })
-                            }).collect::<Vec<_>>()
-                        })).unwrap_or_else(|_| r#"{"error":"serialize failed"}"#.to_string())
-                    }
-                    path if path.starts_with("/start_learn/") => {
-                        if let Some(slot_str) = path.strip_prefix("/start_learn/") {
-                            if let Ok(slot) = slot_str.parse::<usize>() {
-                                params.start_learning(slot);
-                                crate::logger::log_gui_event("learn_started", &format!("Slot {}", slot));
-                                r#"{"ok":true}"#.to_string()
-                            } else {
-                                r#"{"error":"invalid slot"}"#.to_string()
-                            }
-                        } else {
-                            r#"{"error":"missing slot"}"#.to_string()
-                        }
-                    }
-                    "/cancel_learn" => {
-                        params.cancel_learning();
-                        crate::logger::log_gui_event("learn_cancelled", "All slots");
-                        r#"{"ok":true}"#.to_string()
-                    }
-                    _ => r#"{"error":"not found"}"#.to_string()
-                };
+                let response_body = routes::handle_request(path, &params);
 
                 let response = Response::builder()
                     .header(CONTENT_TYPE, "application/json")

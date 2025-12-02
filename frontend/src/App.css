@@ -269,7 +269,10 @@
 }
 
 .slot-cc {
-  min-width: 70px;
+  min-width: 50px;
+  color: #7ed321;
+  font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 0.75rem;
 }
 
 .cc-mapped {
@@ -330,6 +333,45 @@
   min-width: 35px;
   text-align: right;
   font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+}
+
+.wiggle-btn {
+  background: rgba(126, 211, 33, 0.2);
+  border: 1px solid rgba(126, 211, 33, 0.4);
+  color: #7ed321;
+  width: 28px;
+  height: 22px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.wiggle-btn:hover:not(:disabled) {
+  background: rgba(126, 211, 33, 0.4);
+}
+
+.wiggle-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.slot-item.wiggling {
+  background: rgba(126, 211, 33, 0.15);
+  border: 1px solid rgba(126, 211, 33, 0.3);
+}
+
+.slot-item.wiggling .wiggle-btn {
+  animation: wiggle-pulse 0.3s infinite;
+}
+
+@keyframes wiggle-pulse {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-2px); }
+  75% { transform: translateX(2px); }
 }
 
 .slots-hint {

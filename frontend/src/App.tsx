@@ -5,6 +5,8 @@ interface SlotInfo {
   index: number;
   name: string;
   value: number;
+  cc: number | null;
+  channel: number;
 }
 
 interface ActivityEvent {
@@ -18,6 +20,7 @@ const App: React.FC = () => {
   const [slots, setSlots] = useState<SlotInfo[]>([]);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
   const [serverStatus, setServerStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
+  const [wigglingSlot, setWigglingSlot] = useState<number | null>(null);
 
   const fetchSlots = useCallback(async () => {
     try {
@@ -48,6 +51,23 @@ const App: React.FC = () => {
       console.error('Failed to fetch activity:', e);
     }
   }, []);
+
+  const handleWiggle = useCallback(async (slotIndex: number) => {
+    if (wigglingSlot !== null) return; // Already wiggling
+
+    setWigglingSlot(slotIndex);
+    try {
+      const response = await fetch(`droplets://api/wiggle/${slotIndex}`);
+      const data = await response.json();
+      if (data.error) {
+        console.error('Wiggle error:', data.error);
+      }
+    } catch (e) {
+      console.error('Failed to wiggle:', e);
+    }
+    // Clear wiggling state after animation completes (~1 second)
+    setTimeout(() => setWigglingSlot(null), 1100);
+  }, [wigglingSlot]);
 
   useEffect(() => {
     fetchSlots();
@@ -94,9 +114,10 @@ const App: React.FC = () => {
               </div>
             ) : (
               slots.map((slot) => (
-                <div key={slot.index} className="slot-item">
+                <div key={slot.index} className={`slot-item ${wigglingSlot === slot.index ? 'wiggling' : ''}`}>
                   <span className="slot-index">{slot.index}</span>
                   <span className="slot-name">{slot.name}</span>
+                  <span className="slot-cc">{slot.cc !== null ? `CC${slot.cc}` : '—'}</span>
                   <div className="slot-bar-container">
                     <div
                       className="slot-bar"
@@ -104,6 +125,14 @@ const App: React.FC = () => {
                     />
                   </div>
                   <span className="slot-value">{Math.round(slot.value * 100)}%</span>
+                  <button
+                    className="wiggle-btn"
+                    onClick={() => handleWiggle(slot.index)}
+                    disabled={slot.cc === null || wigglingSlot !== null}
+                    title={slot.cc === null ? 'Map a CC first' : 'Wiggle CC to identify knob'}
+                  >
+                    {wigglingSlot === slot.index ? '~' : '↔'}
+                  </button>
                 </div>
               ))
             )}
