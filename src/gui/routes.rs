@@ -20,6 +20,16 @@ fn handle_dynamic_route(path: &str, params: &Arc<DropletParams>) -> String {
         return wiggle(slot_str, params);
     }
 
+    // /note_on/{note}/{velocity} - trigger a note
+    if let Some(rest) = path.strip_prefix("/note_on/") {
+        return note_on(rest);
+    }
+
+    // /note_off/{note} - release a note
+    if let Some(note_str) = path.strip_prefix("/note_off/") {
+        return note_off(note_str);
+    }
+
     r#"{"error":"not found"}"#.to_string()
 }
 
@@ -96,4 +106,52 @@ fn wiggle(slot_str: &str, params: &Arc<DropletParams>) -> String {
 
     crate::logger::log_gui_event("wiggle_started", &format!("Slot {} CC{}", slot, cc));
     format!(r#"{{"ok":true,"cc":{}}}"#, cc)
+}
+
+fn note_on(rest: &str) -> String {
+    // Parse note/velocity from path
+    let parts: Vec<&str> = rest.split('/').collect();
+    let (note, velocity) = match parts.as_slice() {
+        [note_str, vel_str] => {
+            let Ok(note) = note_str.parse::<u8>() else {
+                return r#"{"error":"invalid note"}"#.to_string();
+            };
+            let Ok(vel) = vel_str.parse::<u8>() else {
+                return r#"{"error":"invalid velocity"}"#.to_string();
+            };
+            (note.min(127), vel.min(127))
+        }
+        [note_str] => {
+            let Ok(note) = note_str.parse::<u8>() else {
+                return r#"{"error":"invalid note"}"#.to_string();
+            };
+            (note.min(127), 100u8) // default velocity
+        }
+        _ => return r#"{"error":"invalid path"}"#.to_string(),
+    };
+
+    let msg = crate::mcp::NoteMessage::new(0, note, velocity, true);
+    match crate::mcp::CcBridge::send_note("default", msg) {
+        Ok(()) => {
+            crate::logger::log_gui_event("note_on", &format!("Note {} vel {}", note, velocity));
+            format!(r#"{{"ok":true,"note":{},"velocity":{}}}"#, note, velocity)
+        }
+        Err(e) => format!(r#"{{"error":"{}"}}"#, e),
+    }
+}
+
+fn note_off(note_str: &str) -> String {
+    let Ok(note) = note_str.parse::<u8>() else {
+        return r#"{"error":"invalid note"}"#.to_string();
+    };
+    let note = note.min(127);
+
+    let msg = crate::mcp::NoteMessage::new(0, note, 0, false);
+    match crate::mcp::CcBridge::send_note("default", msg) {
+        Ok(()) => {
+            crate::logger::log_gui_event("note_off", &format!("Note {}", note));
+            format!(r#"{{"ok":true,"note":{}}}"#, note)
+        }
+        Err(e) => format!(r#"{{"error":"{}"}}"#, e),
+    }
 }

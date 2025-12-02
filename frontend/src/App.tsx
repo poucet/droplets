@@ -16,11 +16,16 @@ interface ActivityEvent {
   value: number;
 }
 
+// Note names for display
+const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+const getNoteName = (midi: number) => `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`;
+
 const App: React.FC = () => {
   const [slots, setSlots] = useState<SlotInfo[]>([]);
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
   const [serverStatus, setServerStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
   const [wigglingSlot, setWigglingSlot] = useState<number | null>(null);
+  const [activeNotes, setActiveNotes] = useState<Set<number>>(new Set());
 
   const fetchSlots = useCallback(async () => {
     try {
@@ -68,6 +73,28 @@ const App: React.FC = () => {
     // Clear wiggling state after animation completes (~1 second)
     setTimeout(() => setWigglingSlot(null), 1100);
   }, [wigglingSlot]);
+
+  const handleNoteOn = useCallback(async (note: number) => {
+    setActiveNotes(prev => new Set(prev).add(note));
+    try {
+      await fetch(`droplets://api/note_on/${note}/100`);
+    } catch (e) {
+      console.error('Failed to send note on:', e);
+    }
+  }, []);
+
+  const handleNoteOff = useCallback(async (note: number) => {
+    setActiveNotes(prev => {
+      const next = new Set(prev);
+      next.delete(note);
+      return next;
+    });
+    try {
+      await fetch(`droplets://api/note_off/${note}`);
+    } catch (e) {
+      console.error('Failed to send note off:', e);
+    }
+  }, []);
 
   useEffect(() => {
     fetchSlots();
@@ -143,6 +170,30 @@ const App: React.FC = () => {
             <p>2. AI sets values via MCP <code>set_param</code> tool</p>
             <p>3. DAW routes the parameter changes to your target plugin</p>
           </div>
+        </section>
+
+        <section className="note-grid-section">
+          <h2>Note Test Grid</h2>
+          <div className="note-grid">
+            {/* Two octaves: C3 (48) to B4 (71) */}
+            {Array.from({ length: 24 }, (_, i) => 48 + i).map(note => {
+              const isBlack = [1, 3, 6, 8, 10].includes(note % 12);
+              const isActive = activeNotes.has(note);
+              return (
+                <button
+                  key={note}
+                  className={`note-key ${isBlack ? 'black' : 'white'} ${isActive ? 'active' : ''}`}
+                  onMouseDown={() => handleNoteOn(note)}
+                  onMouseUp={() => handleNoteOff(note)}
+                  onMouseLeave={() => isActive && handleNoteOff(note)}
+                  title={getNoteName(note)}
+                >
+                  {!isBlack && <span className="note-label">{getNoteName(note)}</span>}
+                </button>
+              );
+            })}
+          </div>
+          <p className="note-hint">Click and hold to play notes. Tests MIDI output routing.</p>
         </section>
 
         <section className="activity-section">

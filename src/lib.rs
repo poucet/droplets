@@ -1,4 +1,5 @@
-use clack_extensions::{audio_ports::*, gui::*, note_ports::*, params::*};
+use clack_extensions::{audio_ports::*, gui::*, note_ports::*, params::*, state::*};
+use clack_plugin::stream::{InputStream, OutputStream};
 use clack_plugin::utils::Cookie;
 use clack_plugin::prelude::*;
 use clack_plugin::plugin::features::*;
@@ -30,7 +31,8 @@ impl Plugin for DropletPlugin {
             .register::<PluginAudioPorts>()
             .register::<PluginNotePorts>()
             .register::<PluginGui>()
-            .register::<PluginParams>();
+            .register::<PluginParams>()
+            .register::<PluginState>();
     }
 }
 
@@ -38,7 +40,7 @@ impl DefaultPluginFactory for DropletPlugin {
     fn get_descriptor() -> PluginDescriptor {
         PluginDescriptor::new("com.simply-chris.simply-droplets", "Simply Droplets")
             .with_vendor("Simply Chris")
-            .with_features([UTILITY])
+            .with_features([NOTE_EFFECT, UTILITY])
     }
 
     fn new_shared(host: HostSharedHandle) -> Result<Self::Shared<'_>, PluginError> {
@@ -204,6 +206,59 @@ impl<'a> PluginMainThreadParams for DropletMainThread<'a> {
                 }
             }
         }
+    }
+}
+
+/// CLAP State extension - save/load plugin state
+impl<'a> PluginStateImpl for DropletMainThread<'a> {
+    fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
+        use std::io::Write;
+
+        // Serialize slot state as JSON
+        let state: Vec<_> = (0..params::NUM_CC_SLOTS)
+            .map(|i| {
+                let slot = &self.shared.params.slots[i];
+                serde_json::json!({
+                    "cc": slot.get_cc(),
+                    "channel": slot.get_channel(),
+                    "name": slot.get_name(),
+                    "value": slot.value.load(),
+                })
+            })
+            .collect();
+
+        let json = serde_json::to_vec(&state).map_err(|_| PluginError::Message("serialize failed"))?;
+        output.write_all(&json).map_err(|_| PluginError::Message("write failed"))?;
+        Ok(())
+    }
+
+    fn load(&mut self, input: &mut InputStream) -> Result<(), PluginError> {
+        use std::io::Read;
+
+        let mut data = Vec::new();
+        input.read_to_end(&mut data).map_err(|_| PluginError::Message("read failed"))?;
+
+        let state: Vec<serde_json::Value> = serde_json::from_slice(&data)
+            .map_err(|_| PluginError::Message("deserialize failed"))?;
+
+        for (i, slot_state) in state.iter().enumerate().take(params::NUM_CC_SLOTS) {
+            let slot = &self.shared.params.slots[i];
+
+            if let Some(cc) = slot_state.get("cc").and_then(|v| v.as_u64()) {
+                slot.set_cc(cc as u8);
+            }
+            if let Some(channel) = slot_state.get("channel").and_then(|v| v.as_u64()) {
+                slot.set_channel(channel as u8);
+            }
+            if let Some(name) = slot_state.get("name").and_then(|v| v.as_str()) {
+                slot.set_name(name);
+            }
+            if let Some(value) = slot_state.get("value").and_then(|v| v.as_f64()) {
+                slot.value.store(value);
+            }
+        }
+
+        Ok(())
     }
 }
 

@@ -189,7 +189,9 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
 
         // Output MIDI from MCP server (lock-free read from ring buffer)
         // We output both MIDI 1.0 and MIDI 2.0 events - hosts will use whichever they prefer
+        let mut has_midi = false;
         while let Ok(msg) = self.midi_consumer.pop() {
+            has_midi = true;
             match msg {
                 MidiMessage::Cc(cc) => {
                     self.output_cc(&cc, &mut events);
@@ -204,8 +206,13 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
             }
         }
 
-        // Pass through audio unchanged (this plugin is a parameter bridge)
-        Ok(ProcessStatus::ContinueIfNotQuiet)
+        // Always continue processing if we have MIDI messages to output
+        // Otherwise only continue if there's audio activity
+        if has_midi || !self.midi_consumer.is_empty() {
+            Ok(ProcessStatus::Continue)
+        } else {
+            Ok(ProcessStatus::ContinueIfNotQuiet)
+        }
     }
 }
 
@@ -239,6 +246,9 @@ impl<'a> DropletAudioProcessor<'a> {
 
     /// Output a Note message as both MIDI 1.0 and MIDI 2.0
     fn output_note(&self, note: &NoteMessage, events: &mut Events) {
+        let note_type = if note.is_note_on { "NoteOn" } else { "NoteOff" };
+        log::info!("OUTPUT: {} note={} vel={} ch={}", note_type, note.note, note.velocity, note.channel);
+
         // MIDI 1.0: 3-byte Note On/Off
         let status = if note.is_note_on {
             0x90 | (note.channel & 0x0F)
@@ -247,15 +257,17 @@ impl<'a> DropletAudioProcessor<'a> {
         };
         let midi1_data = [status, note.note, note.velocity];
         let midi1_event = MidiEvent::new(0, 0, midi1_data);
-        if let Err(e) = events.output.try_push(&midi1_event) {
-            log::warn!("Failed to push MIDI 1.0 note event: {:?}", e);
+        match events.output.try_push(&midi1_event) {
+            Ok(_) => log::info!("SUCCESS: Pushed MIDI 1.0 {} to output", note_type),
+            Err(e) => log::warn!("FAILED: MIDI 1.0 note event: {:?}", e),
         }
 
         // MIDI 2.0: UMP with 16-bit velocity
         let ump_data = build_ump_note(0, note.channel, note.note, note.velocity_16bit, note.is_note_on);
         let midi2_event = Midi2Event::new(0, 0, ump_data);
-        if let Err(e) = events.output.try_push(&midi2_event) {
-            log::warn!("Failed to push MIDI 2.0 note event: {:?}", e);
+        match events.output.try_push(&midi2_event) {
+            Ok(_) => log::info!("SUCCESS: Pushed MIDI 2.0 {} to output", note_type),
+            Err(e) => log::warn!("FAILED: MIDI 2.0 note event: {:?}", e),
         }
     }
 
