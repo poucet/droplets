@@ -29,7 +29,7 @@ impl<'a> PluginAudioPortsImpl for DropletMainThread<'a> {
 
 impl<'a> PluginNotePortsImpl for DropletMainThread<'a> {
     fn count(&mut self, _is_input: bool) -> u32 {
-        // One input (for CC learning) and one output (for CC commands)
+        // One input (for CC learning) and one output (for MIDI CC + Notes)
         1
     }
 
@@ -45,7 +45,7 @@ impl<'a> PluginNotePortsImpl for DropletMainThread<'a> {
             } else {
                 writer.set(&NotePortInfo {
                     id: ClapId::new(2),
-                    name: b"MIDI CC Out",
+                    name: b"MIDI Out",
                     supported_dialects: NoteDialects::MIDI,
                     preferred_dialect: Some(NoteDialect::Midi),
                 });

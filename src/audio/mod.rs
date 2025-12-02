@@ -12,15 +12,15 @@ use clack_plugin::prelude::{InputEvents, OutputEvents};
 use clack_plugin::process::{Audio, Events, PluginAudioConfiguration, Process, ProcessStatus};
 use rtrb::Consumer;
 
-use crate::mcp::CcMessage;
+use crate::mcp::MidiMessage;
 use crate::{DropletMainThread, DropletShared};
 
 pub mod ports;
 
 pub struct DropletAudioProcessor<'a> {
     shared: &'a DropletShared<'a>,
-    /// CC consumer - receives CC messages from the MCP server
-    cc_consumer: Consumer<CcMessage>,
+    /// MIDI consumer - receives MIDI messages (CC and notes) from the MCP server
+    midi_consumer: Consumer<MidiMessage>,
 }
 
 impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
@@ -35,15 +35,15 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
         let sample_rate = audio_config.sample_rate as f32;
         crate::logger::log_audio_processor_activation(sample_rate);
 
-        // Take ownership of the CC consumer from shared state
-        let cc_consumer = shared
-            .cc_consumer
+        // Take ownership of the MIDI consumer from shared state
+        let midi_consumer = shared
+            .midi_consumer
             .lock()
             .unwrap()
             .take()
-            .ok_or(PluginError::Message("CC consumer already taken"))?;
+            .ok_or(PluginError::Message("MIDI consumer already taken"))?;
 
-        Ok(Self { shared, cc_consumer })
+        Ok(Self { shared, midi_consumer })
     }
 
     fn process(
@@ -77,16 +77,29 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
             }
         }
 
-        // Output MIDI CC from MCP server (lock-free read from ring buffer)
-        while let Ok(cc) = self.cc_consumer.pop() {
-            // MIDI CC status byte: 0xB0 + channel (0-15)
-            let status = 0xB0 | (cc.channel & 0x0F);
-            let midi_data = [status, cc.cc, cc.value];
+        // Output MIDI from MCP server (lock-free read from ring buffer)
+        while let Ok(msg) = self.midi_consumer.pop() {
+            let midi_data = match msg {
+                MidiMessage::Cc(cc) => {
+                    // MIDI CC status byte: 0xB0 + channel (0-15)
+                    let status = 0xB0 | (cc.channel & 0x0F);
+                    [status, cc.cc, cc.value]
+                }
+                MidiMessage::Note(note) => {
+                    // Note On: 0x90 + channel, Note Off: 0x80 + channel
+                    let status = if note.is_note_on {
+                        0x90 | (note.channel & 0x0F)
+                    } else {
+                        0x80 | (note.channel & 0x0F)
+                    };
+                    [status, note.note, note.velocity]
+                }
+            };
 
             // Output on note port 0, at sample time 0
             let midi_event = MidiEvent::new(0, 0, midi_data);
             if let Err(e) = events.output.try_push(&midi_event) {
-                log::warn!("Failed to push MIDI CC event: {:?}", e);
+                log::warn!("Failed to push MIDI event: {:?}", e);
             }
         }
 

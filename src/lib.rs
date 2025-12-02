@@ -9,7 +9,7 @@ use std::sync::Mutex;
 
 use audio::DropletAudioProcessor;
 use gui::DropletGui;
-use mcp::{CcBridge, CcMessage};
+use mcp::{CcBridge, MidiMessage};
 use params::DropletParams;
 
 mod audio;
@@ -54,7 +54,7 @@ impl DefaultPluginFactory for DropletPlugin {
 
         // Generate unique instance ID and register with CcBridge
         let instance_id = format!("droplets-{:08x}", fastrand::u32(..));
-        let cc_consumer = CcBridge::register(&instance_id, Arc::clone(&params));
+        let midi_consumer = CcBridge::register(&instance_id, Arc::clone(&params));
         log::info!("Registered MCP instance: {}", instance_id);
 
         // Start singleton MCP server (only first instance actually starts it)
@@ -66,7 +66,7 @@ impl DefaultPluginFactory for DropletPlugin {
             ipc_sender: sender,
             ipc_receiver: receiver,
             instance_id,
-            cc_consumer: Mutex::new(Some(cc_consumer)),
+            midi_consumer: Mutex::new(Some(midi_consumer)),
         })
     }
 
@@ -89,8 +89,8 @@ pub struct DropletShared<'a> {
     pub ipc_sender: Sender<serde_json::Value>,
     pub ipc_receiver: Receiver<serde_json::Value>,
     pub instance_id: String,
-    /// CC consumer - taken by audio processor during activation
-    pub cc_consumer: Mutex<Option<Consumer<CcMessage>>>,
+    /// MIDI consumer - taken by audio processor during activation
+    pub midi_consumer: Mutex<Option<Consumer<MidiMessage>>>,
 }
 
 impl<'a> PluginShared<'a> for DropletShared<'a> {}

@@ -21,7 +21,7 @@
 mod bridge;
 mod server;
 
-pub use bridge::{ActivityEvent, CcBridge, CcMessage};
+pub use bridge::{ActivityEvent, CcBridge, CcMessage, MidiMessage, NoteMessage};
 pub use server::DropletsMcp;
 
 use rmcp::transport::streamable_http_server::{

@@ -19,14 +19,32 @@ pub struct CcMessage {
     pub value: u8,   // 0-127
 }
 
+/// A MIDI Note message (Note On or Note Off)
+#[derive(Clone, Copy, Debug)]
+pub struct NoteMessage {
+    pub channel: u8,  // 0-15
+    pub note: u8,     // 0-127 (MIDI note number, 60 = C4)
+    pub velocity: u8, // 0-127 (0 = note off for Note On messages)
+    pub is_note_on: bool,
+}
+
+/// Combined MIDI message type for the ring buffer
+#[derive(Clone, Copy, Debug)]
+pub enum MidiMessage {
+    Cc(CcMessage),
+    Note(NoteMessage),
+}
+
 /// Activity event for GUI visualization
 #[derive(Clone, Debug)]
 pub struct ActivityEvent {
     pub timestamp_ms: u64,
     pub instance: String,
     pub channel: u8,
-    pub cc: u8,
-    pub value: u8,
+    pub cc: Option<u8>,       // CC number (for CC messages)
+    pub value: u8,            // CC value or velocity
+    pub note: Option<u8>,     // Note number (for note messages)
+    pub is_note_on: Option<bool>, // true = note on, false = note off
 }
 
 /// Shared parameter access for MCP server
@@ -35,7 +53,7 @@ pub type ParamsRef = Arc<DropletParams>;
 /// Instance entry stored in the registry
 struct InstanceEntry {
     name: String,
-    producer: Mutex<Producer<CcMessage>>,
+    producer: Mutex<Producer<MidiMessage>>,
     params: ParamsRef,
 }
 
@@ -62,9 +80,9 @@ pub struct CcBridge;
 impl CcBridge {
     /// Register a new plugin instance.
     ///
-    /// Returns the Consumer that the audio thread uses to receive CC messages.
+    /// Returns the Consumer that the audio thread uses to receive MIDI messages.
     /// The Producer is stored in the registry for the MCP server to write to.
-    pub fn register(id: &str, params: ParamsRef) -> Consumer<CcMessage> {
+    pub fn register(id: &str, params: ParamsRef) -> Consumer<MidiMessage> {
         let (producer, consumer) = RingBuffer::new(RING_BUFFER_SIZE);
 
         let mut reg = registry().write().unwrap();
@@ -101,10 +119,33 @@ impl CcBridge {
         // Lock the producer and push (brief lock, not on audio thread)
         let mut producer = entry.producer.lock().map_err(|_| "Producer lock poisoned")?;
         producer
-            .push(msg)
+            .push(MidiMessage::Cc(msg))
             .map_err(|_| "Queue full - audio thread not consuming fast enough")?;
 
         // Log activity for GUI (non-critical, ignore lock failures)
+        Self::log_cc_activity(&instance_name, &msg);
+
+        Ok(())
+    }
+
+    /// Send a Note message to an instance (called from MCP server thread)
+    pub fn send_note(instance: &str, msg: NoteMessage) -> Result<(), &'static str> {
+        let reg = registry().read().unwrap();
+        let entry = Self::find_entry(&reg, instance)?;
+        let instance_name = entry.name.clone();
+
+        let mut producer = entry.producer.lock().map_err(|_| "Producer lock poisoned")?;
+        producer
+            .push(MidiMessage::Note(msg))
+            .map_err(|_| "Queue full - audio thread not consuming fast enough")?;
+
+        Self::log_note_activity(&instance_name, &msg);
+
+        Ok(())
+    }
+
+    /// Log CC activity for GUI visualization
+    fn log_cc_activity(instance_name: &str, msg: &CcMessage) {
         if let Ok(mut log) = activity_log().try_lock() {
             let timestamp_ms = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -113,19 +154,42 @@ impl CcBridge {
 
             log.push_back(ActivityEvent {
                 timestamp_ms,
-                instance: instance_name,
+                instance: instance_name.to_string(),
                 channel: msg.channel,
-                cc: msg.cc,
+                cc: Some(msg.cc),
                 value: msg.value,
+                note: None,
+                is_note_on: None,
             });
 
-            // Keep log bounded
             while log.len() > MAX_ACTIVITY_LOG_SIZE {
                 log.pop_front();
             }
         }
+    }
 
-        Ok(())
+    /// Log note activity for GUI visualization
+    fn log_note_activity(instance_name: &str, msg: &NoteMessage) {
+        if let Ok(mut log) = activity_log().try_lock() {
+            let timestamp_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+
+            log.push_back(ActivityEvent {
+                timestamp_ms,
+                instance: instance_name.to_string(),
+                channel: msg.channel,
+                cc: None,
+                value: msg.velocity,
+                note: Some(msg.note),
+                is_note_on: Some(msg.is_note_on),
+            });
+
+            while log.len() > MAX_ACTIVITY_LOG_SIZE {
+                log.pop_front();
+            }
+        }
     }
 
     /// Rename an instance for easier AI reference
@@ -190,27 +254,9 @@ impl CcBridge {
             // Send MIDI CC through the ring buffer
             let msg = CcMessage { channel, cc, value: midi_value };
             let mut producer = entry.producer.lock().map_err(|_| "Producer lock poisoned")?;
-            producer.push(msg).map_err(|_| "Queue full")?;
+            producer.push(MidiMessage::Cc(msg)).map_err(|_| "Queue full")?;
 
-            // Log activity
-            if let Ok(mut log) = activity_log().try_lock() {
-                let timestamp_ms = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0);
-
-                log.push_back(ActivityEvent {
-                    timestamp_ms,
-                    instance: entry.name.clone(),
-                    channel,
-                    cc,
-                    value: midi_value,
-                });
-
-                while log.len() > MAX_ACTIVITY_LOG_SIZE {
-                    log.pop_front();
-                }
-            }
+            Self::log_cc_activity(&entry.name, &msg);
 
             log::info!("CcBridge: Set slot {} = {:.2} -> CC{} = {} on '{}'", slot, value, cc, midi_value, entry.name);
         } else {
