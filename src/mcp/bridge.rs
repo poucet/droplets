@@ -11,21 +11,53 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::params::DropletParams;
 
-/// A MIDI CC message (3 bytes, Copy, no heap allocation)
+/// A MIDI CC message
 #[derive(Clone, Copy, Debug)]
 pub struct CcMessage {
-    pub channel: u8, // 0-15
-    pub cc: u8,      // 0-127
-    pub value: u8,   // 0-127
+    pub channel: u8,  // 0-15
+    pub cc: u8,       // 0-127
+    pub value: u8,    // 0-127 (MIDI 1.0 7-bit)
+    pub value_14bit: Option<u16>, // MIDI 2.0: 0-16383 for high-res CC
+}
+
+impl CcMessage {
+    /// Create a standard 7-bit CC message
+    pub fn new(channel: u8, cc: u8, value: u8) -> Self {
+        Self { channel, cc, value, value_14bit: None }
+    }
+
+    /// Create a high-resolution 14-bit CC message (MIDI 2.0)
+    pub fn new_hires(channel: u8, cc: u8, value_14bit: u16) -> Self {
+        // Scale 14-bit to 7-bit for MIDI 1.0 fallback
+        let value = (value_14bit >> 7) as u8;
+        Self { channel, cc, value, value_14bit: Some(value_14bit) }
+    }
 }
 
 /// A MIDI Note message (Note On or Note Off)
 #[derive(Clone, Copy, Debug)]
 pub struct NoteMessage {
-    pub channel: u8,  // 0-15
-    pub note: u8,     // 0-127 (MIDI note number, 60 = C4)
-    pub velocity: u8, // 0-127 (0 = note off for Note On messages)
+    pub channel: u8,     // 0-15
+    pub note: u8,        // 0-127 (MIDI note number, 60 = C4)
+    pub velocity: u8,    // 0-127 (MIDI 1.0 7-bit)
+    pub velocity_16bit: u16, // MIDI 2.0: 0-65535 for 16-bit velocity
     pub is_note_on: bool,
+}
+
+impl NoteMessage {
+    /// Create a note message with 7-bit velocity (scales to 16-bit internally)
+    pub fn new(channel: u8, note: u8, velocity: u8, is_note_on: bool) -> Self {
+        // Scale 7-bit to 16-bit: multiply by 512 (shift left 9) + copy MSBs
+        let velocity_16bit = ((velocity as u16) << 9) | ((velocity as u16) << 2);
+        Self { channel, note, velocity, velocity_16bit, is_note_on }
+    }
+
+    /// Create a note message with 16-bit velocity (MIDI 2.0 native)
+    pub fn new_hires(channel: u8, note: u8, velocity_16bit: u16, is_note_on: bool) -> Self {
+        // Scale 16-bit to 7-bit for MIDI 1.0 fallback
+        let velocity = (velocity_16bit >> 9) as u8;
+        Self { channel, note, velocity, velocity_16bit, is_note_on }
+    }
 }
 
 /// Combined MIDI message type for the ring buffer
@@ -252,7 +284,7 @@ impl CcBridge {
         // Set the slot value and get CC info if mapped
         if let Some((channel, cc, midi_value)) = entry.params.set_slot(slot, value) {
             // Send MIDI CC through the ring buffer
-            let msg = CcMessage { channel, cc, value: midi_value };
+            let msg = CcMessage::new(channel, cc, midi_value);
             let mut producer = entry.producer.lock().map_err(|_| "Producer lock poisoned")?;
             producer.push(MidiMessage::Cc(msg)).map_err(|_| "Queue full")?;
 

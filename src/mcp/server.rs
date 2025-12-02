@@ -74,7 +74,7 @@ pub struct CcData {
     pub value: u8,
 }
 
-/// MIDI Note On data
+/// MIDI Note On data (7-bit velocity)
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct NoteOnData {
     /// MIDI channel (1-16, default: 1)
@@ -90,6 +90,24 @@ pub struct NoteOnData {
     #[serde(default = "default_velocity")]
     #[schemars(description = "Note velocity (1-127, default: 100)")]
     pub velocity: u8,
+}
+
+/// MIDI 2.0 Note On data with 16-bit velocity
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct NoteOnHiresData {
+    /// MIDI channel (1-16, default: 1)
+    #[serde(default = "default_channel")]
+    #[schemars(description = "MIDI channel (1-16, default: 1)")]
+    pub channel: u8,
+
+    /// MIDI note number (0-127, where 60 = C4/middle C)
+    #[schemars(description = "MIDI note number (0-127, where 60 = C4/middle C)")]
+    pub note: u8,
+
+    /// 16-bit velocity (1-65535, default: 32768). MIDI 2.0 high-resolution.
+    #[serde(default = "default_velocity_16bit")]
+    #[schemars(description = "16-bit velocity (1-65535, default: 32768). MIDI 2.0 high-resolution.")]
+    pub velocity: u16,
 }
 
 /// MIDI Note Off data
@@ -160,6 +178,7 @@ pub struct RenameInstanceRequest {
 
 pub type SendCcRequest = InstanceRequest<CcData>;
 pub type SendNoteOnRequest = InstanceRequest<NoteOnData>;
+pub type SendNoteOnHiresRequest = InstanceRequest<NoteOnHiresData>;
 pub type SendNoteOffRequest = InstanceRequest<NoteOffData>;
 pub type SetParamRequest = InstanceRequest<SetParamData>;
 pub type RenameSlotRequest = InstanceRequest<RenameSlotData>;
@@ -189,17 +208,20 @@ fn default_velocity() -> u8 {
     100
 }
 
+fn default_velocity_16bit() -> u16 {
+    32768 // Mid-point of 16-bit range
+}
+
 #[tool_router]
 impl DropletsMcp {
     /// Send a MIDI CC message through a plugin instance.
     #[tool(description = "Send a MIDI CC message through a Simply Droplets plugin instance. The plugin outputs MIDI CC that your DAW can route to control any other plugin's parameters. Use 'default' for instance to target the first available plugin.")]
     fn send_cc(&self, Parameters(req): Parameters<SendCcRequest>) -> Result<CallToolResult, McpError> {
-        let msg = CcMessage {
-            // Convert 1-16 to 0-15, clamping to valid range
-            channel: req.data.channel.saturating_sub(1).min(15),
-            cc: req.data.cc.min(127),
-            value: req.data.value.min(127),
-        };
+        let msg = CcMessage::new(
+            req.data.channel.saturating_sub(1).min(15),
+            req.data.cc.min(127),
+            req.data.value.min(127),
+        );
 
         let result = match CcBridge::send(&req.instance, msg) {
             Ok(()) => format!(
@@ -321,14 +343,14 @@ impl DropletsMcp {
     }
 
     /// Send a MIDI Note On message through a plugin instance.
-    #[tool(description = "Send a MIDI Note On message through a Simply Droplets plugin instance. The plugin outputs MIDI notes that your DAW can route to trigger synths, samplers, or other instruments. Note 60 = C4 (middle C).")]
+    #[tool(description = "Send a MIDI Note On message through a Simply Droplets plugin instance. The plugin outputs MIDI notes that your DAW can route to trigger synths, samplers, or other instruments. Note 60 = C4 (middle C). Uses 7-bit velocity (0-127).")]
     fn send_note_on(&self, Parameters(req): Parameters<SendNoteOnRequest>) -> Result<CallToolResult, McpError> {
-        let msg = NoteMessage {
-            channel: req.data.channel.saturating_sub(1).min(15),
-            note: req.data.note.min(127),
-            velocity: req.data.velocity.clamp(1, 127), // Note On needs velocity >= 1
-            is_note_on: true,
-        };
+        let msg = NoteMessage::new(
+            req.data.channel.saturating_sub(1).min(15),
+            req.data.note.min(127),
+            req.data.velocity.clamp(1, 127),
+            true,
+        );
 
         let result = match CcBridge::send_note(&req.instance, msg) {
             Ok(()) => format!(
@@ -340,15 +362,35 @@ impl DropletsMcp {
         Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
+    /// Send a MIDI 2.0 Note On with 16-bit high-resolution velocity.
+    #[tool(description = "Send a MIDI 2.0 Note On message with 16-bit velocity (0-65535) for high-resolution dynamics. Use this when you need finer control than standard 7-bit velocity provides. Note 60 = C4 (middle C).")]
+    fn send_note_on_hires(&self, Parameters(req): Parameters<SendNoteOnHiresRequest>) -> Result<CallToolResult, McpError> {
+        let msg = NoteMessage::new_hires(
+            req.data.channel.saturating_sub(1).min(15),
+            req.data.note.min(127),
+            req.data.velocity.max(1), // Ensure at least 1 for Note On
+            true,
+        );
+
+        let result = match CcBridge::send_note(&req.instance, msg) {
+            Ok(()) => format!(
+                "Sent MIDI 2.0 Note On {} vel={} (16-bit) on channel {} via instance '{}'",
+                req.data.note, req.data.velocity, req.data.channel, req.instance
+            ),
+            Err(e) => format!("Error: {}", e),
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
+    }
+
     /// Send a MIDI Note Off message through a plugin instance.
     #[tool(description = "Send a MIDI Note Off message through a Simply Droplets plugin instance. Use this to release a note that was previously triggered with send_note_on.")]
     fn send_note_off(&self, Parameters(req): Parameters<SendNoteOffRequest>) -> Result<CallToolResult, McpError> {
-        let msg = NoteMessage {
-            channel: req.data.channel.saturating_sub(1).min(15),
-            note: req.data.note.min(127),
-            velocity: req.data.velocity.min(127),
-            is_note_on: false,
-        };
+        let msg = NoteMessage::new(
+            req.data.channel.saturating_sub(1).min(15),
+            req.data.note.min(127),
+            req.data.velocity.min(127),
+            false,
+        );
 
         let result = match CcBridge::send_note(&req.instance, msg) {
             Ok(()) => format!(
@@ -370,21 +412,20 @@ impl ServerHandler for DropletsMcp {
                 .build(),
             server_info: Implementation::from_build_env(),
             instructions: Some(
-                "Simply Droplets MCP Server - AI-controlled MIDI output (CC + Notes) for DAW automation.\n\n\
-                 Tools:\n\
-                 - list_instances(): See connected plugin instances\n\
-                 - send_cc(cc, value, channel): Send MIDI CC message\n\
-                 - send_note_on(note, velocity, channel): Send MIDI Note On (60 = C4)\n\
+                "Simply Droplets MCP Server - AI-controlled MIDI 1.0/2.0 output for DAW automation.\n\n\
+                 MIDI Tools:\n\
+                 - send_note_on(note, velocity, channel): MIDI 1.0 Note On (7-bit velocity)\n\
+                 - send_note_on_hires(note, velocity, channel): MIDI 2.0 Note On (16-bit velocity)\n\
                  - send_note_off(note, channel): Send MIDI Note Off\n\
+                 - send_cc(cc, value, channel): Send MIDI CC message\n\n\
+                 Instance Tools:\n\
+                 - list_instances(): See connected plugin instances\n\
                  - list_slots(): See slots with names, CC mappings, and values\n\
-                 - set_param(slot, value): Set slot value (0.0-1.0) - outputs MIDI CC\n\
-                 - rename_slot(slot, name): Label a slot (e.g., 'Filter Cutoff')\n\
+                 - set_param(slot, value): Set slot value (0.0-1.0)\n\
+                 - rename_slot(slot, name): Label a slot\n\
                  - get_activity(): See recent MIDI activity\n\n\
-                 DAW SETUP FOR MIDI ROUTING:\n\
-                 Route Simply Droplets MIDI output to your target instrument/effect.\n\
-                 - Ableton: Create MIDI track, set 'MIDI From' to track with Simply Droplets\n\
-                 - Bitwig: Use HW CC modulator or MIDI routing in device chain\n\
-                 - Logic: Use Environment or IAC bus for MIDI routing"
+                 MIDI 2.0: Plugin outputs both MIDI 1.0 and 2.0 (UMP) events. \
+                 Hosts that support MIDI 2.0 will use 16-bit velocity for smoother dynamics."
                     .to_string(),
             ),
         }

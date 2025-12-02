@@ -36,18 +36,20 @@ impl<'a> PluginNotePortsImpl for DropletMainThread<'a> {
     fn get(&mut self, index: u32, is_input: bool, writer: &mut NotePortInfoWriter) {
         if index == 0 {
             if is_input {
+                // Input: Accept MIDI 1.0 for CC learning (simple case)
                 writer.set(&NotePortInfo {
                     id: ClapId::new(1),
                     name: b"MIDI Learn",
-                    supported_dialects: NoteDialects::MIDI,
+                    supported_dialects: NoteDialects::MIDI | NoteDialects::MIDI2,
                     preferred_dialect: Some(NoteDialect::Midi),
                 });
             } else {
+                // Output: Prefer MIDI 2.0 for high-resolution, fall back to MIDI 1.0
                 writer.set(&NotePortInfo {
                     id: ClapId::new(2),
                     name: b"MIDI Out",
-                    supported_dialects: NoteDialects::MIDI,
-                    preferred_dialect: Some(NoteDialect::Midi),
+                    supported_dialects: NoteDialects::MIDI | NoteDialects::MIDI2,
+                    preferred_dialect: Some(NoteDialect::Midi2),
                 });
             }
         }
