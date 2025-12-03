@@ -152,7 +152,7 @@ fn main() {
 
     let _webview = match WebViewBuilder::new()
         .with_html(include_str!("../../frontend/dist/index.html"))
-        .with_asynchronous_custom_protocol("droplets".to_string(), move |request, responder| {
+        .with_asynchronous_custom_protocol("droplets".to_string(), move |_webview_id, request, responder| {
             let params = Arc::clone(&params_for_protocol);
             let uri = request.uri();
             let path = uri.path();

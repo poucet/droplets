@@ -58,11 +58,12 @@ rtrb = "0.3"
 [features]
 default = []
 dev-gui = []  # Enable GUI development tools and debugging
-standalone = ["midir", "env_logger"]  # Standalone binary with MIDI output
+standalone = ["midir", "env_logger", "tao"]  # Standalone binary with MIDI output
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 midir = { version = "0.10", optional = true }
 env_logger = { version = "0.11", optional = true }
+tao = { version = "0.31", optional = true }
 
 
 [profile.release]
