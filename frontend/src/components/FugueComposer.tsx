@@ -144,10 +144,7 @@ export const FugueComposer: React.FC<FugueComposerProps> = ({
     setEvents([]);
   }, []);
 
-  const eventCount = events.filter(e => {
-    const ev = e.event;
-    return 'NoteOn' in ev || (ev as any).type === 'note_on';
-  }).length;
+  const eventCount = events.filter(e => e.event.type === 'note_on').length;
 
   return (
     <div className="fugue-composer">

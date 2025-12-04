@@ -99,38 +99,29 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
     const sortedEvents = [...events].sort((a, b) => a.beat_offset - b.beat_offset);
 
     for (const { beat_offset, event } of sortedEvents) {
-      if ('NoteOn' in event || (event as any).type === 'note_on') {
-        const noteOn = 'NoteOn' in event ? event.NoteOn : event as any;
-        const note = noteOn.note;
-        const velocity = noteOn.velocity;
-        const channel = noteOn.channel ?? 0;
-
-        activeNotes.set(note, { beat: beat_offset, velocity, channel });
-        minNote = Math.min(minNote, note);
-        maxNote = Math.max(maxNote, note);
-      } else if ('NoteOff' in event || (event as any).type === 'note_off') {
-        const noteOff = 'NoteOff' in event ? event.NoteOff : event as any;
-        const note = noteOff.note;
-
-        const start = activeNotes.get(note);
+      if (event.type === 'note_on') {
+        activeNotes.set(event.note, { beat: beat_offset, velocity: event.velocity, channel: event.channel });
+        minNote = Math.min(minNote, event.note);
+        maxNote = Math.max(maxNote, event.note);
+      } else if (event.type === 'note_off') {
+        const start = activeNotes.get(event.note);
         if (start) {
           const duration = beat_offset - start.beat;
-          const key = `${note}-${start.beat}`;
+          const key = `${event.note}-${start.beat}`;
           noteMap.set(key, {
             beat: start.beat,
-            note,
+            note: event.note,
             velocity: start.velocity,
             duration: Math.max(duration, 0.25), // minimum duration
             channel: start.channel,
           });
-          activeNotes.delete(note);
+          activeNotes.delete(event.note);
         }
-      } else if ('Cc' in event || (event as any).type === 'cc') {
-        const cc = 'Cc' in event ? event.Cc : event as any;
-        ccSet.add(cc.cc);
-        const points = ccMap.get(cc.cc) || [];
-        points.push({ beat: beat_offset, cc: cc.cc, value: cc.value });
-        ccMap.set(cc.cc, points);
+      } else if (event.type === 'cc') {
+        ccSet.add(event.cc);
+        const points = ccMap.get(event.cc) || [];
+        points.push({ beat: beat_offset, cc: event.cc, value: event.value });
+        ccMap.set(event.cc, points);
       }
     }
 
@@ -191,24 +182,19 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
     // Remove the original note events
     const filteredEvents = events.filter(e => {
       const ev = e.event;
-      if ('NoteOn' in ev || (ev as any).type === 'note_on') {
-        const noteOn = 'NoteOn' in ev ? ev.NoteOn : ev as any;
-        if (Math.abs(e.beat_offset - originalBeat) < 0.01 && noteOn.note === originalNote) {
+      if (ev.type === 'note_on') {
+        if (Math.abs(e.beat_offset - originalBeat) < 0.01 && ev.note === originalNote) {
           return false;
         }
       }
-      if ('NoteOff' in ev || (ev as any).type === 'note_off') {
-        const noteOff = 'NoteOff' in ev ? ev.NoteOff : ev as any;
-        if (noteOff.note === originalNote) {
+      if (ev.type === 'note_off') {
+        if (ev.note === originalNote) {
           // Find if this note-off corresponds to our note-on
-          const noteOnBeat = events.find(e2 => {
-            const ev2 = e2.event;
-            if ('NoteOn' in ev2 || (ev2 as any).type === 'note_on') {
-              const noteOn2 = 'NoteOn' in ev2 ? ev2.NoteOn : ev2 as any;
-              return Math.abs(e2.beat_offset - originalBeat) < 0.01 && noteOn2.note === originalNote;
-            }
-            return false;
-          });
+          const noteOnBeat = events.find(e2 =>
+            e2.event.type === 'note_on' &&
+            Math.abs(e2.beat_offset - originalBeat) < 0.01 &&
+            e2.event.note === originalNote
+          );
           if (noteOnBeat && e.beat_offset > originalBeat) {
             return false;
           }
@@ -220,11 +206,11 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
     // Add the updated note
     const noteOn: TimedFugueEvent = {
       beat_offset: newBeat,
-      event: { type: 'note_on', channel, note: newNote, velocity } as any,
+      event: { type: 'note_on', channel, note: newNote, velocity },
     };
     const noteOff: TimedFugueEvent = {
       beat_offset: newBeat + newDuration,
-      event: { type: 'note_off', channel, note: newNote } as any,
+      event: { type: 'note_off', channel, note: newNote },
     };
 
     onEventsChange([...filteredEvents, noteOn, noteOff]);
@@ -332,24 +318,19 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
     if (mode !== 'edit' || !onEventsChange) return;
 
     // Find if there's already a note at this position
-    const existingIndex = events.findIndex(e => {
-      const ev = e.event;
-      if ('NoteOn' in ev || (ev as any).type === 'note_on') {
-        const noteOn = 'NoteOn' in ev ? ev.NoteOn : ev as any;
-        return Math.abs(e.beat_offset - beat) < 0.125 && noteOn.note === note;
-      }
-      return false;
-    });
+    const existingIndex = events.findIndex(e =>
+      e.event.type === 'note_on' &&
+      Math.abs(e.beat_offset - beat) < 0.125 &&
+      e.event.note === note
+    );
 
     if (existingIndex >= 0) {
       // Remove note (and its note-off)
       const newEvents = events.filter((e, i) => {
         if (i === existingIndex) return false;
         // Also remove corresponding note-off
-        const ev = e.event;
-        if ('NoteOff' in ev || (ev as any).type === 'note_off') {
-          const noteOff = 'NoteOff' in ev ? ev.NoteOff : ev as any;
-          if (noteOff.note === note && e.beat_offset > beat) return false;
+        if (e.event.type === 'note_off' && e.event.note === note && e.beat_offset > beat) {
+          return false;
         }
         return true;
       });
@@ -358,11 +339,11 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
       // Add new note (default 0.5 beat duration)
       const noteOn: TimedFugueEvent = {
         beat_offset: beat,
-        event: { type: 'note_on', channel: midiChannel, note, velocity: 100 } as any,
+        event: { type: 'note_on', channel: midiChannel, note, velocity: 100 },
       };
       const noteOff: TimedFugueEvent = {
         beat_offset: beat + 0.5,
-        event: { type: 'note_off', channel: midiChannel, note } as any,
+        event: { type: 'note_off', channel: midiChannel, note },
       };
       onEventsChange([...events, noteOn, noteOff]);
     }
