@@ -1,18 +1,15 @@
 /**
- * NoteLayer - Renders and handles interaction for notes in the piano roll
+ * NoteLayer - Manages note interaction and coordinates Note components
  *
  * Responsible for:
- * - Rendering note rectangles (view and edit modes)
- * - Drag handles for resizing notes
+ * - Drag state management (only one note can be dragged at a time)
  * - Click-to-add/remove notes
- * - Drag-to-move/resize notes
+ * - Event updates when notes are modified
  */
 
 import React, { useCallback, useState, useEffect } from 'react';
 import type { TimedFugueEvent } from '../types';
-
-// Drag operation types
-type DragType = 'move' | 'resize-start' | 'resize-end';
+import { Note, DragType } from './Note';
 
 interface DragState {
   type: DragType;
@@ -73,7 +70,6 @@ export const NoteLayer: React.FC<NoteLayerProps> = ({
   ) => {
     if (!onEventsChange) return;
 
-    // Remove the original note events
     const filteredEvents = events.filter(e => {
       const ev = e.event;
       if (ev.type === 'note_on') {
@@ -96,7 +92,6 @@ export const NoteLayer: React.FC<NoteLayerProps> = ({
       return true;
     });
 
-    // Add the updated note
     const noteOn: TimedFugueEvent = {
       beat_offset: newBeat,
       event: { type: 'note_on', channel, note: newNote, velocity },
@@ -111,9 +106,9 @@ export const NoteLayer: React.FC<NoteLayerProps> = ({
 
   // Handle drag start on a note
   const handleNoteDragStart = useCallback((
-    e: React.MouseEvent,
     cell: NoteCell,
-    dragType: DragType
+    dragType: DragType,
+    e: React.MouseEvent
   ) => {
     if (mode !== 'edit') return;
     e.stopPropagation();
@@ -167,7 +162,6 @@ export const NoteLayer: React.FC<NoteLayerProps> = ({
           break;
       }
 
-      // Ensure note doesn't extend past duration
       if (newBeat + newDuration > durationBeats) {
         newDuration = durationBeats - newBeat;
       }
@@ -182,7 +176,6 @@ export const NoteLayer: React.FC<NoteLayerProps> = ({
         cell.velocity
       );
 
-      // Update drag state to track from new position
       setDragState(prev => prev ? {
         ...prev,
         originalBeat: newBeat,
@@ -206,8 +199,8 @@ export const NoteLayer: React.FC<NoteLayerProps> = ({
     };
   }, [dragState, mode, notes, noteRange, pixelsPerBeat, noteHeight, durationBeats, updateNote]);
 
-  // Handle note cell click in edit mode
-  const handleNoteClick = useCallback((beat: number, note: number) => {
+  // Handle click on empty cell to add note
+  const handleCellClick = useCallback((beat: number, note: number) => {
     if (mode !== 'edit' || !onEventsChange) return;
 
     const existingIndex = events.findIndex(e =>
@@ -217,7 +210,6 @@ export const NoteLayer: React.FC<NoteLayerProps> = ({
     );
 
     if (existingIndex >= 0) {
-      // Remove note (and its note-off)
       const newEvents = events.filter((e, i) => {
         if (i === existingIndex) return false;
         if (e.event.type === 'note_off' && e.event.note === note && e.beat_offset > beat) {
@@ -227,7 +219,6 @@ export const NoteLayer: React.FC<NoteLayerProps> = ({
       });
       onEventsChange(newEvents);
     } else {
-      // Add new note (default 0.5 beat duration)
       const noteOn: TimedFugueEvent = {
         beat_offset: beat,
         event: { type: 'note_on', channel: midiChannel, note, velocity: 100 },
@@ -260,7 +251,7 @@ export const NoteLayer: React.FC<NoteLayerProps> = ({
             width={beatSnap * pixelsPerBeat}
             height={noteHeight}
             className="edit-cell"
-            onClick={() => handleNoteClick(beat, note)}
+            onClick={() => handleCellClick(beat, note)}
           />
         );
       }
@@ -268,73 +259,30 @@ export const NoteLayer: React.FC<NoteLayerProps> = ({
     return cells;
   };
 
-  // Render note cells with drag handles in edit mode
-  const renderNotes = () => {
-    const handleWidth = 6;
-
-    return notes.map((cell, i) => {
-      const x = cell.beat * pixelsPerBeat;
-      const y = (noteRange.max - cell.note) * noteHeight;
-      const width = Math.max(cell.duration * pixelsPerBeat - 1, 4);
-      const opacity = 0.4 + (cell.velocity / 127) * 0.6;
-      const isDragging = dragState?.noteKey === `${cell.note}-${cell.beat}`;
-
-      if (mode === 'edit') {
-        return (
-          <g key={`${cell.note}-${cell.beat}-${i}`} className={`note-group ${isDragging ? 'dragging' : ''}`}>
-            <rect
-              x={x + handleWidth}
-              y={y + 1}
-              width={Math.max(width - handleWidth * 2, 2)}
-              height={noteHeight - 2}
-              className="note-cell note-body"
-              style={{ opacity }}
-              onMouseDown={(e) => handleNoteDragStart(e, cell, 'move')}
-            />
-            <rect
-              x={x}
-              y={y + 1}
-              width={handleWidth}
-              height={noteHeight - 2}
-              rx={2}
-              className="note-cell note-handle note-handle-start"
-              style={{ opacity }}
-              onMouseDown={(e) => handleNoteDragStart(e, cell, 'resize-start')}
-            />
-            <rect
-              x={x + width - handleWidth}
-              y={y + 1}
-              width={handleWidth}
-              height={noteHeight - 2}
-              rx={2}
-              className="note-cell note-handle note-handle-end"
-              style={{ opacity }}
-              onMouseDown={(e) => handleNoteDragStart(e, cell, 'resize-end')}
-            />
-          </g>
-        );
-      }
-
-      // View mode - simple rectangle
-      return (
-        <rect
-          key={`${cell.note}-${cell.beat}-${i}`}
-          x={x}
-          y={y + 1}
-          width={width}
-          height={noteHeight - 2}
-          rx={2}
-          className="note-cell"
-          style={{ opacity }}
-        />
-      );
-    });
-  };
-
   return (
     <>
       {renderEditCells()}
-      {renderNotes()}
+      {notes.map((cell, i) => {
+        const x = cell.beat * pixelsPerBeat;
+        const y = (noteRange.max - cell.note) * noteHeight;
+        const width = Math.max(cell.duration * pixelsPerBeat - 1, 4);
+        const opacity = 0.4 + (cell.velocity / 127) * 0.6;
+        const isDragging = dragState?.noteKey === `${cell.note}-${cell.beat}`;
+
+        return (
+          <Note
+            key={`${cell.note}-${cell.beat}-${i}`}
+            x={x}
+            y={y}
+            width={width}
+            opacity={opacity}
+            noteHeight={noteHeight}
+            mode={mode}
+            isDragging={isDragging}
+            onDragStart={(type, e) => handleNoteDragStart(cell, type, e)}
+          />
+        );
+      })}
     </>
   );
 };
