@@ -20,19 +20,11 @@ export const FugueViewer: React.FC<FugueViewerProps> = ({
   transport,
   onEdit,
 }) => {
-  // Calculate playhead position within the fugue from transport position
-  // Uses start_beat which is updated by the audio thread on each loop iteration
+  // Use progress_beats from backend - already calculated correctly for loops
   const playheadBeat = useMemo(() => {
     if (!info || info.is_waiting) return undefined;
-
-    // Calculate local position from transport beat and the fugue's current start_beat
-    // start_beat advances by duration_beats on each loop, so this gives us the
-    // correct position within the current loop iteration
-    const localBeat = transport.beat - info.start_beat;
-
-    // Clamp to valid range within the fugue duration
-    return Math.max(0, Math.min(localBeat, fugue.duration_beats));
-  }, [info, transport.beat, fugue.duration_beats]);
+    return info.progress_beats;
+  }, [info]);
 
   const loopDisplay = useMemo(() => {
     if (!info) return null;
