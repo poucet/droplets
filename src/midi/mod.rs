@@ -141,7 +141,7 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
     fn process(
         &mut self,
         _process: Process,
-        _audio: Audio,
+        mut audio: Audio,
         mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
         self.shared.host.request_callback();
@@ -172,7 +172,20 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
             }
         }
 
-        if has_midi || !self.midi_consumer.is_empty() {
+        // For VSTi: Output silence to audio buffers (required for instrument classification)
+        // This makes Ableton treat us as a proper instrument with MIDI routing
+        for mut port in audio.output_ports() {
+            if let Ok(channels) = port.channels() {
+                if let Some(mut channels_f32) = channels.into_f32() {
+                    for channel in channels_f32.iter_mut() {
+                        channel.fill(0.0);
+                    }
+                }
+            }
+        }
+
+        // Always continue - we're an instrument that may output MIDI at any time
+        if has_midi {
             Ok(ProcessStatus::Continue)
         } else {
             Ok(ProcessStatus::ContinueIfNotQuiet)

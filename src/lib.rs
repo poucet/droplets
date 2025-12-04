@@ -40,7 +40,7 @@ impl DefaultPluginFactory for DropletPlugin {
     fn get_descriptor() -> PluginDescriptor {
         PluginDescriptor::new("com.simply-chris.simply-droplets", "Simply Droplets")
             .with_vendor("Simply Chris")
-            .with_features([NOTE_EFFECT, UTILITY])
+            .with_features([INSTRUMENT, NOTE_EFFECT, UTILITY])
     }
 
     fn new_shared(host: HostSharedHandle) -> Result<Self::Shared<'_>, PluginError> {
