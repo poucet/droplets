@@ -1,40 +1,80 @@
 .app {
-  width: 800px;
-  height: 600px;
+  width: 100vw;
+  height: 100vh;
   background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
   color: #ffffff;
   padding: 20px;
   box-sizing: border-box;
   overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  display: flex;
+  flex-direction: column;
 }
 
 .app-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 20px;
-  padding-bottom: 15px;
-  border-bottom: 2px solid #404040;
+  margin-bottom: 15px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #404040;
+  gap: 20px;
 }
 
 .header-left {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 
 .app-header h1 {
-  font-size: 1.8rem;
+  font-size: 1.4rem;
   margin: 0;
   color: #ffffff;
   font-weight: 300;
 }
 
 .subtitle {
-  font-size: 0.9rem;
+  font-size: 0.75rem;
   color: #4a9eff;
   font-weight: 400;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Tab Navigation */
+.tab-nav {
+  display: flex;
+  gap: 4px;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 4px;
+  border-radius: 8px;
+}
+
+.tab-btn {
+  padding: 8px 20px;
+  background: transparent;
+  border: none;
+  color: #888;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: all 0.15s ease;
+}
+
+.tab-btn:hover {
+  color: #ccc;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.tab-btn.active {
+  background: linear-gradient(135deg, #4fc3f7, #29b6f6);
+  color: #000;
 }
 
 .server-status {
@@ -78,10 +118,56 @@
 }
 
 .app-main {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Sequencer View */
+.sequencer-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 12px;
+}
+
+.sequencer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+
+.sequencer-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: #e0e0e0;
+  font-weight: 400;
+}
+
+.sequencer-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+}
+
+/* Monitor View */
+.monitor-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  gap: 15px;
+}
+
+.monitor-columns {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 15px;
-  height: calc(100% - 90px);
+  flex: 1;
+  min-height: 0;
 }
 
 .slots-section,
@@ -562,32 +648,6 @@
   background: #505050;
 }
 
-/* Fugue Section */
-.fugue-section {
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 10px;
-  padding: 16px;
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  grid-column: span 2;
-}
-
-.section-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.section-header h2 {
-  margin: 0;
-  font-size: 1.1rem;
-  color: #e0e0e0;
-  font-weight: 400;
-}
-
 .new-fugue-btn {
   background: linear-gradient(135deg, #4fc3f7, #29b6f6);
   border: none;
@@ -607,16 +667,17 @@
 .transport-info {
   display: flex;
   align-items: center;
-  gap: 16px;
-  padding: 8px 12px;
-  background: rgba(0, 0, 0, 0.2);
+  gap: 8px;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.3);
   border-radius: 6px;
-  font-size: 0.8rem;
+  font-size: 0.75rem;
   font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
 }
 
 .transport-beat {
-  color: #888;
+  color: #e0e0e0;
+  min-width: 45px;
 }
 
 .transport-tempo {
@@ -624,20 +685,14 @@
 }
 
 .transport-status {
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  font-size: 0.9rem;
 }
 
 .transport-status.playing {
-  background: rgba(76, 175, 80, 0.2);
   color: #4caf50;
 }
 
 .transport-status.stopped {
-  background: rgba(255, 152, 0, 0.2);
   color: #ff9800;
 }
 
@@ -648,11 +703,6 @@
 }
 
 @media (max-width: 768px) {
-  .app-main {
-    grid-template-columns: 1fr;
-    gap: 15px;
-  }
-
   .app-header {
     flex-direction: column;
     gap: 10px;
@@ -663,7 +713,11 @@
     align-items: center;
   }
 
-  .fugue-section {
-    grid-column: span 1;
+  .monitor-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .tab-nav {
+    order: -1;
   }
 }

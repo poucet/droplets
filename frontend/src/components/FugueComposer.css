@@ -8,6 +8,9 @@
   background: #16162a;
   border-radius: 8px;
   border: 1px solid #4fc3f7;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .composer-header {
@@ -94,7 +97,9 @@
 
 /* Grid area */
 .composer-grid {
-  max-height: 300px;
+  flex: 1;
+  min-height: 200px;
+  max-height: none;
   overflow: auto;
 }
 

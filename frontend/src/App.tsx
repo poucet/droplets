@@ -34,6 +34,8 @@ const DEFAULT_TRANSPORT: TransportState = {
   time_sig_numerator: 4,
 };
 
+type TabView = 'sequencer' | 'monitor';
+
 const App: React.FC = () => {
   const [slots, setSlots] = useState<SlotInfo[]>([]);
   const [activity, setActivity] = useState<ActivityEventDto[]>([]);
@@ -47,6 +49,9 @@ const App: React.FC = () => {
   const [transport, setTransport] = useState<TransportState>(DEFAULT_TRANSPORT);
   const [selectedFugueId, setSelectedFugueId] = useState<bigint | undefined>();
   const [showComposer, setShowComposer] = useState(false);
+
+  // Tab navigation
+  const [activeTab, setActiveTab] = useState<TabView>('sequencer');
 
   const realtimeRef = useRef<RealtimeConnection | null>(null);
 
@@ -217,142 +222,161 @@ const App: React.FC = () => {
           <h1>Simply Droplets</h1>
           <span className="subtitle">AI Parameter Bridge</span>
         </div>
-        <div className="server-status">
-          <span className={`status-dot ${serverStatus}`}></span>
-          <span className="status-text">MCP Server: localhost:9999</span>
+        <nav className="tab-nav">
+          <button
+            className={`tab-btn ${activeTab === 'sequencer' ? 'active' : ''}`}
+            onClick={() => setActiveTab('sequencer')}
+          >
+            Sequencer
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'monitor' ? 'active' : ''}`}
+            onClick={() => setActiveTab('monitor')}
+          >
+            Monitor
+          </button>
+        </nav>
+        <div className="header-right">
+          <div className="transport-info">
+            <span className="transport-beat">{transport.beat.toFixed(2)}</span>
+            <span className="transport-tempo">{transport.tempo.toFixed(0)} BPM</span>
+            <span className={`transport-status ${transport.playing ? 'playing' : 'stopped'}`}>
+              {transport.playing ? '▶' : '■'}
+            </span>
+          </div>
+          <div className="server-status">
+            <span className={`status-dot ${serverStatus}`}></span>
+          </div>
         </div>
       </header>
 
       <main className="app-main">
-        {/* Fugue Panel - New Section */}
-        <section className="fugue-section">
-          <div className="section-header">
-            <h2>Fugue Sequencer</h2>
-            <button
-              className="new-fugue-btn"
-              onClick={() => setShowComposer(!showComposer)}
-            >
-              {showComposer ? 'Cancel' : '+ New Fugue'}
-            </button>
-          </div>
+        {activeTab === 'sequencer' ? (
+          /* Sequencer Tab */
+          <div className="sequencer-view">
+            <div className="sequencer-header">
+              <h2>Fugue Sequencer</h2>
+              <button
+                className="new-fugue-btn"
+                onClick={() => setShowComposer(!showComposer)}
+              >
+                {showComposer ? 'Back to List' : '+ New Fugue'}
+              </button>
+            </div>
 
-          {showComposer ? (
-            <FugueComposer
-              onQueue={handleQueueFugue}
-              onCancel={() => setShowComposer(false)}
-            />
-          ) : (
-            <>
-              <FugueList
-                fugues={fugueInfos}
-                selectedId={selectedFugueId}
-                onSelect={handleSelectFugue}
-                onCancel={handleCancelFugue}
+            {showComposer ? (
+              <FugueComposer
+                onQueue={handleQueueFugue}
+                onCancel={() => setShowComposer(false)}
               />
-
-              {selectedFugue && (
-                <FugueViewer
-                  fugue={selectedFugue}
-                  info={selectedInfo}
-                  transport={transport}
+            ) : (
+              <div className="sequencer-content">
+                <FugueList
+                  fugues={fugueInfos}
+                  selectedId={selectedFugueId}
+                  onSelect={handleSelectFugue}
+                  onCancel={handleCancelFugue}
                 />
-              )}
-            </>
-          )}
 
-          <div className="transport-info">
-            <span className="transport-beat">Beat: {transport.beat.toFixed(2)}</span>
-            <span className="transport-tempo">{transport.tempo.toFixed(0)} BPM</span>
-            <span className={`transport-status ${transport.playing ? 'playing' : 'stopped'}`}>
-              {transport.playing ? 'Playing' : 'Stopped'}
-            </span>
-          </div>
-        </section>
-
-        <section className="slots-section">
-          <h2>Automatable Parameters</h2>
-          <div className="slots-list">
-            {slots.length === 0 ? (
-              <div className="no-slots">
-                <p>Loading parameter slots...</p>
+                {selectedFugue && (
+                  <FugueViewer
+                    fugue={selectedFugue}
+                    info={selectedInfo}
+                    transport={transport}
+                  />
+                )}
               </div>
-            ) : (
-              slots.map((slot) => (
-                <div key={slot.index} className={`slot-item ${wigglingSlot === slot.index ? 'wiggling' : ''}`}>
-                  <span className="slot-index">{slot.index}</span>
-                  <span className="slot-name">{slot.name}</span>
-                  <span className="slot-cc">{slot.cc !== null ? `CC${slot.cc}` : '—'}</span>
-                  <div className="slot-bar-container">
-                    <div
-                      className="slot-bar"
-                      style={{ width: `${slot.value * 100}%` }}
-                    />
-                  </div>
-                  <span className="slot-value">{Math.round(slot.value * 100)}%</span>
-                  <button
-                    className="wiggle-btn"
-                    onClick={() => handleWiggle(slot.index)}
-                    disabled={slot.cc === null || wigglingSlot !== null}
-                    title={slot.cc === null ? 'Map a CC first' : 'Wiggle CC to identify knob'}
-                  >
-                    {wigglingSlot === slot.index ? '~' : '↔'}
-                  </button>
-                </div>
-              ))
             )}
           </div>
-          <div className="slots-hint">
-            <p><strong>How to use:</strong></p>
-            <p>1. In your DAW, map these parameters to any plugin using modulation</p>
-            <p>2. AI sets values via MCP <code>set_param</code> tool</p>
-            <p>3. DAW routes the parameter changes to your target plugin</p>
-          </div>
-        </section>
-
-        <section className="note-grid-section">
-          <h2>Note Test Grid</h2>
-          <div className="note-grid">
-            {/* Two octaves: C3 (48) to B4 (71) */}
-            {Array.from({ length: 24 }, (_, i) => 48 + i).map(note => {
-              const isBlack = [1, 3, 6, 8, 10].includes(note % 12);
-              const isActive = activeNotes.has(note);
-              return (
-                <button
-                  key={note}
-                  className={`note-key ${isBlack ? 'black' : 'white'} ${isActive ? 'active' : ''}`}
-                  onMouseDown={() => handleNoteOn(note)}
-                  onMouseUp={() => handleNoteOff(note)}
-                  onMouseLeave={() => isActive && handleNoteOff(note)}
-                  title={getNoteName(note)}
-                >
-                  {!isBlack && <span className="note-label">{getNoteName(note)}</span>}
-                </button>
-              );
-            })}
-          </div>
-          <p className="note-hint">Click and hold to play notes. Tests MIDI output routing.</p>
-        </section>
-
-        <section className="activity-section">
-          <h2>Recent AI Activity</h2>
-          <div className="activity-list">
-            {activity.length === 0 ? (
-              <div className="no-activity">
-                <p>No recent activity</p>
-                <p className="hint">Activity appears when AI sets parameter values</p>
-              </div>
-            ) : (
-              activity.slice(-20).reverse().map((event, idx) => (
-                <div key={`${event.timestamp}-${idx}`} className="activity-item">
-                  <span className="activity-time">{formatTimestamp(event.timestamp)}</span>
-                  <span className="activity-instance">{event.instance}</span>
-                  <span className="activity-cc">{event.cc !== null ? `CC${event.cc}` : '—'}</span>
-                  <span className="activity-value">{event.value}</span>
+        ) : (
+          /* Monitor Tab */
+          <div className="monitor-view">
+            <div className="monitor-columns">
+              <section className="slots-section">
+                <h2>Automatable Parameters</h2>
+                <div className="slots-list">
+                  {slots.length === 0 ? (
+                    <div className="no-slots">
+                      <p>Loading parameter slots...</p>
+                    </div>
+                  ) : (
+                    slots.map((slot) => (
+                      <div key={slot.index} className={`slot-item ${wigglingSlot === slot.index ? 'wiggling' : ''}`}>
+                        <span className="slot-index">{slot.index}</span>
+                        <span className="slot-name">{slot.name}</span>
+                        <span className="slot-cc">{slot.cc !== null ? `CC${slot.cc}` : '—'}</span>
+                        <div className="slot-bar-container">
+                          <div
+                            className="slot-bar"
+                            style={{ width: `${slot.value * 100}%` }}
+                          />
+                        </div>
+                        <span className="slot-value">{Math.round(slot.value * 100)}%</span>
+                        <button
+                          className="wiggle-btn"
+                          onClick={() => handleWiggle(slot.index)}
+                          disabled={slot.cc === null || wigglingSlot !== null}
+                          title={slot.cc === null ? 'Map a CC first' : 'Wiggle CC to identify knob'}
+                        >
+                          {wigglingSlot === slot.index ? '~' : '↔'}
+                        </button>
+                      </div>
+                    ))
+                  )}
                 </div>
-              ))
-            )}
+                <div className="slots-hint">
+                  <p><strong>How to use:</strong></p>
+                  <p>1. Map parameters to any plugin via DAW modulation</p>
+                  <p>2. AI sets values via MCP <code>set_param</code></p>
+                </div>
+              </section>
+
+              <section className="activity-section">
+                <h2>Recent AI Activity</h2>
+                <div className="activity-list">
+                  {activity.length === 0 ? (
+                    <div className="no-activity">
+                      <p>No recent activity</p>
+                      <p className="hint">Activity appears when AI sets parameter values</p>
+                    </div>
+                  ) : (
+                    activity.slice(-20).reverse().map((event, idx) => (
+                      <div key={`${event.timestamp}-${idx}`} className="activity-item">
+                        <span className="activity-time">{formatTimestamp(event.timestamp)}</span>
+                        <span className="activity-instance">{event.instance}</span>
+                        <span className="activity-cc">{event.cc !== null ? `CC${event.cc}` : '—'}</span>
+                        <span className="activity-value">{event.value}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </section>
+            </div>
+
+            <section className="note-grid-section">
+              <h2>Note Test Grid</h2>
+              <div className="note-grid">
+                {Array.from({ length: 24 }, (_, i) => 48 + i).map(note => {
+                  const isBlack = [1, 3, 6, 8, 10].includes(note % 12);
+                  const isActive = activeNotes.has(note);
+                  return (
+                    <button
+                      key={note}
+                      className={`note-key ${isBlack ? 'black' : 'white'} ${isActive ? 'active' : ''}`}
+                      onMouseDown={() => handleNoteOn(note)}
+                      onMouseUp={() => handleNoteOff(note)}
+                      onMouseLeave={() => isActive && handleNoteOff(note)}
+                      title={getNoteName(note)}
+                    >
+                      {!isBlack && <span className="note-label">{getNoteName(note)}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="note-hint">Click and hold to play notes. Tests MIDI output routing.</p>
+            </section>
           </div>
-        </section>
+        )}
       </main>
     </div>
   );
