@@ -55,6 +55,9 @@ http-body-util = "0.1"
 # Lock-free ring buffer for audio thread communication
 rtrb = "0.3"
 
+# Lock-free atomic pointer swapping for audio-safe data sharing
+arc-swap = "1.7"
+
 [features]
 default = []
 dev-gui = []  # Enable GUI development tools and debugging

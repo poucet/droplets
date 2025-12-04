@@ -8,12 +8,14 @@ use rtrb::Consumer;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use fugue::{FugueBridge, FugueInfoHandle};
 use gui::DropletGui;
 use mcp::{CcBridge, MidiMessage};
 use midi::DropletMidiProcessor;
 use params::DropletParams;
 
 mod midi;
+pub mod fugue;
 pub mod gui;
 pub mod logger;
 pub mod mcp;
@@ -54,9 +56,10 @@ impl DefaultPluginFactory for DropletPlugin {
         // Create shared params (Arc for MCP bridge access)
         let params = Arc::new(DropletParams::new());
 
-        // Generate unique instance ID and register with CcBridge
+        // Generate unique instance ID and register with CcBridge and FugueBridge
         let instance_id = format!("droplets-{:08x}", fastrand::u32(..));
         let midi_consumer = CcBridge::register(&instance_id, Arc::clone(&params));
+        let (fugue_consumer, fugue_info_handle) = FugueBridge::register(&instance_id, &instance_id);
         log::info!("Registered MCP instance: {}", instance_id);
 
         // Start singleton MCP server (only first instance actually starts it)
@@ -69,6 +72,8 @@ impl DefaultPluginFactory for DropletPlugin {
             ipc_receiver: receiver,
             instance_id,
             midi_consumer: Mutex::new(Some(midi_consumer)),
+            fugue_consumer: Mutex::new(Some(fugue_consumer)),
+            fugue_info_handle: Mutex::new(Some(fugue_info_handle)),
         })
     }
 
@@ -93,6 +98,10 @@ pub struct DropletShared<'a> {
     pub instance_id: String,
     /// MIDI consumer - taken by MIDI processor during activation
     pub midi_consumer: Mutex<Option<Consumer<MidiMessage>>>,
+    /// Fugue command consumer - taken by MIDI processor during activation
+    pub fugue_consumer: Mutex<Option<Consumer<fugue::FugueCommand>>>,
+    /// Fugue info handle for lock-free updates from audio thread
+    pub fugue_info_handle: Mutex<Option<FugueInfoHandle>>,
 }
 
 impl<'a> PluginShared<'a> for DropletShared<'a> {}
@@ -100,6 +109,7 @@ impl<'a> PluginShared<'a> for DropletShared<'a> {}
 impl Drop for DropletShared<'_> {
     fn drop(&mut self) {
         CcBridge::unregister(&self.instance_id);
+        FugueBridge::unregister(&self.instance_id);
         log::info!("Unregistered MCP instance: {}", self.instance_id);
     }
 }

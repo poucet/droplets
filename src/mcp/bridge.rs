@@ -383,6 +383,8 @@ impl CcBridge {
             let old_name = entry.name.clone();
             entry.name = new_name.to_string();
             log::info!("CcBridge: Renamed '{}' to '{}'", old_name, new_name);
+            // Sync with FugueBridge
+            crate::fugue::FugueBridge::update_name(&id, new_name);
             Ok(old_name)
         } else {
             Err("Instance not found")

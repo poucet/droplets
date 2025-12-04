@@ -10,6 +10,7 @@
 use clack_extensions::params::PluginAudioProcessorParams;
 use clack_plugin::events::event_types::{
     Midi2Event, MidiEvent, NoteExpressionEvent, NoteExpressionType, NoteOffEvent, NoteOnEvent,
+    TransportFlags,
 };
 use clack_plugin::events::{Match, Pckn};
 use clack_plugin::host::HostAudioProcessorHandle;
@@ -18,6 +19,7 @@ use clack_plugin::prelude::{InputEvents, OutputEvents};
 use clack_plugin::process::{Audio, Events, PluginAudioConfiguration, Process, ProcessStatus};
 use rtrb::Consumer;
 
+use crate::fugue::{FugueInfoHandle, FugueSequencer};
 use crate::mcp::{CcMessage, MidiMessage, NoteMessage, PerNoteExpressionMessage, PerNoteExpressionType};
 use crate::{DropletMainThread, DropletShared};
 
@@ -114,6 +116,9 @@ fn build_ump_per_note_mgmt(group: u8, channel: u8, note: u8, flags: u8) -> [u32;
 pub struct DropletMidiProcessor<'a> {
     shared: &'a DropletShared<'a>,
     midi_consumer: Consumer<MidiMessage>,
+    fugue_sequencer: FugueSequencer,
+    fugue_info_handle: FugueInfoHandle,
+    sample_rate: f64,
 }
 
 impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
@@ -125,8 +130,8 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
         shared: &'a DropletShared,
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
-        let sample_rate = audio_config.sample_rate as f32;
-        crate::logger::log_midi_processor_activation(sample_rate);
+        let sample_rate = audio_config.sample_rate;
+        crate::logger::log_midi_processor_activation(sample_rate as f32);
 
         let midi_consumer = shared
             .midi_consumer
@@ -135,12 +140,34 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
             .take()
             .ok_or(PluginError::Message("MIDI consumer already taken"))?;
 
-        Ok(Self { shared, midi_consumer })
+        let fugue_consumer = shared
+            .fugue_consumer
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or(PluginError::Message("Fugue consumer already taken"))?;
+
+        let fugue_info_handle = shared
+            .fugue_info_handle
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or(PluginError::Message("Fugue info handle already taken"))?;
+
+        let fugue_sequencer = FugueSequencer::new(fugue_consumer, sample_rate);
+
+        Ok(Self {
+            shared,
+            midi_consumer,
+            fugue_sequencer,
+            fugue_info_handle,
+            sample_rate,
+        })
     }
 
     fn process(
         &mut self,
-        _process: Process,
+        process: Process,
         mut audio: Audio,
         mut events: Events,
     ) -> Result<ProcessStatus, PluginError> {
@@ -161,15 +188,52 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
             }
         }
 
-        // Output MIDI from MCP server
+        // Output MIDI from MCP server (immediate messages)
         let mut has_midi = false;
         while let Ok(msg) = self.midi_consumer.pop() {
             has_midi = true;
-            match msg {
-                MidiMessage::Cc(cc) => self.output_cc(&cc, &mut events),
-                MidiMessage::Note(note) => self.output_note(&note, &mut events),
-                MidiMessage::PerNoteExpression(expr) => self.output_per_note_expression(&expr, &mut events),
-            }
+            self.output_midi_message(&msg, 0, &mut events);
+        }
+
+        // Get transport info and process fugue sequencer
+        let transport = process.transport;
+        let frames = audio.frames_count();
+
+        // Extract transport state
+        let is_playing = transport
+            .map(|t| t.flags.contains(TransportFlags::IS_PLAYING))
+            .unwrap_or(false);
+
+        let current_beat = transport
+            .map(|t| t.song_pos_beats.to_float())
+            .unwrap_or(0.0);
+
+        let tempo = transport
+            .map(|t| t.tempo)
+            .unwrap_or(120.0);
+
+        let time_sig_num = transport
+            .map(|t| t.time_signature_numerator as u32)
+            .unwrap_or(4);
+
+        // Process fugue sequencer - collect events first to avoid borrow conflict
+        let fugue_events: Vec<_> = self.fugue_sequencer.process(
+            is_playing,
+            current_beat,
+            tempo,
+            frames,
+            time_sig_num,
+        ).collect();
+
+        for (sample_offset, msg) in fugue_events {
+            has_midi = true;
+            self.output_midi_message(&msg, sample_offset, &mut events);
+        }
+
+        // Update fugue info cache for MCP listing (lock-free)
+        if self.fugue_sequencer.active_count() > 0 || is_playing {
+            let infos = self.fugue_sequencer.list_fugues(current_beat);
+            self.fugue_info_handle.update(infos);
         }
 
         // For VSTi: Output silence to audio buffers (required for instrument classification)
@@ -194,6 +258,87 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
 }
 
 impl<'a> DropletMidiProcessor<'a> {
+    /// Output a MIDI message with the given sample offset
+    fn output_midi_message(&self, msg: &MidiMessage, sample_offset: u32, events: &mut Events) {
+        match msg {
+            MidiMessage::Cc(cc) => self.output_cc_at(cc, sample_offset, events),
+            MidiMessage::Note(note) => self.output_note_at(note, sample_offset, events),
+            MidiMessage::PerNoteExpression(expr) => self.output_per_note_expression_at(expr, sample_offset, events),
+        }
+    }
+
+    /// Output a CC message as both MIDI 1.0 and MIDI 2.0 at sample offset
+    fn output_cc_at(&self, cc: &CcMessage, sample_offset: u32, events: &mut Events) {
+        // MIDI 1.0: 3-byte CC message
+        let status = 0xB0 | (cc.channel & 0x0F);
+        let midi1_data = [status, cc.cc, cc.value];
+        let _ = events.output.try_push(&MidiEvent::new(sample_offset, 0, midi1_data));
+
+        // MIDI 2.0: UMP with 32-bit CC value for high-resolution CLAP hosts
+        let value_32bit = if let Some(val_14) = cc.value_14bit {
+            ((val_14 as u32) << 18) | ((val_14 as u32) << 4)
+        } else {
+            let v = cc.value as u32;
+            (v << 25) | (v << 18) | (v << 11) | (v << 4)
+        };
+        let _ = events.output.try_push(&Midi2Event::new(sample_offset, 0, build_ump_cc(0, cc.channel, cc.cc, value_32bit)));
+    }
+
+    /// Output a Note message as CLAP-native + MIDI 2.0 at sample offset
+    fn output_note_at(&self, note: &NoteMessage, sample_offset: u32, events: &mut Events) {
+        let velocity_f64 = note.velocity as f64 / 127.0;
+        let pckn = Pckn::new(0u16, note.channel as u16, note.note as u16, Match::<u32>::All);
+
+        // CLAP-native: Translated to VST3 by clap_wrapper
+        if note.is_note_on {
+            let _ = events.output.try_push(&NoteOnEvent::new(sample_offset, pckn, velocity_f64));
+        } else {
+            let _ = events.output.try_push(&NoteOffEvent::new(sample_offset, pckn, velocity_f64));
+        }
+
+        // MIDI 2.0: High-resolution 16-bit velocity for CLAP hosts
+        let ump = build_ump_note(0, note.channel, note.note, note.velocity_16bit, note.is_note_on);
+        let _ = events.output.try_push(&Midi2Event::new(sample_offset, 0, ump));
+    }
+
+    /// Output a per-note expression as CLAP-native + MIDI 2.0 at sample offset
+    fn output_per_note_expression_at(&self, expr: &PerNoteExpressionMessage, sample_offset: u32, events: &mut Events) {
+        let pckn = Pckn::new(0u16, expr.channel as u16, expr.note as u16, Match::<u32>::All);
+
+        // CLAP-native NoteExpressionEvent (for VST3 compatibility)
+        match expr.expression_type {
+            PerNoteExpressionType::PitchBend { value } => {
+                let normalized = (value as i64 - 0x80000000i64) as f64 / 0x80000000u32 as f64;
+                let _ = events.output.try_push(&NoteExpressionEvent::new(sample_offset, pckn, NoteExpressionType::Tuning, normalized * 120.0));
+            }
+            PerNoteExpressionType::Pressure { value } => {
+                let normalized = value as f64 / u32::MAX as f64;
+                let _ = events.output.try_push(&NoteExpressionEvent::new(sample_offset, pckn, NoteExpressionType::Pressure, normalized));
+            }
+            _ => {}
+        }
+
+        // MIDI 2.0 UMP: Full expression support for CLAP hosts
+        let ump = match expr.expression_type {
+            PerNoteExpressionType::PitchBend { value } => {
+                build_ump_per_note_pitch_bend(0, expr.channel, expr.note, value)
+            }
+            PerNoteExpressionType::Pressure { value } => {
+                build_ump_reg_per_note_ctrl(0, expr.channel, expr.note, RPN_PER_NOTE_PRESSURE, value)
+            }
+            PerNoteExpressionType::RegisteredController { index, value } => {
+                build_ump_reg_per_note_ctrl(0, expr.channel, expr.note, index, value)
+            }
+            PerNoteExpressionType::AssignableController { index, value } => {
+                build_ump_assign_per_note_ctrl(0, expr.channel, expr.note, index, value)
+            }
+            PerNoteExpressionType::Management { flags } => {
+                build_ump_per_note_mgmt(0, expr.channel, expr.note, flags)
+            }
+        };
+        let _ = events.output.try_push(&Midi2Event::new(sample_offset, 0, ump));
+    }
+
     /// Output a CC message as both MIDI 1.0 and MIDI 2.0
     fn output_cc(&self, cc: &CcMessage, events: &mut Events) {
         // MIDI 1.0: 3-byte CC message

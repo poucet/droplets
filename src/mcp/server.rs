@@ -14,6 +14,9 @@ use rmcp::{
 use serde::Deserialize;
 
 use super::bridge::{CcBridge, CcMessage, NoteMessage, PerNoteExpressionMessage};
+use crate::fugue::{
+    CancelMode, FugueBridge, FugueDefinition, FugueEvent, LoopMode, QuantizeMode, TimedFugueEvent,
+};
 
 /// MCP Server for Simply Droplets
 #[derive(Clone)]
@@ -237,6 +240,108 @@ pub struct PerNoteManagementData {
     #[schemars(description = "Reset all controllers on this note")]
     pub reset: bool,
 }
+
+// =============================================================================
+// Fugue sequencing types
+// =============================================================================
+
+/// Event payload types for fugue sequencing - reuses existing MCP data types
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum FugueEventType {
+    /// Note on event (reuses NoteOnData)
+    NoteOn(NoteOnData),
+    /// Note off event (reuses NoteOffData)
+    NoteOff(NoteOffData),
+    /// CC event (reuses CcData)
+    Cc(CcData),
+    /// Per-note pitch bend (reuses PerNotePitchBendData)
+    PitchBend(PerNotePitchBendData),
+    /// Per-note pressure (reuses PerNotePressureData)
+    Pressure(PerNotePressureData),
+}
+
+/// A single event within a fugue sequence
+///
+/// JSON is flat and LLM-friendly:
+/// ```json
+/// {"beat": 0.0, "type": "note_on", "channel": 1, "note": 60, "velocity": 100}
+/// {"beat": 1.0, "type": "cc", "channel": 1, "cc": 74, "value": 127}
+/// ```
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct FugueEventData {
+    /// Beat offset from fugue start (0.0 = start of fugue)
+    #[schemars(description = "Beat offset from fugue start (0.0 = start of fugue)")]
+    pub beat: f64,
+
+    /// The event payload (type + type-specific fields)
+    #[serde(flatten)]
+    pub event: FugueEventType,
+}
+
+/// Queue a fugue sequence request data
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct QueueFugueData {
+    /// Optional tag for grouping/cancellation (e.g., "melody", "bass")
+    #[schemars(description = "Optional tag for grouping/cancellation (e.g., 'melody', 'bass')")]
+    pub tag: Option<String>,
+
+    /// Duration of the fugue in beats (required for looping)
+    #[schemars(description = "Duration of the fugue in beats")]
+    pub duration_beats: f64,
+
+    /// Loop mode: "once", "forever", or a number for specific count
+    #[serde(default = "default_loop_mode")]
+    #[schemars(description = "Loop mode: 'once', 'forever', or a number like '4' for 4 times")]
+    pub loop_mode: String,
+
+    /// Quantize mode: "immediate", "beat", "bar", or "bars:N"
+    #[serde(default = "default_quantize")]
+    #[schemars(description = "When to start: 'immediate', 'beat', 'bar', or 'bars:N'")]
+    pub quantize: String,
+
+    /// Cancel mode: "none", "tag:NAME", or "all"
+    #[serde(default = "default_cancel_mode")]
+    #[schemars(description = "What to cancel when starting: 'none', 'tag:NAME', or 'all'")]
+    pub cancel_mode: String,
+
+    /// Events in the fugue sequence
+    #[schemars(description = "Array of events in the fugue sequence")]
+    pub events: Vec<FugueEventData>,
+}
+
+/// Cancel a specific fugue by ID
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CancelFugueData {
+    /// Fugue ID to cancel (returned by queue_fugue)
+    #[schemars(description = "Fugue ID to cancel (returned by queue_fugue)")]
+    pub id: u64,
+}
+
+/// Cancel fugues by tag
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CancelFuguesByTagData {
+    /// Tag to match for cancellation
+    #[schemars(description = "Tag to match for cancellation (e.g., 'melody')")]
+    pub tag: String,
+}
+
+fn default_loop_mode() -> String {
+    "once".to_string()
+}
+
+fn default_quantize() -> String {
+    "immediate".to_string()
+}
+
+fn default_cancel_mode() -> String {
+    "none".to_string()
+}
+
+// Fugue request types
+pub type QueueFugueRequest = InstanceRequest<QueueFugueData>;
+pub type CancelFugueRequest = InstanceRequest<CancelFugueData>;
+pub type CancelFuguesByTagRequest = InstanceRequest<CancelFuguesByTagData>;
 
 // =============================================================================
 // Instance management types (these don't use the wrapper since instance is the subject)
@@ -607,6 +712,160 @@ impl DropletsMcp {
         };
         Ok(CallToolResult::success(vec![Content::text(result)]))
     }
+
+    // =========================================================================
+    // Fugue Sequencing Tools
+    // =========================================================================
+
+    /// Queue a pre-composed musical sequence (fugue) for transport-synchronized playback.
+    #[tool(description = "Queue a pre-composed musical sequence (fugue) for transport-synchronized playback. Events play with sample-accurate timing relative to the DAW transport. Returns a fugue_id for later cancellation. Supports looping, quantization to beats/bars, and tag-based layering/cancellation.")]
+    fn queue_fugue(&self, Parameters(req): Parameters<QueueFugueRequest>) -> Result<CallToolResult, McpError> {
+        // Parse loop mode
+        let loop_mode = match req.data.loop_mode.to_lowercase().as_str() {
+            "once" => LoopMode::Once,
+            "forever" => LoopMode::Forever,
+            s => {
+                if let Ok(n) = s.parse::<u32>() {
+                    LoopMode::Times(n)
+                } else {
+                    LoopMode::Once
+                }
+            }
+        };
+
+        // Parse quantize mode
+        let quantize = match req.data.quantize.to_lowercase().as_str() {
+            "immediate" => QuantizeMode::Immediate,
+            "beat" => QuantizeMode::NextBeat,
+            "bar" => QuantizeMode::NextBar,
+            s if s.starts_with("bars:") => {
+                let n = s.strip_prefix("bars:").and_then(|n| n.parse().ok()).unwrap_or(1);
+                QuantizeMode::NextBars(n)
+            }
+            _ => QuantizeMode::Immediate,
+        };
+
+        // Parse cancel mode
+        let cancel_mode = match req.data.cancel_mode.to_lowercase().as_str() {
+            "none" => CancelMode::None,
+            "all" => CancelMode::CancelAll,
+            s if s.starts_with("tag:") => {
+                let tag = s.strip_prefix("tag:").unwrap_or("").to_string();
+                CancelMode::CancelByTag(tag)
+            }
+            _ => CancelMode::None,
+        };
+
+        // Parse events - now type-safe via FugueEventType enum
+        let events: Vec<TimedFugueEvent> = req.data.events
+            .iter()
+            .map(|e| {
+                let event = match &e.event {
+                    FugueEventType::NoteOn(data) => FugueEvent::NoteOn {
+                        channel: data.channel.saturating_sub(1).min(15),
+                        note: data.note.min(127),
+                        velocity: data.velocity.clamp(1, 127),
+                    },
+                    FugueEventType::NoteOff(data) => FugueEvent::NoteOff {
+                        channel: data.channel.saturating_sub(1).min(15),
+                        note: data.note.min(127),
+                    },
+                    FugueEventType::Cc(data) => FugueEvent::Cc {
+                        channel: data.channel.saturating_sub(1).min(15),
+                        cc: data.cc.min(127),
+                        value: data.value.min(127),
+                    },
+                    FugueEventType::PitchBend(data) => FugueEvent::PerNotePitchBend {
+                        channel: data.channel.saturating_sub(1).min(15),
+                        note: data.note.min(127),
+                        semitones: data.semitones.clamp(-64.0, 64.0),
+                    },
+                    FugueEventType::Pressure(data) => FugueEvent::PerNotePressure {
+                        channel: data.channel.saturating_sub(1).min(15),
+                        note: data.note.min(127),
+                        pressure: data.pressure.clamp(0.0, 1.0),
+                    },
+                };
+                TimedFugueEvent::new(e.beat, event)
+            })
+            .collect();
+
+        // Sort events by beat offset
+        let mut events = events;
+        events.sort_by(|a, b| a.beat_offset.partial_cmp(&b.beat_offset).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Create fugue definition
+        let mut definition = FugueDefinition::new(events, req.data.duration_beats)
+            .with_loop_mode(loop_mode)
+            .with_quantize(quantize)
+            .with_cancel_mode(cancel_mode);
+
+        if let Some(tag) = req.data.tag.clone() {
+            definition = definition.with_tag(tag);
+        }
+
+        let result = match FugueBridge::queue(&req.instance, definition) {
+            Ok(fugue_id) => {
+                let json = serde_json::json!({
+                    "fugue_id": fugue_id,
+                    "tag": req.data.tag,
+                    "duration_beats": req.data.duration_beats,
+                    "loop_mode": req.data.loop_mode,
+                    "quantize": req.data.quantize,
+                    "event_count": req.data.events.len()
+                });
+                serde_json::to_string_pretty(&json).unwrap_or_else(|_| format!("{{\"fugue_id\": {}}}", fugue_id))
+            }
+            Err(e) => format!("Error: {}", e),
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
+    }
+
+    /// List all active and pending fugues.
+    #[tool(description = "List all active and pending fugues on a plugin instance. Shows fugue IDs, tags, loop progress, and timing information.")]
+    fn list_fugues(&self, Parameters(req): Parameters<GetSlotsRequest>) -> Result<CallToolResult, McpError> {
+        let result = match FugueBridge::get_fugue_info(&req.instance) {
+            Ok(infos) => {
+                if infos.is_empty() {
+                    "No active fugues.".to_string()
+                } else {
+                    serde_json::to_string_pretty(&infos).unwrap_or_else(|_| format!("{:?}", infos))
+                }
+            }
+            Err(_) => "No active fugues.".to_string(),
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
+    }
+
+    /// Cancel a specific fugue by ID.
+    #[tool(description = "Cancel a specific fugue by its ID. Sends note-offs for any active notes and stops playback. Use the fugue_id returned by queue_fugue.")]
+    fn cancel_fugue(&self, Parameters(req): Parameters<CancelFugueRequest>) -> Result<CallToolResult, McpError> {
+        let result = match FugueBridge::cancel(&req.instance, req.data.id) {
+            Ok(()) => format!("Cancelled fugue {}", req.data.id),
+            Err(e) => format!("Error: {}", e),
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
+    }
+
+    /// Cancel all fugues with a specific tag.
+    #[tool(description = "Cancel all fugues with a matching tag. Sends note-offs for any active notes. Use this to stop all instances of a pattern, like all 'melody' fugues.")]
+    fn cancel_fugues_by_tag(&self, Parameters(req): Parameters<CancelFuguesByTagRequest>) -> Result<CallToolResult, McpError> {
+        let result = match FugueBridge::cancel_by_tag(&req.instance, &req.data.tag) {
+            Ok(()) => format!("Cancelled all fugues with tag '{}'", req.data.tag),
+            Err(e) => format!("Error: {}", e),
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
+    }
+
+    /// Emergency stop - clear all fugues.
+    #[tool(description = "Emergency stop: cancel all fugues on a plugin instance. Sends note-offs for all active notes and clears the queue. Use when you need to stop everything immediately.")]
+    fn clear_fugues(&self, Parameters(req): Parameters<GetSlotsRequest>) -> Result<CallToolResult, McpError> {
+        let result = match FugueBridge::clear_all(&req.instance) {
+            Ok(()) => "Cleared all fugues".to_string(),
+            Err(e) => format!("Error: {}", e),
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
+    }
 }
 
 impl ServerHandler for DropletsMcp {
@@ -624,19 +883,21 @@ impl ServerHandler for DropletsMcp {
                  - send_note_on_hires(note, velocity, channel): MIDI 2.0 Note On (16-bit velocity)\n\
                  - send_note_off(note, channel): Send MIDI Note Off\n\
                  - send_cc(cc, value, channel): Send MIDI CC message\n\n\
+                 Fugue Sequencing Tools (transport-synchronized):\n\
+                 - queue_fugue(events, duration_beats, ...): Queue a musical sequence for transport-synced playback\n\
+                 - list_fugues(): List active/pending fugues with IDs and status\n\
+                 - cancel_fugue(id): Cancel a specific fugue by ID\n\
+                 - cancel_fugues_by_tag(tag): Cancel all fugues with matching tag\n\
+                 - clear_fugues(): Emergency stop - cancel all fugues\n\n\
                  MIDI 2.0 Per-Note Expression Tools:\n\
-                 - send_per_note_pitch_bend(note, semitones, channel): Pitch bend individual notes (-64 to +64 semitones)\n\
-                 - send_per_note_pressure(note, pressure, channel): Per-note aftertouch (0.0-1.0)\n\
-                 - send_per_note_registered_controller(note, index, value, channel): Registered per-note controller\n\
-                 - send_per_note_assignable_controller(note, index, value, channel): Assignable per-note controller\n\
-                 - send_per_note_management(note, detach, reset, channel): Note management (detach/reset)\n\n\
+                 - send_per_note_pitch_bend(note, semitones, channel): Pitch bend individual notes\n\
+                 - send_per_note_pressure(note, pressure, channel): Per-note aftertouch\n\n\
                  Instance Tools:\n\
                  - list_instances(): See connected plugin instances\n\
                  - list_slots(): See slots with names, CC mappings, and values\n\
                  - set_param(slot, value): Set slot value (0.0-1.0)\n\
-                 - rename_slot(slot, name): Label a slot\n\
                  - get_activity(): See recent MIDI activity\n\n\
-                 Note: Per-note expressions require MIDI 2.0 compatible host/instruments."
+                 Note: Fugues require DAW transport to be playing."
                     .to_string(),
             ),
         }
