@@ -103,7 +103,7 @@ impl FugueState {
     }
 
     /// Get info about this fugue for listing
-    pub fn info(&self, current_beat: f64) -> FugueInfo {
+    pub fn info(&self, current_beat: f64, time_sig_numerator: u32) -> FugueInfo {
         let progress = if self.waiting_for_start {
             0.0
         } else {
@@ -124,6 +124,7 @@ impl FugueState {
             progress_beats: progress,
             duration_beats: self.definition.duration_beats,
             start_beat: self.start_beat,
+            quantize_interval_beats: self.definition.quantize.interval_beats(time_sig_numerator),
         }
     }
 }

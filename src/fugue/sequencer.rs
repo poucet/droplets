@@ -6,7 +6,7 @@ use rtrb::Consumer;
 
 use super::command::FugueCommand;
 use super::state::FugueState;
-use super::types::{CancelMode, FugueDefinition, FugueEvent, FugueInfo, QuantizeMode};
+use super::types::{CancelMode, FugueDefinition, FugueEvent, FugueInfo};
 use crate::mcp::{CcMessage, MidiMessage, NoteMessage, PerNoteExpressionMessage};
 
 /// Buffer capacity for output MIDI messages per process cycle
@@ -169,6 +169,10 @@ impl FugueSequencer {
     }
 
     /// Start pending fugues whose quantization point has arrived
+    ///
+    /// Uses the interval-based quantization model: fugues start when the transport
+    /// reaches a grid line (where current_beat % interval == 0). Beat 0 is always
+    /// a valid grid line for all intervals.
     fn start_pending_fugues(
         &mut self,
         current_beat: f64,
@@ -180,36 +184,18 @@ impl FugueSequencer {
                 continue;
             }
 
-            // Calculate target start beat if not already set
-            if fugue.target_start_beat.is_none() {
-                let target = calculate_quantize_target(
-                    &fugue.definition.quantize,
-                    current_beat,
-                    time_sig_numerator,
-                );
-                fugue.target_start_beat = Some(target);
-            }
+            let quantize = &fugue.definition.quantize;
 
-            // Check if we've reached the target
-            if let Some(target) = fugue.target_start_beat {
-                // If playhead is past the target (e.g., transport restarted and jumped past it),
-                // recalculate the target based on current position
-                if target < current_beat {
-                    let new_target = calculate_quantize_target(
-                        &fugue.definition.quantize,
-                        current_beat,
-                        time_sig_numerator,
-                    );
-                    fugue.target_start_beat = Some(new_target);
-                    // Check the new target immediately
-                    if new_target >= current_beat && new_target < end_beat {
-                        fugue.waiting_for_start = false;
-                        fugue.start_beat = new_target;
-                    }
-                } else if target >= current_beat && target < end_beat {
-                    fugue.waiting_for_start = false;
-                    fugue.start_beat = target;
-                }
+            // Calculate the next grid line from the current position
+            let target = quantize.next_grid_line(current_beat, time_sig_numerator);
+
+            // Update target (may change if transport jumped)
+            fugue.target_start_beat = Some(target);
+
+            // Check if the target falls within this buffer's beat range
+            if target >= current_beat && target < end_beat {
+                fugue.waiting_for_start = false;
+                fugue.start_beat = target;
             }
         }
     }
@@ -272,11 +258,11 @@ impl FugueSequencer {
     }
 
     /// Get information about all active fugues (for MCP listing)
-    pub fn list_fugues(&self, current_beat: f64) -> Vec<FugueInfo> {
+    pub fn list_fugues(&self, current_beat: f64, time_sig_numerator: u32) -> Vec<FugueInfo> {
         self.fugues
             .iter()
             .filter(|f| !f.is_finished())
-            .map(|f| f.info(current_beat))
+            .map(|f| f.info(current_beat, time_sig_numerator))
             .collect()
     }
 
@@ -304,28 +290,6 @@ fn send_note_offs_for_fugue(fugue: &mut FugueState, output_buffer: &mut Vec<(u32
     fugue.clear_active_notes();
 }
 
-/// Calculate the quantization target beat
-fn calculate_quantize_target(
-    quantize: &QuantizeMode,
-    current_beat: f64,
-    time_sig_numerator: u32,
-) -> f64 {
-    match quantize {
-        QuantizeMode::Immediate => current_beat,
-        QuantizeMode::NextBeat => current_beat.ceil(),
-        QuantizeMode::NextBar => {
-            let beats_per_bar = time_sig_numerator as f64;
-            let current_bar = (current_beat / beats_per_bar).floor();
-            (current_bar + 1.0) * beats_per_bar
-        }
-        QuantizeMode::NextBars(n) => {
-            let beats_per_bar = time_sig_numerator as f64;
-            let bar_group = (*n as f64) * beats_per_bar;
-            let current_group = (current_beat / bar_group).floor();
-            (current_group + 1.0) * bar_group
-        }
-    }
-}
 
 /// Convert a FugueEvent to a MidiMessage
 fn fugue_event_to_midi(event: &FugueEvent) -> MidiMessage {
@@ -354,31 +318,108 @@ fn fugue_event_to_midi(event: &FugueEvent) -> MidiMessage {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::types::QuantizeMode;
 
     #[test]
     fn test_quantize_immediate() {
-        assert_eq!(calculate_quantize_target(&QuantizeMode::Immediate, 2.5, 4), 2.5);
+        // Immediate: always returns current beat (no grid)
+        assert_eq!(QuantizeMode::Immediate.next_grid_line(2.5, 4), 2.5);
+        assert!(QuantizeMode::Immediate.is_on_grid(2.5, 4));
     }
 
     #[test]
-    fn test_quantize_next_beat() {
-        assert_eq!(calculate_quantize_target(&QuantizeMode::NextBeat, 2.5, 4), 3.0);
-        assert_eq!(calculate_quantize_target(&QuantizeMode::NextBeat, 3.0, 4), 3.0);
+    fn test_quantize_beat() {
+        // Beat: grid every 1 beat (0, 1, 2, 3...)
+        assert_eq!(QuantizeMode::Beat.next_grid_line(2.5, 4), 3.0);
+        assert_eq!(QuantizeMode::Beat.next_grid_line(3.0, 4), 3.0); // Already on grid
+        assert!(QuantizeMode::Beat.is_on_grid(3.0, 4));
+        assert!(!QuantizeMode::Beat.is_on_grid(2.5, 4));
     }
 
     #[test]
-    fn test_quantize_next_bar() {
-        // In 4/4, bars are at 0, 4, 8, 12...
-        assert_eq!(calculate_quantize_target(&QuantizeMode::NextBar, 2.5, 4), 4.0);
-        assert_eq!(calculate_quantize_target(&QuantizeMode::NextBar, 4.0, 4), 8.0);
-        assert_eq!(calculate_quantize_target(&QuantizeMode::NextBar, 7.9, 4), 8.0);
+    fn test_quantize_bar() {
+        // Bar: grid every 4 beats in 4/4 (0, 4, 8, 12...)
+        assert_eq!(QuantizeMode::Bar.next_grid_line(2.5, 4), 4.0);
+        assert_eq!(QuantizeMode::Bar.next_grid_line(4.0, 4), 4.0); // Already on grid
+        assert_eq!(QuantizeMode::Bar.next_grid_line(7.9, 4), 8.0);
+        assert!(QuantizeMode::Bar.is_on_grid(0.0, 4));
+        assert!(QuantizeMode::Bar.is_on_grid(4.0, 4));
+        assert!(!QuantizeMode::Bar.is_on_grid(2.5, 4));
     }
 
     #[test]
-    fn test_quantize_next_bars() {
-        // NextBars(2) in 4/4 means 8-beat groups
-        assert_eq!(calculate_quantize_target(&QuantizeMode::NextBars(2), 2.5, 4), 8.0);
-        assert_eq!(calculate_quantize_target(&QuantizeMode::NextBars(2), 9.0, 4), 16.0);
+    fn test_quantize_bars() {
+        // Bars(2): grid every 8 beats in 4/4 (0, 8, 16...)
+        assert_eq!(QuantizeMode::Bars(2).next_grid_line(2.5, 4), 8.0);
+        assert_eq!(QuantizeMode::Bars(2).next_grid_line(8.0, 4), 8.0); // Already on grid
+        assert_eq!(QuantizeMode::Bars(2).next_grid_line(9.0, 4), 16.0);
+        assert!(QuantizeMode::Bars(2).is_on_grid(0.0, 4));
+        assert!(QuantizeMode::Bars(2).is_on_grid(8.0, 4));
+        assert!(!QuantizeMode::Bars(2).is_on_grid(4.0, 4));
+    }
+
+    #[test]
+    fn test_quantize_at_beat_zero() {
+        // All quantize modes should consider beat 0 as on-grid
+        assert!(QuantizeMode::Immediate.is_on_grid(0.0, 4));
+        assert!(QuantizeMode::Beat.is_on_grid(0.0, 4));
+        assert!(QuantizeMode::Bar.is_on_grid(0.0, 4));
+        assert!(QuantizeMode::Bars(4).is_on_grid(0.0, 4));
+
+        // All should return 0.0 as the grid line when at beat 0
+        assert_eq!(QuantizeMode::Immediate.next_grid_line(0.0, 4), 0.0);
+        assert_eq!(QuantizeMode::Beat.next_grid_line(0.0, 4), 0.0);
+        assert_eq!(QuantizeMode::Bar.next_grid_line(0.0, 4), 0.0);
+        assert_eq!(QuantizeMode::Bars(4).next_grid_line(0.0, 4), 0.0);
+    }
+
+    #[test]
+    fn test_interval_beats() {
+        assert_eq!(QuantizeMode::Immediate.interval_beats(4), None);
+        assert_eq!(QuantizeMode::Beat.interval_beats(4), Some(1.0));
+        assert_eq!(QuantizeMode::Bar.interval_beats(4), Some(4.0));
+        assert_eq!(QuantizeMode::Bars(2).interval_beats(4), Some(8.0));
+        // In 3/4 time
+        assert_eq!(QuantizeMode::Bar.interval_beats(3), Some(3.0));
+        assert_eq!(QuantizeMode::Bars(2).interval_beats(3), Some(6.0));
+    }
+
+    #[test]
+    fn test_start_at_beat_zero_scenario() {
+        // Simulate: User queues a 4-bar quantized fugue, then presses play from beat 0
+        // The fugue should start immediately since beat 0 is on the 4-bar grid
+
+        // 4-bar interval in 4/4 = 16 beats
+        let mode = QuantizeMode::Bars(4);
+
+        // At beat 0, we're on the grid
+        assert!(mode.is_on_grid(0.0, 4));
+        assert_eq!(mode.next_grid_line(0.0, 4), 0.0);
+
+        // Even with a tiny offset (DAW quirk), we should still snap to beat 0
+        // because 0.001 is within tolerance (3% of 16 = 0.48 beats)
+        assert!(mode.is_on_grid(0.001, 4));
+        assert_eq!(mode.next_grid_line(0.001, 4), 0.0); // Should snap back to 0.0
+
+        // A larger offset (beyond tolerance) should go to next grid line
+        assert!(!mode.is_on_grid(1.0, 4)); // 1.0 is not on the 16-beat grid
+        assert_eq!(mode.next_grid_line(1.0, 4), 16.0); // Next grid is at 16.0
+
+        // Close to the next grid line should snap forward
+        assert!(mode.is_on_grid(15.9, 4)); // 15.9 is close to 16.0
+        assert!((mode.next_grid_line(15.9, 4) - 16.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_grid_tolerance_scales_with_interval() {
+        // For small intervals (1 beat), tolerance is 3% = 0.03 beats
+        let beat_mode = QuantizeMode::Beat;
+        assert!(beat_mode.is_on_grid(0.02, 4)); // Within 0.03 of beat 0
+        assert!(!beat_mode.is_on_grid(0.05, 4)); // Beyond tolerance
+
+        // For bar intervals (4 beats), tolerance is 3% = 0.12 beats
+        let bar_mode = QuantizeMode::Bar;
+        assert!(bar_mode.is_on_grid(0.1, 4)); // Within 0.12 of beat 0
+        assert!(!bar_mode.is_on_grid(0.2, 4)); // Beyond tolerance
     }
 }

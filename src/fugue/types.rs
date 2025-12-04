@@ -23,23 +23,83 @@ impl Default for LoopMode {
     }
 }
 
-/// When to start a fugue relative to transport position
+/// Quantization interval for fugue playback
+///
+/// Defines a grid that the fugue aligns to. The fugue will start when the
+/// transport reaches a grid line (where current_beat % interval == 0).
+/// Beat 0 is always a valid grid line for all intervals.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub enum QuantizeMode {
-    /// Start immediately
+    /// No quantization - start immediately at current position
     Immediate,
-    /// Start on the next beat
-    NextBeat,
-    /// Start on the next bar (assumes 4/4)
-    NextBar,
-    /// Start on next N-bar boundary
-    NextBars(u32),
+    /// Quantize to beat boundaries (interval = 1 beat)
+    Beat,
+    /// Quantize to bar boundaries (interval = time_sig_numerator beats)
+    Bar,
+    /// Quantize to N-bar boundaries (interval = N * time_sig_numerator beats)
+    Bars(u32),
+}
+
+impl QuantizeMode {
+    /// Get the quantization interval in beats
+    ///
+    /// Returns None for Immediate (no grid), otherwise returns the interval size.
+    pub fn interval_beats(&self, time_sig_numerator: u32) -> Option<f64> {
+        match self {
+            QuantizeMode::Immediate => None,
+            QuantizeMode::Beat => Some(1.0),
+            QuantizeMode::Bar => Some(time_sig_numerator as f64),
+            QuantizeMode::Bars(n) => Some(*n as f64 * time_sig_numerator as f64),
+        }
+    }
+
+    /// Check if a given beat position is on a grid line
+    ///
+    /// Uses a tolerance of ~3% of the interval (minimum 0.01 beats) to account
+    /// for floating point imprecision and DAW timing variations.
+    pub fn is_on_grid(&self, beat: f64, time_sig_numerator: u32) -> bool {
+        match self.interval_beats(time_sig_numerator) {
+            None => true, // Immediate - always on grid
+            Some(interval) => {
+                // Use a tolerance proportional to the interval, but at least 0.01 beats
+                // This handles both small intervals (1 beat) and large ones (16+ beats)
+                let tolerance = (interval * 0.03).max(0.01);
+                let remainder = beat % interval;
+                remainder < tolerance || (interval - remainder) < tolerance
+            }
+        }
+    }
+
+    /// Get the next grid line at or after the given beat
+    ///
+    /// If the beat is within tolerance of a grid line, snaps to that grid line.
+    /// Otherwise returns the next grid line.
+    pub fn next_grid_line(&self, beat: f64, time_sig_numerator: u32) -> f64 {
+        match self.interval_beats(time_sig_numerator) {
+            None => beat, // Immediate - current position is the grid line
+            Some(interval) => {
+                let tolerance = (interval * 0.03).max(0.01);
+                let remainder = beat % interval;
+
+                // If we're close to the current grid line, snap to it
+                if remainder < tolerance {
+                    beat - remainder // Snap back to exact grid line
+                } else if (interval - remainder) < tolerance {
+                    // We're close to the next grid line, snap forward
+                    beat + (interval - remainder)
+                } else {
+                    // We're between grid lines, go to next one
+                    ((beat / interval).floor() + 1.0) * interval
+                }
+            }
+        }
+    }
 }
 
 impl Default for QuantizeMode {
     fn default() -> Self {
-        Self::Immediate
+        Self::Bar
     }
 }
 
@@ -263,6 +323,9 @@ pub struct FugueInfo {
     pub duration_beats: f64,
     /// Absolute beat when this fugue started (for UI position calculation)
     pub start_beat: f64,
+    /// Quantization interval in beats (for UI playhead: transport_beat % interval)
+    /// None means Immediate mode (no grid alignment)
+    pub quantize_interval_beats: Option<f64>,
 }
 
 /// Transport state for UI synchronization

@@ -28,7 +28,16 @@ export const FugueList: React.FC<FugueListProps> = ({
 
   const getProgressPercent = (info: FugueInfo): number => {
     if (info.duration_beats === 0 || info.is_waiting) return 0;
-    // Compute from transport position for smooth animation
+
+    // For interval-based quantization, use transport % interval
+    if (info.quantize_interval_beats !== null) {
+      const effectiveInterval = Math.max(info.quantize_interval_beats, info.duration_beats);
+      const localBeat = transport.beat % effectiveInterval;
+      const progress = Math.max(0, Math.min(localBeat, info.duration_beats));
+      return (progress / info.duration_beats) * 100;
+    }
+
+    // For Immediate mode, use traditional calculation
     const localBeat = transport.beat - info.start_beat;
     const progress = Math.max(0, localBeat % info.duration_beats);
     return (progress / info.duration_beats) * 100;

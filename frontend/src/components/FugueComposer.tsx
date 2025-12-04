@@ -33,7 +33,7 @@ export const FugueComposer: React.FC<FugueComposerProps> = ({
   const [tag, setTag] = useState('');
   const [loopMode, setLoopMode] = useState<'once' | 'times' | 'forever'>('once');
   const [loopTimes, setLoopTimes] = useState(2);
-  const [quantize, setQuantize] = useState<'immediate' | 'beat' | 'bar'>('bar');
+  const [quantize, setQuantize] = useState<'immediate' | 'beat' | 'bar' | 'bars2' | 'bars4' | 'bars8'>('bar');
   const [cancelMode, setCancelMode] = useState<'none' | 'tag' | 'all'>('none');
 
   const handleQueue = useCallback(() => {
@@ -48,12 +48,27 @@ export const FugueComposer: React.FC<FugueComposerProps> = ({
     }
 
     let quantize_mode: QuantizeMode;
-    if (quantize === 'immediate') {
-      quantize_mode = 'Immediate';
-    } else if (quantize === 'beat') {
-      quantize_mode = 'NextBeat';
-    } else {
-      quantize_mode = 'NextBar';
+    switch (quantize) {
+      case 'immediate':
+        quantize_mode = 'Immediate';
+        break;
+      case 'beat':
+        quantize_mode = 'Beat';
+        break;
+      case 'bar':
+        quantize_mode = 'Bar';
+        break;
+      case 'bars2':
+        quantize_mode = { Bars: 2 };
+        break;
+      case 'bars4':
+        quantize_mode = { Bars: 4 };
+        break;
+      case 'bars8':
+        quantize_mode = { Bars: 8 };
+        break;
+      default:
+        quantize_mode = 'Bar';
     }
 
     let cancel_mode: CancelMode;
@@ -138,10 +153,13 @@ export const FugueComposer: React.FC<FugueComposerProps> = ({
 
         <div className="control-group">
           <label>Quantize</label>
-          <select value={quantize} onChange={(e) => setQuantize(e.target.value as 'immediate' | 'beat' | 'bar')}>
+          <select value={quantize} onChange={(e) => setQuantize(e.target.value as 'immediate' | 'beat' | 'bar' | 'bars2' | 'bars4' | 'bars8')}>
             <option value="immediate">Immediate</option>
-            <option value="beat">Next Beat</option>
-            <option value="bar">Next Bar</option>
+            <option value="beat">1 Beat</option>
+            <option value="bar">1 Bar</option>
+            <option value="bars2">2 Bars</option>
+            <option value="bars4">4 Bars</option>
+            <option value="bars8">8 Bars</option>
           </select>
         </div>
 

@@ -733,16 +733,16 @@ impl DropletsMcp {
             }
         };
 
-        // Parse quantize mode
+        // Parse quantize mode (interval-based: beat, bar, or N bars)
         let quantize = match req.data.quantize.to_lowercase().as_str() {
             "immediate" => QuantizeMode::Immediate,
-            "beat" => QuantizeMode::NextBeat,
-            "bar" => QuantizeMode::NextBar,
+            "beat" => QuantizeMode::Beat,
+            "bar" => QuantizeMode::Bar,
             s if s.starts_with("bars:") => {
                 let n = s.strip_prefix("bars:").and_then(|n| n.parse().ok()).unwrap_or(1);
-                QuantizeMode::NextBars(n)
+                QuantizeMode::Bars(n)
             }
-            _ => QuantizeMode::Immediate,
+            _ => QuantizeMode::Bar, // Default to bar quantization
         };
 
         // Parse cancel mode

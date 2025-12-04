@@ -241,7 +241,7 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
 
         // Update fugue info and definitions when there are active fugues
         if self.fugue_sequencer.active_count() > 0 || is_playing {
-            let infos = self.fugue_sequencer.list_fugues(current_beat);
+            let infos = self.fugue_sequencer.list_fugues(current_beat, time_sig_num);
             self.fugue_info_handle.update(infos);
 
             let definitions = self.fugue_sequencer.get_definitions();
