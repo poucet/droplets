@@ -11,6 +11,10 @@ bundle-vst3-debug = "run --package xtask -- build --profile debug --format vst3"
 bundle-clap-release = "run --package xtask -- build --profile release --format clap"
 bundle-vst3-release = "run --package xtask -- build --profile release --format vst3"
 
+# Run standalone binary
+standalone = "run --bin standalone"
+standalone-release = "run --bin standalone --release"
+
 # Quick development aliases
 dev = "build"
 dev-release = "build --release"
