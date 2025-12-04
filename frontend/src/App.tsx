@@ -49,6 +49,7 @@ const App: React.FC = () => {
   const [transport, setTransport] = useState<TransportState>(DEFAULT_TRANSPORT);
   const [selectedFugueId, setSelectedFugueId] = useState<bigint | undefined>();
   const [showComposer, setShowComposer] = useState(false);
+  const [editingFugue, setEditingFugue] = useState<FugueDefinition | null>(null);
 
   // Tab navigation
   const [activeTab, setActiveTab] = useState<TabView>('sequencer');
@@ -154,12 +155,18 @@ const App: React.FC = () => {
     try {
       await queueFugue(fugue);
       setShowComposer(false);
+      setEditingFugue(null);
       // Refresh fugue list
       await fetchFugues();
     } catch (e) {
       console.error('Failed to queue fugue:', e);
     }
   }, [fetchFugues]);
+
+  const handleEditFugue = useCallback((fugue: FugueDefinition) => {
+    setEditingFugue(fugue);
+    setShowComposer(true);
+  }, []);
 
   // Handle realtime updates
   const handleFuguesUpdate = useCallback((response: FuguesResponse) => {
@@ -258,7 +265,15 @@ const App: React.FC = () => {
               <h2>Fugue Sequencer</h2>
               <button
                 className="new-fugue-btn"
-                onClick={() => setShowComposer(!showComposer)}
+                onClick={() => {
+                  if (showComposer) {
+                    setShowComposer(false);
+                    setEditingFugue(null);
+                  } else {
+                    setShowComposer(true);
+                    setEditingFugue(null);
+                  }
+                }}
               >
                 {showComposer ? 'Back to List' : '+ New Fugue'}
               </button>
@@ -267,7 +282,11 @@ const App: React.FC = () => {
             {showComposer ? (
               <FugueComposer
                 onQueue={handleQueueFugue}
-                onCancel={() => setShowComposer(false)}
+                onCancel={() => {
+                  setShowComposer(false);
+                  setEditingFugue(null);
+                }}
+                initialFugue={editingFugue ?? undefined}
               />
             ) : (
               <div className="sequencer-content">
@@ -284,6 +303,7 @@ const App: React.FC = () => {
                     fugue={selectedFugue}
                     info={selectedInfo}
                     transport={transport}
+                    onEdit={handleEditFugue}
                   />
                 )}
               </div>

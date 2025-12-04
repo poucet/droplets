@@ -101,6 +101,7 @@
   min-height: 200px;
   max-height: none;
   overflow: auto;
+  width: 100%;
 }
 
 /* Footer */

@@ -11,12 +11,14 @@ export interface FugueViewerProps {
   fugue: FugueDefinition;
   info?: FugueInfo;
   transport: TransportState;
+  onEdit?: (fugue: FugueDefinition) => void;
 }
 
 export const FugueViewer: React.FC<FugueViewerProps> = ({
   fugue,
   info,
   transport,
+  onEdit,
 }) => {
   // Calculate playhead position within the fugue from transport position
   // Uses start_beat which is updated by the audio thread on each loop iteration
@@ -48,6 +50,11 @@ export const FugueViewer: React.FC<FugueViewerProps> = ({
         <span className="viewer-duration">{fugue.duration_beats} beats</span>
         {info?.is_waiting && (
           <span className="viewer-waiting">Waiting for quantize...</span>
+        )}
+        {onEdit && (
+          <button className="edit-btn" onClick={() => onEdit(fugue)}>
+            Edit
+          </button>
         )}
       </div>
 

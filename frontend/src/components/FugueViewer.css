@@ -33,5 +33,20 @@
 .viewer-waiting {
   color: #ffc107;
   font-style: italic;
+}
+
+.edit-btn {
   margin-left: auto;
+  padding: 4px 12px;
+  background: transparent;
+  border: 1px solid #4fc3f7;
+  border-radius: 4px;
+  color: #4fc3f7;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.edit-btn:hover {
+  background: rgba(79, 195, 247, 0.1);
 }

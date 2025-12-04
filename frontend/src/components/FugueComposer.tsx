@@ -10,6 +10,15 @@ import './FugueComposer.css';
 export interface FugueComposerProps {
   onQueue: (fugue: ComposerFugue) => void;
   onCancel: () => void;
+  /** Optional fugue to edit - if provided, composer starts with these values */
+  initialFugue?: {
+    tag: string | null;
+    events: TimedFugueEvent[];
+    duration_beats: number;
+    loop_mode: LoopMode;
+    quantize: QuantizeMode;
+    cancel_mode: CancelMode;
+  };
 }
 
 export interface ComposerFugue {
@@ -23,18 +32,55 @@ export interface ComposerFugue {
 
 const DEFAULT_DURATION = 4;
 const DEFAULT_NOTE_RANGE = { min: 48, max: 72 }; // C3 to C5
+const MIDI_CHANNELS = Array.from({ length: 16 }, (_, i) => i); // 0-15
+
+// Helper to convert LoopMode to internal state
+const parseLoopMode = (mode: LoopMode): { loopMode: 'once' | 'times' | 'forever'; loopTimes: number } => {
+  if (mode === 'Once') return { loopMode: 'once', loopTimes: 2 };
+  if (mode === 'Forever') return { loopMode: 'forever', loopTimes: 2 };
+  if (typeof mode === 'object' && 'Times' in mode) return { loopMode: 'times', loopTimes: mode.Times };
+  return { loopMode: 'once', loopTimes: 2 };
+};
+
+// Helper to convert QuantizeMode to internal state
+const parseQuantizeMode = (mode: QuantizeMode): 'immediate' | 'beat' | 'bar' | 'bars2' | 'bars4' | 'bars8' => {
+  if (mode === 'Immediate') return 'immediate';
+  if (mode === 'Beat') return 'beat';
+  if (mode === 'Bar') return 'bar';
+  if (typeof mode === 'object' && 'Bars' in mode) {
+    if (mode.Bars === 2) return 'bars2';
+    if (mode.Bars === 4) return 'bars4';
+    if (mode.Bars === 8) return 'bars8';
+  }
+  return 'bar';
+};
+
+// Helper to convert CancelMode to internal state
+const parseCancelMode = (mode: CancelMode): 'none' | 'tag' | 'all' => {
+  if (mode === 'None') return 'none';
+  if (mode === 'CancelAll') return 'all';
+  if (typeof mode === 'object' && 'CancelByTag' in mode) return 'tag';
+  return 'none';
+};
 
 export const FugueComposer: React.FC<FugueComposerProps> = ({
   onQueue,
   onCancel,
+  initialFugue,
 }) => {
-  const [events, setEvents] = useState<TimedFugueEvent[]>([]);
-  const [durationBeats, setDurationBeats] = useState(DEFAULT_DURATION);
-  const [tag, setTag] = useState('');
-  const [loopMode, setLoopMode] = useState<'once' | 'times' | 'forever'>('once');
-  const [loopTimes, setLoopTimes] = useState(2);
-  const [quantize, setQuantize] = useState<'immediate' | 'beat' | 'bar' | 'bars2' | 'bars4' | 'bars8'>('bar');
-  const [cancelMode, setCancelMode] = useState<'none' | 'tag' | 'all'>('none');
+  // Parse initial values from initialFugue if provided
+  const initialLoopState = initialFugue ? parseLoopMode(initialFugue.loop_mode) : { loopMode: 'once' as const, loopTimes: 2 };
+  const initialQuantize = initialFugue ? parseQuantizeMode(initialFugue.quantize) : 'bar';
+  const initialCancelMode = initialFugue ? parseCancelMode(initialFugue.cancel_mode) : 'none';
+
+  const [events, setEvents] = useState<TimedFugueEvent[]>(initialFugue?.events ?? []);
+  const [durationBeats, setDurationBeats] = useState(initialFugue?.duration_beats ?? DEFAULT_DURATION);
+  const [tag, setTag] = useState(initialFugue?.tag ?? '');
+  const [loopMode, setLoopMode] = useState<'once' | 'times' | 'forever'>(initialLoopState.loopMode);
+  const [loopTimes, setLoopTimes] = useState(initialLoopState.loopTimes);
+  const [quantize, setQuantize] = useState<'immediate' | 'beat' | 'bar' | 'bars2' | 'bars4' | 'bars8'>(initialQuantize);
+  const [cancelMode, setCancelMode] = useState<'none' | 'tag' | 'all'>(initialCancelMode);
+  const [midiChannel, setMidiChannel] = useState(0);
 
   const handleQueue = useCallback(() => {
     // Build the fugue definition
@@ -106,7 +152,7 @@ export const FugueComposer: React.FC<FugueComposerProps> = ({
   return (
     <div className="fugue-composer">
       <div className="composer-header">
-        <h3>Compose Fugue</h3>
+        <h3>{initialFugue ? 'Edit Fugue' : 'Compose Fugue'}</h3>
         <button className="cancel-btn" onClick={onCancel}>Close</button>
       </div>
 
@@ -171,6 +217,15 @@ export const FugueComposer: React.FC<FugueComposerProps> = ({
             <option value="all">All</option>
           </select>
         </div>
+
+        <div className="control-group">
+          <label>MIDI Channel</label>
+          <select value={midiChannel} onChange={(e) => setMidiChannel(parseInt(e.target.value))}>
+            {MIDI_CHANNELS.map(ch => (
+              <option key={ch} value={ch}>Ch {ch + 1}</option>
+            ))}
+          </select>
+        </div>
       </div>
 
       <div className="composer-grid">
@@ -182,6 +237,7 @@ export const FugueComposer: React.FC<FugueComposerProps> = ({
           noteRange={DEFAULT_NOTE_RANGE}
           pixelsPerBeat={60}
           noteHeight={12}
+          midiChannel={midiChannel}
         />
       </div>
 

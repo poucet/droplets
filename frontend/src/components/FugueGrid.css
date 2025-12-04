@@ -6,6 +6,7 @@
   border-radius: 8px;
   overflow: hidden;
   border: 1px solid #2d2d44;
+  width: 100%;
 }
 
 /* Piano sidebar */
@@ -60,10 +61,12 @@
   overflow-x: auto;
   overflow-y: hidden;
   flex: 1;
+  min-width: 0; /* Allow flex shrinking */
 }
 
 .grid-svg {
   display: block;
+  min-width: 100%;
 }
 
 /* Note rows (background) */
@@ -100,6 +103,36 @@
 
 .fugue-grid.edit .note-cell {
   cursor: pointer;
+}
+
+/* Note drag handles and body in edit mode */
+.note-group {
+  pointer-events: all;
+}
+
+.note-group.dragging .note-cell {
+  fill: #29b6f6;
+}
+
+.note-body {
+  cursor: move;
+}
+
+.note-handle {
+  cursor: ew-resize;
+  fill: #29b6f6;
+}
+
+.note-handle:hover {
+  fill: #03a9f4;
+}
+
+.note-handle-start {
+  border-radius: 2px 0 0 2px;
+}
+
+.note-handle-end {
+  border-radius: 0 2px 2px 0;
 }
 
 /* Edit mode cells (clickable grid) */
