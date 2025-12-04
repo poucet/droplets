@@ -1,0 +1,159 @@
+/* FugueComposer Component Styles */
+
+.fugue-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: #16162a;
+  border-radius: 8px;
+  border: 1px solid #4fc3f7;
+}
+
+.composer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.composer-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #e0e0e0;
+}
+
+.composer-header .cancel-btn {
+  padding: 4px 12px;
+  background: transparent;
+  border: 1px solid #3d3d5c;
+  border-radius: 4px;
+  color: #888;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.composer-header .cancel-btn:hover {
+  border-color: #f44336;
+  color: #f44336;
+}
+
+/* Control groups */
+.composer-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 12px;
+  background: #1e1e32;
+  border-radius: 6px;
+}
+
+.control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.control-group label {
+  font-size: 11px;
+  color: #888;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.control-group input,
+.control-group select {
+  padding: 6px 10px;
+  background: #2a2a40;
+  border: 1px solid #3d3d5c;
+  border-radius: 4px;
+  color: #e0e0e0;
+  font-size: 13px;
+  min-width: 80px;
+}
+
+.control-group input:focus,
+.control-group select:focus {
+  outline: none;
+  border-color: #4fc3f7;
+}
+
+.control-group input[type="number"] {
+  width: 70px;
+}
+
+.control-group input[type="text"] {
+  width: 100px;
+}
+
+.loop-times-input {
+  margin-top: 4px;
+  width: 50px !important;
+}
+
+/* Grid area */
+.composer-grid {
+  max-height: 300px;
+  overflow: auto;
+}
+
+/* Footer */
+.composer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 8px;
+  border-top: 1px solid #2d2d44;
+}
+
+.note-count {
+  font-size: 12px;
+  color: #888;
+}
+
+.footer-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.clear-btn,
+.queue-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.clear-btn {
+  background: transparent;
+  border: 1px solid #3d3d5c;
+  color: #888;
+}
+
+.clear-btn:hover:not(:disabled) {
+  border-color: #666;
+  color: #aaa;
+}
+
+.clear-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.queue-btn {
+  background: linear-gradient(135deg, #4fc3f7, #29b6f6);
+  border: none;
+  color: #000;
+}
+
+.queue-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #81d4fa, #4fc3f7);
+}
+
+.queue-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

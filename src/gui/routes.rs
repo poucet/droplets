@@ -8,7 +8,7 @@ use super::api;
 
 /// Route an API request to the appropriate handler
 /// Instance is determined from the plugin params (always "default" for wry context)
-pub fn handle_request(path: &str, params: &Arc<DropletParams>) -> String {
+pub fn handle_request(path: &str, method: &str, body: &[u8], params: &Arc<DropletParams>) -> String {
     // In wry context, we use "default" instance since we're inside the plugin
     let instance = "default";
 
@@ -19,6 +19,11 @@ pub fn handle_request(path: &str, params: &Arc<DropletParams>) -> String {
         "/transport" => handle_transport(instance),
         "/instances" => handle_instances(),
         "/cancel_learn" => handle_cancel_learn(instance, params),
+        "/clear_fugues" => handle_clear_fugues(instance),
+        // POST endpoints
+        "/queue_fugue" if method == "POST" => handle_queue_fugue(body, instance),
+        "/cancel_fugue" if method == "POST" => handle_cancel_fugue(body, instance),
+        "/cancel_fugues_by_tag" if method == "POST" => handle_cancel_fugues_by_tag(body, instance),
         _ => handle_dynamic_route(path, instance, params),
     }
 }
@@ -168,6 +173,58 @@ fn handle_fugue_by_id(id_str: &str, instance: &str) -> String {
 
     match api::get_fugue_by_id(instance, id) {
         Ok(response) => serde_json::to_string(&response).unwrap_or_else(|_| serialize_error("serialize failed")),
+        Err(e) => serialize_error(&e),
+    }
+}
+
+// =============================================================================
+// Fugue Queue/Cancel Handlers (POST)
+// =============================================================================
+
+fn handle_queue_fugue(body: &[u8], instance: &str) -> String {
+    let Ok(req) = serde_json::from_slice::<api::QueueFugueRequest>(body) else {
+        return serialize_error("invalid request body");
+    };
+
+    let response = api::queue_fugue(instance, req);
+    crate::logger::log_gui_event("queue_fugue", &format!("id={:?}", response.fugue_id));
+    serde_json::to_string(&response).unwrap_or_else(|_| serialize_error("serialize failed"))
+}
+
+fn handle_cancel_fugue(body: &[u8], instance: &str) -> String {
+    let Ok(req) = serde_json::from_slice::<api::CancelFugueRequest>(body) else {
+        return serialize_error("invalid request body");
+    };
+
+    match api::cancel_fugue(instance, req.id) {
+        Ok(response) => {
+            crate::logger::log_gui_event("cancel_fugue", &format!("id={}", req.id));
+            serde_json::to_string(&response).unwrap_or_else(|_| serialize_error("serialize failed"))
+        }
+        Err(e) => serialize_error(&e),
+    }
+}
+
+fn handle_cancel_fugues_by_tag(body: &[u8], instance: &str) -> String {
+    let Ok(req) = serde_json::from_slice::<api::CancelByTagRequest>(body) else {
+        return serialize_error("invalid request body");
+    };
+
+    match api::cancel_fugues_by_tag(instance, &req.tag) {
+        Ok(response) => {
+            crate::logger::log_gui_event("cancel_fugues_by_tag", &format!("tag={}", req.tag));
+            serde_json::to_string(&response).unwrap_or_else(|_| serialize_error("serialize failed"))
+        }
+        Err(e) => serialize_error(&e),
+    }
+}
+
+fn handle_clear_fugues(instance: &str) -> String {
+    match api::clear_fugues(instance) {
+        Ok(response) => {
+            crate::logger::log_gui_event("clear_fugues", "all");
+            serde_json::to_string(&response).unwrap_or_else(|_| serialize_error("serialize failed"))
+        }
         Err(e) => serialize_error(&e),
     }
 }

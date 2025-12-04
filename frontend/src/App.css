@@ -562,6 +562,91 @@
   background: #505050;
 }
 
+/* Fugue Section */
+.fugue-section {
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
+  padding: 16px;
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  grid-column: span 2;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.section-header h2 {
+  margin: 0;
+  font-size: 1.1rem;
+  color: #e0e0e0;
+  font-weight: 400;
+}
+
+.new-fugue-btn {
+  background: linear-gradient(135deg, #4fc3f7, #29b6f6);
+  border: none;
+  color: #000;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.new-fugue-btn:hover {
+  background: linear-gradient(135deg, #81d4fa, #4fc3f7);
+}
+
+.transport-info {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+}
+
+.transport-beat {
+  color: #888;
+}
+
+.transport-tempo {
+  color: #4fc3f7;
+}
+
+.transport-status {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.transport-status.playing {
+  background: rgba(76, 175, 80, 0.2);
+  color: #4caf50;
+}
+
+.transport-status.stopped {
+  background: rgba(255, 152, 0, 0.2);
+  color: #ff9800;
+}
+
+/* Activity CC column */
+.activity-cc {
+  color: #7ed321;
+  min-width: 55px;
+}
+
 @media (max-width: 768px) {
   .app-main {
     grid-template-columns: 1fr;
@@ -576,5 +661,9 @@
 
   .header-left {
     align-items: center;
+  }
+
+  .fugue-section {
+    grid-column: span 1;
   }
 }

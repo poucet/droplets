@@ -3,10 +3,13 @@
 //! Used by both the wry custom protocol (routes.rs) and HTTP server (server.rs).
 //! All response types are exported to TypeScript via ts-rs.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::fugue::{FugueBridge, FugueDefinition, FugueInfo, TransportState};
+use crate::fugue::{
+    CancelMode, FugueBridge, FugueDefinition, FugueInfo, LoopMode, QuantizeMode, TimedFugueEvent,
+    TransportState,
+};
 use crate::mcp::CcBridge;
 use crate::params;
 
@@ -245,5 +248,102 @@ pub fn note_off(instance: &str, note: u8) -> Result<OkResponse, String> {
     let msg = crate::mcp::NoteMessage::new(0, note.min(127), 0, false);
     CcBridge::send_note(instance, msg)
         .map(|_| OkResponse { ok: true, message: None })
+        .map_err(|e| e.to_string())
+}
+
+// =============================================================================
+// Fugue Queue/Cancel API
+// =============================================================================
+
+/// Request to queue a new fugue
+#[derive(Debug, Clone, Deserialize)]
+pub struct QueueFugueRequest {
+    pub tag: Option<String>,
+    pub events: Vec<TimedFugueEvent>,
+    pub duration_beats: f64,
+    pub loop_mode: LoopMode,
+    pub quantize: QuantizeMode,
+    pub cancel_mode: CancelMode,
+}
+
+/// Response from queuing a fugue
+#[derive(Debug, Clone, Serialize)]
+pub struct QueueFugueResponse {
+    pub ok: bool,
+    pub fugue_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Request to cancel a fugue by ID
+#[derive(Debug, Clone, Deserialize)]
+pub struct CancelFugueRequest {
+    pub id: u64,
+}
+
+/// Request to cancel fugues by tag
+#[derive(Debug, Clone, Deserialize)]
+pub struct CancelByTagRequest {
+    pub tag: String,
+}
+
+/// Queue a new fugue for playback
+pub fn queue_fugue(instance: &str, req: QueueFugueRequest) -> QueueFugueResponse {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+    let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
+
+    let definition = FugueDefinition {
+        id,
+        tag: req.tag,
+        events: req.events,
+        duration_beats: req.duration_beats,
+        loop_mode: req.loop_mode,
+        quantize: req.quantize,
+        cancel_mode: req.cancel_mode,
+    };
+
+    match FugueBridge::queue(instance, definition) {
+        Ok(fugue_id) => QueueFugueResponse {
+            ok: true,
+            fugue_id: Some(fugue_id),
+            error: None,
+        },
+        Err(e) => QueueFugueResponse {
+            ok: false,
+            fugue_id: None,
+            error: Some(e.to_string()),
+        },
+    }
+}
+
+/// Cancel a specific fugue by ID
+pub fn cancel_fugue(instance: &str, id: u64) -> Result<OkResponse, String> {
+    FugueBridge::cancel(instance, id)
+        .map(|_| OkResponse {
+            ok: true,
+            message: Some(format!("Cancelled fugue {}", id)),
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// Cancel all fugues with a specific tag
+pub fn cancel_fugues_by_tag(instance: &str, tag: &str) -> Result<OkResponse, String> {
+    FugueBridge::cancel_by_tag(instance, tag)
+        .map(|_| OkResponse {
+            ok: true,
+            message: Some(format!("Cancelled fugues with tag '{}'", tag)),
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// Clear all fugues on an instance
+pub fn clear_fugues(instance: &str) -> Result<OkResponse, String> {
+    FugueBridge::clear_all(instance)
+        .map(|_| OkResponse {
+            ok: true,
+            message: Some("Cleared all fugues".to_string()),
+        })
         .map_err(|e| e.to_string())
 }

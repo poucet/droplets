@@ -14,6 +14,10 @@ import type {
   InstancesResponse,
   OkResponse,
   TransportState,
+  TimedFugueEvent,
+  LoopMode,
+  QuantizeMode,
+  CancelMode,
 } from '../types';
 
 // Extend Window interface for simplyvst
@@ -109,6 +113,54 @@ export async function noteOn(note: number, velocity = 100, instance = 'default')
 
 export async function noteOff(note: number, instance = 'default'): Promise<OkResponse> {
   return apiFetch<OkResponse>(`/note_off/${note}`, instance);
+}
+
+// =============================================================================
+// Fugue Queue/Cancel API
+// =============================================================================
+
+export interface QueueFugueRequest {
+  tag: string | null;
+  events: TimedFugueEvent[];
+  duration_beats: number;
+  loop_mode: LoopMode;
+  quantize: QuantizeMode;
+  cancel_mode: CancelMode;
+}
+
+export interface QueueFugueResponse {
+  ok: boolean;
+  fugue_id?: bigint;
+  error?: string;
+}
+
+async function apiPost<T, R>(path: string, body: T, instance = 'default'): Promise<R> {
+  const url = buildUrl(path, instance);
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new Error(`API error: ${response.status}`);
+  }
+  return response.json();
+}
+
+export async function queueFugue(fugue: QueueFugueRequest, instance = 'default'): Promise<QueueFugueResponse> {
+  return apiPost<QueueFugueRequest, QueueFugueResponse>('/queue_fugue', fugue, instance);
+}
+
+export async function cancelFugue(id: bigint, instance = 'default'): Promise<OkResponse> {
+  return apiPost<{ id: bigint }, OkResponse>('/cancel_fugue', { id }, instance);
+}
+
+export async function cancelFuguesByTag(tag: string, instance = 'default'): Promise<OkResponse> {
+  return apiPost<{ tag: string }, OkResponse>('/cancel_fugues_by_tag', { tag }, instance);
+}
+
+export async function clearFugues(instance = 'default'): Promise<OkResponse> {
+  return apiFetch<OkResponse>('/clear_fugues', instance);
 }
 
 // =============================================================================

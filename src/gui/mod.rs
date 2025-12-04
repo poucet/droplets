@@ -244,9 +244,11 @@ impl<'a> PluginGuiImpl for DropletMainThread<'a> {
                 let params = Arc::clone(&params_for_protocol);
                 let uri = request.uri();
                 let path = uri.path();
-                crate::logger::log_gui_event("api_request", &format!("uri={} path={:?} host={:?}", uri, path, uri.host()));
+                let method = request.method().as_str();
+                let body = request.body();
+                crate::logger::log_gui_event("api_request", &format!("method={} uri={} path={:?}", method, uri, path));
 
-                let response_body = routes::handle_request(path, &params);
+                let response_body = routes::handle_request(path, method, body, &params);
 
                 let response = Response::builder()
                     .header(CONTENT_TYPE, "application/json")

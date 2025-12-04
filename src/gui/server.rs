@@ -12,11 +12,11 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use axum::{
-    Router,
+    Json, Router,
     extract::{Path, Query, ws::{Message, WebSocket, WebSocketUpgrade}},
     http::{header, StatusCode},
     response::{Html, IntoResponse},
-    routing::get,
+    routing::{get, post},
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -97,7 +97,12 @@ async fn run_server(port: u16) {
         .route("/api/wiggle/:slot", get(api_wiggle))
         .route("/api/note_on/:note", get(api_note_on))
         .route("/api/note_on/:note/:velocity", get(api_note_on_velocity))
-        .route("/api/note_off/:note", get(api_note_off));
+        .route("/api/note_off/:note", get(api_note_off))
+        // Fugue queue/cancel (POST)
+        .route("/api/queue_fugue", post(api_queue_fugue))
+        .route("/api/cancel_fugue", post(api_cancel_fugue))
+        .route("/api/cancel_fugues_by_tag", post(api_cancel_fugues_by_tag))
+        .route("/api/clear_fugues", get(api_clear_fugues));
 
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => {
@@ -215,6 +220,41 @@ async fn api_note_off(
     Query(query): Query<InstanceQuery>,
 ) -> impl IntoResponse {
     match api::note_off(&query.instance, note) {
+        Ok(response) => json_response(response),
+        Err(e) => error_response(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
+async fn api_queue_fugue(
+    Query(query): Query<InstanceQuery>,
+    Json(body): Json<api::QueueFugueRequest>,
+) -> impl IntoResponse {
+    let response = api::queue_fugue(&query.instance, body);
+    json_response(response)
+}
+
+async fn api_cancel_fugue(
+    Query(query): Query<InstanceQuery>,
+    Json(body): Json<api::CancelFugueRequest>,
+) -> impl IntoResponse {
+    match api::cancel_fugue(&query.instance, body.id) {
+        Ok(response) => json_response(response),
+        Err(e) => error_response(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
+async fn api_cancel_fugues_by_tag(
+    Query(query): Query<InstanceQuery>,
+    Json(body): Json<api::CancelByTagRequest>,
+) -> impl IntoResponse {
+    match api::cancel_fugues_by_tag(&query.instance, &body.tag) {
+        Ok(response) => json_response(response),
+        Err(e) => error_response(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
+async fn api_clear_fugues(Query(query): Query<InstanceQuery>) -> impl IntoResponse {
+    match api::clear_fugues(&query.instance) {
         Ok(response) => json_response(response),
         Err(e) => error_response(StatusCode::BAD_REQUEST, &e),
     }

@@ -1,44 +1,60 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import './App.css';
-
-interface SlotInfo {
-  index: number;
-  name: string;
-  value: number;
-  cc: number | null;
-  channel: number;
-}
-
-interface ActivityEvent {
-  timestamp: number;
-  instance: string;
-  slot: number;
-  value: number;
-}
+import {
+  getSlots,
+  getActivity,
+  getFugues,
+  getTransport,
+  noteOn,
+  noteOff,
+  wiggleSlot,
+  queueFugue,
+  cancelFugue,
+  RealtimeConnection,
+} from './api';
+import type {
+  SlotInfo,
+  FugueInfo,
+  FugueDefinition,
+  TransportState,
+  FuguesResponse,
+  ActivityEventDto,
+} from './types';
+import { FugueList, FugueViewer, FugueComposer } from './components';
+import type { ComposerFugue } from './components';
 
 // Note names for display
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const getNoteName = (midi: number) => `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`;
 
+const DEFAULT_TRANSPORT: TransportState = {
+  beat: 0,
+  tempo: 120,
+  playing: false,
+  time_sig_numerator: 4,
+};
+
 const App: React.FC = () => {
   const [slots, setSlots] = useState<SlotInfo[]>([]);
-  const [activity, setActivity] = useState<ActivityEvent[]>([]);
+  const [activity, setActivity] = useState<ActivityEventDto[]>([]);
   const [serverStatus, setServerStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
   const [wigglingSlot, setWigglingSlot] = useState<number | null>(null);
   const [activeNotes, setActiveNotes] = useState<Set<number>>(new Set());
 
+  // Fugue state
+  const [fugueInfos, setFugueInfos] = useState<FugueInfo[]>([]);
+  const [fugueDefinitions, setFugueDefinitions] = useState<Map<bigint, FugueDefinition>>(new Map());
+  const [transport, setTransport] = useState<TransportState>(DEFAULT_TRANSPORT);
+  const [selectedFugueId, setSelectedFugueId] = useState<bigint | undefined>();
+  const [showComposer, setShowComposer] = useState(false);
+
+  const realtimeRef = useRef<RealtimeConnection | null>(null);
+
   const fetchSlots = useCallback(async () => {
     try {
-      const response = await fetch('droplets://api/slots');
-      const text = await response.text();
-      const data = JSON.parse(text);
-      if (data.type === 'slots' && data.data) {
-        setSlots(data.data);
-        setServerStatus('connected');
-      } else if (data.error) {
-        console.error('Slots error:', data.error);
-        setServerStatus('error');
-      }
+      const response = await getSlots();
+      setSlots(response.slots);
+      setServerStatus('connected');
     } catch (e) {
       console.error('Failed to fetch slots:', e);
       setServerStatus('error');
@@ -47,37 +63,51 @@ const App: React.FC = () => {
 
   const fetchActivity = useCallback(async () => {
     try {
-      const response = await fetch('droplets://api/activity');
-      const data = await response.json();
-      if (data.type === 'activity' && data.data) {
-        setActivity(data.data);
-      }
+      const response = await getActivity();
+      setActivity(response.events);
     } catch (e) {
       console.error('Failed to fetch activity:', e);
     }
   }, []);
 
-  const handleWiggle = useCallback(async (slotIndex: number) => {
-    if (wigglingSlot !== null) return; // Already wiggling
+  const fetchFugues = useCallback(async () => {
+    try {
+      const response = await getFugues();
+      setFugueInfos(response.infos);
+      const defMap = new Map<bigint, FugueDefinition>();
+      for (const def of response.definitions) {
+        defMap.set(def.id, def);
+      }
+      setFugueDefinitions(defMap);
+    } catch (e) {
+      console.error('Failed to fetch fugues:', e);
+    }
+  }, []);
 
+  const fetchTransport = useCallback(async () => {
+    try {
+      const response = await getTransport();
+      setTransport(response.transport);
+    } catch (e) {
+      console.error('Failed to fetch transport:', e);
+    }
+  }, []);
+
+  const handleWiggle = useCallback(async (slotIndex: number) => {
+    if (wigglingSlot !== null) return;
     setWigglingSlot(slotIndex);
     try {
-      const response = await fetch(`droplets://api/wiggle/${slotIndex}`);
-      const data = await response.json();
-      if (data.error) {
-        console.error('Wiggle error:', data.error);
-      }
+      await wiggleSlot(slotIndex);
     } catch (e) {
       console.error('Failed to wiggle:', e);
     }
-    // Clear wiggling state after animation completes (~1 second)
     setTimeout(() => setWigglingSlot(null), 1100);
   }, [wigglingSlot]);
 
   const handleNoteOn = useCallback(async (note: number) => {
     setActiveNotes(prev => new Set(prev).add(note));
     try {
-      await fetch(`droplets://api/note_on/${note}/100`);
+      await noteOn(note, 100);
     } catch (e) {
       console.error('Failed to send note on:', e);
     }
@@ -90,26 +120,84 @@ const App: React.FC = () => {
       return next;
     });
     try {
-      await fetch(`droplets://api/note_off/${note}`);
+      await noteOff(note);
     } catch (e) {
       console.error('Failed to send note off:', e);
     }
   }, []);
 
+  // Fugue handlers
+  const handleSelectFugue = useCallback((id: bigint) => {
+    setSelectedFugueId(id);
+  }, []);
+
+  const handleCancelFugue = useCallback(async (id: bigint) => {
+    try {
+      await cancelFugue(id);
+      // Clear selection if we cancelled the selected fugue
+      if (selectedFugueId === id) {
+        setSelectedFugueId(undefined);
+      }
+      // Refresh fugue list
+      await fetchFugues();
+    } catch (e) {
+      console.error('Failed to cancel fugue:', e);
+    }
+  }, [selectedFugueId, fetchFugues]);
+
+  const handleQueueFugue = useCallback(async (fugue: ComposerFugue) => {
+    try {
+      await queueFugue(fugue);
+      setShowComposer(false);
+      // Refresh fugue list
+      await fetchFugues();
+    } catch (e) {
+      console.error('Failed to queue fugue:', e);
+    }
+  }, [fetchFugues]);
+
+  // Handle realtime updates
+  const handleFuguesUpdate = useCallback((response: FuguesResponse) => {
+    setFugueInfos(response.infos);
+    const defMap = new Map<bigint, FugueDefinition>();
+    for (const def of response.definitions) {
+      defMap.set(def.id, def);
+    }
+    setFugueDefinitions(defMap);
+  }, []);
+
   useEffect(() => {
+    // Initial fetch
     fetchSlots();
     fetchActivity();
+    fetchFugues();
+    fetchTransport();
 
+    // Setup realtime connection for transport/fugue updates
+    const realtime = new RealtimeConnection({
+      onTransport: setTransport,
+      onFugues: handleFuguesUpdate,
+      onConnect: () => setServerStatus('connected'),
+      onDisconnect: () => setServerStatus('connecting'),
+      onError: () => setServerStatus('error'),
+    });
+    realtime.connect();
+    realtimeRef.current = realtime;
+
+    // Fallback polling for slots/activity (these don't have realtime yet)
     const interval = setInterval(() => {
       fetchSlots();
       fetchActivity();
-    }, 100); // Faster polling for smoother parameter updates
+    }, 100);
 
-    return () => clearInterval(interval);
-  }, [fetchSlots, fetchActivity]);
+    return () => {
+      clearInterval(interval);
+      realtime.disconnect();
+    };
+  }, [fetchSlots, fetchActivity, fetchFugues, fetchTransport, handleFuguesUpdate]);
 
-  const formatTimestamp = (ts: number) => {
-    const date = new Date(ts);
+  const formatTimestamp = (ts: bigint) => {
+    const date = new Date(Number(ts));
     return date.toLocaleTimeString('en-US', {
       hour12: false,
       hour: '2-digit',
@@ -117,6 +205,10 @@ const App: React.FC = () => {
       second: '2-digit'
     });
   };
+
+  // Get selected fugue definition
+  const selectedFugue = selectedFugueId ? fugueDefinitions.get(selectedFugueId) : undefined;
+  const selectedInfo = selectedFugueId ? fugueInfos.find(f => f.id === selectedFugueId) : undefined;
 
   return (
     <div className="app">
@@ -132,6 +224,51 @@ const App: React.FC = () => {
       </header>
 
       <main className="app-main">
+        {/* Fugue Panel - New Section */}
+        <section className="fugue-section">
+          <div className="section-header">
+            <h2>Fugue Sequencer</h2>
+            <button
+              className="new-fugue-btn"
+              onClick={() => setShowComposer(!showComposer)}
+            >
+              {showComposer ? 'Cancel' : '+ New Fugue'}
+            </button>
+          </div>
+
+          {showComposer ? (
+            <FugueComposer
+              onQueue={handleQueueFugue}
+              onCancel={() => setShowComposer(false)}
+            />
+          ) : (
+            <>
+              <FugueList
+                fugues={fugueInfos}
+                selectedId={selectedFugueId}
+                onSelect={handleSelectFugue}
+                onCancel={handleCancelFugue}
+              />
+
+              {selectedFugue && (
+                <FugueViewer
+                  fugue={selectedFugue}
+                  info={selectedInfo}
+                  transport={transport}
+                />
+              )}
+            </>
+          )}
+
+          <div className="transport-info">
+            <span className="transport-beat">Beat: {transport.beat.toFixed(2)}</span>
+            <span className="transport-tempo">{transport.tempo.toFixed(0)} BPM</span>
+            <span className={`transport-status ${transport.playing ? 'playing' : 'stopped'}`}>
+              {transport.playing ? 'Playing' : 'Stopped'}
+            </span>
+          </div>
+        </section>
+
         <section className="slots-section">
           <h2>Automatable Parameters</h2>
           <div className="slots-list">
@@ -209,8 +346,8 @@ const App: React.FC = () => {
                 <div key={`${event.timestamp}-${idx}`} className="activity-item">
                   <span className="activity-time">{formatTimestamp(event.timestamp)}</span>
                   <span className="activity-instance">{event.instance}</span>
-                  <span className="activity-slot">Slot {event.slot}</span>
-                  <span className="activity-value">{Math.round(event.value * 100)}%</span>
+                  <span className="activity-cc">{event.cc !== null ? `CC${event.cc}` : '—'}</span>
+                  <span className="activity-value">{event.value}</span>
                 </div>
               ))
             )}
