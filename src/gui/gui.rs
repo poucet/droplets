@@ -16,8 +16,10 @@ pub struct DropletGui {
     pub(crate) web_view: Option<wry::WebView>,
     /// Cache last transport state to avoid sending duplicate updates
     last_transport: Option<TransportState>,
-    /// Cache last fugue count to detect changes
-    last_fugue_count: usize,
+    /// Cache last fugue IDs to detect changes
+    last_fugue_ids: Vec<u64>,
+    /// Cache last waiting states to detect changes
+    last_waiting_states: Vec<bool>,
 }
 
 impl DropletGui {
@@ -27,7 +29,8 @@ impl DropletGui {
             scale_factor: 1.0,
             web_view: None,
             last_transport: None,
-            last_fugue_count: 0,
+            last_fugue_ids: Vec::new(),
+            last_waiting_states: Vec::new(),
         }
     }
 
@@ -62,11 +65,17 @@ impl DropletGui {
 
     /// Push fugue updates to the webview via IPC
     pub fn push_fugues(&mut self, infos: &[FugueInfo], definitions: &[FugueDefinition]) {
-        // Only send if count changed (simple heuristic)
-        if infos.len() == self.last_fugue_count {
+        // Check if fugue list changed (IDs or waiting states)
+        let current_ids: Vec<u64> = infos.iter().map(|f| f.id).collect();
+        let current_waiting: Vec<bool> = infos.iter().map(|f| f.is_waiting).collect();
+        let changed = current_ids != self.last_fugue_ids || current_waiting != self.last_waiting_states;
+
+        if !changed {
             return;
         }
-        self.last_fugue_count = infos.len();
+
+        self.last_fugue_ids = current_ids;
+        self.last_waiting_states = current_waiting;
 
         if let Some(webview) = &self.web_view {
             // Serialize to JSON
