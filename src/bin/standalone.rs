@@ -6,11 +6,10 @@
 use midir::{MidiOutput, MidiOutputConnection};
 #[cfg(unix)]
 use midir::os::unix::VirtualOutput;
+use simply_droplets::gui::{configure_webview, WebViewConfig, DEFAULT_GUI_SIZE};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
-use wry::dpi::LogicalSize;
-use wry::http::{header::CONTENT_TYPE, Response};
 use wry::WebViewBuilder;
 
 fn main() {
@@ -152,6 +151,30 @@ fn main() {
         thread::sleep(Duration::from_millis(10));
     });
 
+    // Create IPC channel for receiving messages from the webview
+    let (ipc_sender, ipc_receiver) = crossbeam::channel::unbounded::<serde_json::Value>();
+
+    // Spawn IPC message handler thread
+    thread::spawn(move || loop {
+        while let Ok(msg) = ipc_receiver.try_recv() {
+            // Handle IPC messages from the frontend (e.g., WebSocket shim messages)
+            if let Some(msg_type) = msg.get("type").and_then(|t| t.as_str()) {
+                match msg_type {
+                    "ws_message" => {
+                        // Handle WebSocket-like messages from frontend
+                        if let Some(data) = msg.get("data") {
+                            println!("IPC ws_message: {:?}", data);
+                        }
+                    }
+                    _ => {
+                        println!("IPC message: {:?}", msg);
+                    }
+                }
+            }
+        }
+        thread::sleep(Duration::from_millis(10));
+    });
+
     // Create GUI window with wry/tao
     use tao::{
         event::{Event, WindowEvent},
@@ -162,7 +185,7 @@ fn main() {
     let event_loop = EventLoop::new();
     let window = match WindowBuilder::new()
         .with_title("Simply Droplets - Standalone")
-        .with_inner_size(LogicalSize::new(800.0, 600.0))
+        .with_inner_size(DEFAULT_GUI_SIZE)
         .build(&event_loop)
     {
         Ok(w) => w,
@@ -172,45 +195,11 @@ fn main() {
         }
     };
 
-    let params_for_protocol = Arc::clone(&params_inst);
+    // Build webview with shared configuration (same as plugin GUI)
+    let config = WebViewConfig::standalone().with_ipc_sender(ipc_sender);
+    let builder = configure_webview(WebViewBuilder::new(), Arc::clone(&params_inst), config);
 
-    // Build webview with same configuration as plugin GUI
-    let _webview = match WebViewBuilder::new()
-        .with_html(include_str!("../../frontend/dist/index.html"))
-        .with_devtools(cfg!(debug_assertions) || cfg!(feature = "dev-gui"))
-        .with_initialization_script(include_str!("../gui/script.js"))
-        .with_asynchronous_custom_protocol(
-            "droplets".to_string(),
-            move |_webview_id, request, responder| {
-                let params = Arc::clone(&params_for_protocol);
-                let uri = request.uri();
-                let path = uri.path();
-                let method = request.method().as_str();
-                let body = request.body();
-
-                let response_body =
-                    simply_droplets::gui::routes::handle_request(path, method, body, &params);
-
-                let response = Response::builder()
-                    .header(CONTENT_TYPE, "application/json")
-                    .header("Access-Control-Allow-Origin", "*")
-                    .body(response_body.into_bytes())
-                    .unwrap();
-                responder.respond(response);
-            },
-        )
-        .with_navigation_handler(|url| {
-            if url.starts_with("http") {
-                if let Err(e) = open::that(url) {
-                    eprintln!("Failed to open URL: {}", e);
-                }
-                false
-            } else {
-                true
-            }
-        })
-        .build(&window)
-    {
+    let _webview = match builder.build(&window) {
         Ok(w) => w,
         Err(e) => {
             eprintln!("Failed to create webview: {}", e);
