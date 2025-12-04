@@ -12,8 +12,8 @@ bundle-clap-release = "run --package xtask -- build --profile release --format c
 bundle-vst3-release = "run --package xtask -- build --profile release --format vst3"
 
 # Run standalone binary
-standalone = "run --bin standalone"
-standalone-release = "run --bin standalone --release"
+standalone = "run --bin droplets-standalone --features=standalone"
+standalone-release = "run --bin droplets-standalone --release --features=standalone"
 
 # Quick development aliases
 dev = "build"
