@@ -152,7 +152,8 @@ export async function queueFugue(fugue: QueueFugueRequest, instance = 'default')
 }
 
 export async function cancelFugue(id: bigint, instance = 'default'): Promise<OkResponse> {
-  return apiPost<{ id: bigint }, OkResponse>('/cancel_fugue', { id }, instance);
+  // Convert bigint to number for JSON serialization (safe for fugue IDs which are u64 but in practice small)
+  return apiPost<{ id: number }, OkResponse>('/cancel_fugue', { id: Number(id) }, instance);
 }
 
 export async function cancelFuguesByTag(tag: string, instance = 'default'): Promise<OkResponse> {
