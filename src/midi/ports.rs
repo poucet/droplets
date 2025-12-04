@@ -1,6 +1,6 @@
 //! Port declarations for Simply Droplets
 //!
-//! Declares audio ports (stereo pass-through) and note ports (MIDI CC output).
+//! Declares audio ports (required by some hosts) and note ports for MIDI.
 
 use clack_extensions::audio_ports::*;
 use clack_extensions::note_ports::*;
@@ -8,16 +8,17 @@ use clack_plugin::prelude::*;
 
 use crate::DropletMainThread;
 
+// Audio ports required by VST3 hosts - declare stereo pass-through
 impl<'a> PluginAudioPortsImpl for DropletMainThread<'a> {
     fn count(&mut self, _is_input: bool) -> u32 {
-        1 // One stereo port for input and output
+        1
     }
 
     fn get(&mut self, index: u32, _is_input: bool, writer: &mut AudioPortInfoWriter) {
         if index == 0 {
             writer.set(&AudioPortInfo {
                 id: ClapId::new(0),
-                name: b"main",
+                name: b"Audio",
                 channel_count: 2,
                 flags: AudioPortFlags::IS_MAIN,
                 port_type: Some(AudioPortType::STEREO),
@@ -29,27 +30,26 @@ impl<'a> PluginAudioPortsImpl for DropletMainThread<'a> {
 
 impl<'a> PluginNotePortsImpl for DropletMainThread<'a> {
     fn count(&mut self, _is_input: bool) -> u32 {
-        // One input (for CC learning) and one output (for MIDI CC + Notes)
         1
     }
 
     fn get(&mut self, index: u32, is_input: bool, writer: &mut NotePortInfoWriter) {
         if index == 0 {
             if is_input {
-                // Input: Accept MIDI 1.0 for CC learning (simple case)
+                // Input: Accept MIDI 1.0/2.0 for CC learning
                 writer.set(&NotePortInfo {
                     id: ClapId::new(1),
-                    name: b"MIDI Learn",
-                    supported_dialects: NoteDialects::MIDI | NoteDialects::MIDI2,
+                    name: b"MIDI In",
+                    supported_dialects: NoteDialects::CLAP | NoteDialects::MIDI | NoteDialects::MIDI2,
                     preferred_dialect: Some(NoteDialect::Midi),
                 });
             } else {
-                // Output: Prefer MIDI 2.0 for high-resolution, fall back to MIDI 1.0
+                // Output: CLAP-native (for VST3) + MIDI 2.0 (for high-res CLAP hosts)
                 writer.set(&NotePortInfo {
                     id: ClapId::new(2),
                     name: b"MIDI Out",
-                    supported_dialects: NoteDialects::MIDI | NoteDialects::MIDI2,
-                    preferred_dialect: Some(NoteDialect::Midi2),
+                    supported_dialects: NoteDialects::CLAP | NoteDialects::MIDI | NoteDialects::MIDI2,
+                    preferred_dialect: Some(NoteDialect::Clap),
                 });
             }
         }

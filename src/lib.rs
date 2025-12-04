@@ -8,12 +8,12 @@ use rtrb::Consumer;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use audio::DropletAudioProcessor;
 use gui::DropletGui;
 use mcp::{CcBridge, MidiMessage};
+use midi::DropletMidiProcessor;
 use params::DropletParams;
 
-mod audio;
+mod midi;
 pub mod gui;
 pub mod logger;
 pub mod mcp;
@@ -22,7 +22,7 @@ pub mod params;
 pub struct DropletPlugin;
 
 impl Plugin for DropletPlugin {
-    type AudioProcessor<'a> = DropletAudioProcessor<'a>;
+    type AudioProcessor<'a> = DropletMidiProcessor<'a>;
     type Shared<'a> = DropletShared<'a>;
     type MainThread<'a> = DropletMainThread<'a>;
 
@@ -91,7 +91,7 @@ pub struct DropletShared<'a> {
     pub ipc_sender: Sender<serde_json::Value>,
     pub ipc_receiver: Receiver<serde_json::Value>,
     pub instance_id: String,
-    /// MIDI consumer - taken by audio processor during activation
+    /// MIDI consumer - taken by MIDI processor during activation
     pub midi_consumer: Mutex<Option<Consumer<MidiMessage>>>,
 }
 
