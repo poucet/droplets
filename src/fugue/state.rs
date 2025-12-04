@@ -19,6 +19,8 @@ pub struct FugueState {
     pub waiting_for_start: bool,
     /// Target beat to start at (calculated from quantization)
     pub target_start_beat: Option<f64>,
+    /// Whether this fugue has been cancelled (overrides loop mode)
+    pub cancelled: bool,
 }
 
 impl FugueState {
@@ -32,6 +34,7 @@ impl FugueState {
             active_notes: [[0; 2]; 16],
             waiting_for_start: true,
             target_start_beat: None,
+            cancelled: false,
         }
     }
 
@@ -86,13 +89,21 @@ impl FugueState {
         self.active_notes = [[0; 2]; 16];
     }
 
-    /// Check if this fugue has completed all loops
+    /// Check if this fugue has completed all loops or was cancelled
     pub fn is_finished(&self) -> bool {
+        if self.cancelled {
+            return true;
+        }
         match self.definition.loop_mode {
             LoopMode::Once => self.current_loop >= 1,
             LoopMode::Times(n) => self.current_loop >= n,
             LoopMode::Forever => false,
         }
+    }
+
+    /// Mark this fugue as cancelled
+    pub fn cancel(&mut self) {
+        self.cancelled = true;
     }
 
     /// Reset for next loop iteration

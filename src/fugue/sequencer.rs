@@ -133,8 +133,7 @@ impl FugueSequencer {
         for fugue in &mut self.fugues {
             if fugue.definition.id == id && !fugue.is_finished() {
                 send_note_offs_for_fugue(fugue, &mut self.output_buffer);
-                // Mark as finished by setting loop count high
-                fugue.current_loop = u32::MAX;
+                fugue.cancel();
             }
         }
     }
@@ -144,7 +143,7 @@ impl FugueSequencer {
         for fugue in &mut self.fugues {
             if fugue.definition.tag.as_deref() == Some(tag) && !fugue.is_finished() {
                 send_note_offs_for_fugue(fugue, &mut self.output_buffer);
-                fugue.current_loop = u32::MAX;
+                fugue.cancel();
             }
         }
     }
