@@ -19,23 +19,17 @@ export const FugueViewer: React.FC<FugueViewerProps> = ({
   transport,
 }) => {
   // Calculate playhead position within the fugue from transport position
-  // Uses the interval-based model: playhead = transport_beat % interval
+  // Uses start_beat which is updated by the audio thread on each loop iteration
   const playheadBeat = useMemo(() => {
     if (!info || info.is_waiting) return undefined;
 
-    // For interval-based quantization, use transport % interval
-    // This ensures the playhead is always synchronized to the grid
-    if (info.quantize_interval_beats !== null) {
-      // Use the larger of interval or duration for the modulo
-      // This handles cases where the fugue is shorter than the interval
-      const effectiveInterval = Math.max(info.quantize_interval_beats, fugue.duration_beats);
-      const localBeat = transport.beat % effectiveInterval;
-      return Math.max(0, Math.min(localBeat, fugue.duration_beats));
-    }
-
-    // For Immediate mode (no interval), use the traditional calculation
+    // Calculate local position from transport beat and the fugue's current start_beat
+    // start_beat advances by duration_beats on each loop, so this gives us the
+    // correct position within the current loop iteration
     const localBeat = transport.beat - info.start_beat;
-    return Math.max(0, Math.min(localBeat % fugue.duration_beats, fugue.duration_beats));
+
+    // Clamp to valid range within the fugue duration
+    return Math.max(0, Math.min(localBeat, fugue.duration_beats));
   }, [info, transport.beat, fugue.duration_beats]);
 
   const loopDisplay = useMemo(() => {

@@ -24,6 +24,8 @@ pub struct FugueSequencer {
     last_beat: f64,
     /// Output buffer for MIDI messages to emit this cycle
     output_buffer: Vec<(u32, MidiMessage)>,
+    /// Whether transport was playing in the previous cycle
+    was_playing: bool,
 }
 
 impl FugueSequencer {
@@ -35,6 +37,7 @@ impl FugueSequencer {
             sample_rate,
             last_beat: 0.0,
             output_buffer: Vec::with_capacity(OUTPUT_BUFFER_CAPACITY),
+            was_playing: false,
         }
     }
 
@@ -61,11 +64,17 @@ impl FugueSequencer {
         // 1. Process incoming commands
         self.process_commands();
 
-        // 2. If not playing, don't process fugues
+        // 2. If not playing, send note-offs if we just stopped, then return
         if !is_playing {
+            if self.was_playing {
+                // Transport just stopped - send note-offs for all active notes
+                self.send_all_note_offs();
+            }
+            self.was_playing = false;
             self.last_beat = current_beat;
             return self.output_buffer.drain(..);
         }
+        self.was_playing = true;
 
         // 3. Detect transport jumps (seeking)
         let beat_jump = (current_beat - self.last_beat).abs();
@@ -156,6 +165,13 @@ impl FugueSequencer {
         self.fugues.clear();
     }
 
+    /// Send note-offs for all active notes in all fugues (e.g., when transport stops)
+    fn send_all_note_offs(&mut self) {
+        for fugue in &mut self.fugues {
+            send_note_offs_for_fugue(fugue, &mut self.output_buffer);
+        }
+    }
+
     /// Handle transport jump by sending note-offs for all active notes
     fn handle_transport_jump(&mut self) {
         for fugue in &mut self.fugues {
@@ -212,46 +228,62 @@ impl FugueSequencer {
             }
 
             // Calculate beat range within this fugue
-            let local_start = current_beat - fugue.start_beat;
-            let local_end = end_beat - fugue.start_beat;
+            let mut local_start = current_beat - fugue.start_beat;
+            let mut local_end = end_beat - fugue.start_beat;
 
-            // Process events in this range
-            while fugue.next_event_index < fugue.definition.events.len() {
-                let event = &fugue.definition.events[fugue.next_event_index];
+            // We may need to process events twice if we cross a loop boundary
+            loop {
+                // Process events in this range
+                while fugue.next_event_index < fugue.definition.events.len() {
+                    let event = &fugue.definition.events[fugue.next_event_index];
 
-                if event.beat_offset >= local_end {
-                    break; // Event is in the future
+                    if event.beat_offset >= local_end {
+                        break; // Event is in the future
+                    }
+
+                    if event.beat_offset >= local_start {
+                        // Event is in this buffer - calculate sample offset
+                        // Account for time since buffer start: current_beat to fugue.start_beat + event.beat_offset
+                        let event_absolute_beat = fugue.start_beat + event.beat_offset;
+                        let beat_delta = event_absolute_beat - current_beat;
+                        let sample_offset = (beat_delta / beats_per_sample).round().max(0.0) as u32;
+
+                        // Emit the event
+                        let msg = fugue_event_to_midi(&event.event);
+                        self.output_buffer.push((sample_offset, msg));
+
+                        // Track note state
+                        match event.event {
+                            FugueEvent::NoteOn { channel, note, .. } => {
+                                fugue.set_note_active(channel, note);
+                            }
+                            FugueEvent::NoteOff { channel, note } => {
+                                fugue.set_note_inactive(channel, note);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    fugue.next_event_index += 1;
                 }
 
-                if event.beat_offset >= local_start {
-                    // Event is in this buffer - calculate sample offset
-                    let beat_delta = event.beat_offset - local_start;
-                    let sample_offset = (beat_delta / beats_per_sample).round() as u32;
+                // Check for loop boundary
+                if local_end >= fugue.definition.duration_beats && !fugue.is_finished() {
+                    // Reset for next loop - this advances start_beat by duration_beats
+                    fugue.reset_for_loop();
 
-                    // Emit the event
-                    let msg = fugue_event_to_midi(&event.event);
-                    self.output_buffer.push((sample_offset, msg));
+                    // Recalculate local range for the new loop iteration
+                    // This handles events at beat 0 of the new loop that fall within this buffer
+                    local_start = current_beat - fugue.start_beat;
+                    local_end = end_beat - fugue.start_beat;
 
-                    // Track note state
-                    match event.event {
-                        FugueEvent::NoteOn { channel, note, .. } => {
-                            fugue.set_note_active(channel, note);
-                        }
-                        FugueEvent::NoteOff { channel, note } => {
-                            fugue.set_note_inactive(channel, note);
-                        }
-                        _ => {}
+                    // Only continue if there's still buffer time in this new loop
+                    if local_end > 0.0 {
+                        continue;
                     }
                 }
 
-                fugue.next_event_index += 1;
-            }
-
-            // Check for loop boundary
-            if local_end >= fugue.definition.duration_beats {
-                if !fugue.is_finished() {
-                    fugue.reset_for_loop();
-                }
+                break;
             }
         }
     }
