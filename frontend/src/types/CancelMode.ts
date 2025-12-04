@@ -3,4 +3,4 @@
 /**
  * What to cancel when this fugue starts
  */
-export type CancelMode = "None" | { "CancelByTag": string } | "CancelAll";
+export type CancelMode = "none" | { "cancel_by_tag": string } | "cancel_all";

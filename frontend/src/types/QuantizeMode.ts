@@ -7,4 +7,4 @@
  * transport reaches a grid line (where current_beat % interval == 0).
  * Beat 0 is always a valid grid line for all intervals.
  */
-export type QuantizeMode = "Immediate" | "Beat" | "Bar" | { "Bars": number };
+export type QuantizeMode = "immediate" | "beat" | "bar" | { "bars": number };

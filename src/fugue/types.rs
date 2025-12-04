@@ -8,6 +8,7 @@ use ts_rs::TS;
 /// How a fugue should loop
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
+#[serde(rename_all = "snake_case")]
 pub enum LoopMode {
     /// Play once and finish
     Once,
@@ -30,6 +31,7 @@ impl Default for LoopMode {
 /// Beat 0 is always a valid grid line for all intervals.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
+#[serde(rename_all = "snake_case")]
 pub enum QuantizeMode {
     /// No quantization - start immediately at current position
     Immediate,
@@ -106,6 +108,7 @@ impl Default for QuantizeMode {
 /// What to cancel when this fugue starts
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
+#[serde(rename_all = "snake_case")]
 pub enum CancelMode {
     /// Don't cancel anything (layer with existing fugues)
     None,

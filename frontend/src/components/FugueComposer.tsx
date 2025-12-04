@@ -34,32 +34,34 @@ const DEFAULT_DURATION = 4;
 const DEFAULT_NOTE_RANGE = { min: 48, max: 72 }; // C3 to C5
 const MIDI_CHANNELS = Array.from({ length: 16 }, (_, i) => i); // 0-15
 
-// Helper to convert LoopMode to internal state
-const parseLoopMode = (mode: LoopMode): { loopMode: 'once' | 'times' | 'forever'; loopTimes: number } => {
-  if (mode === 'Once') return { loopMode: 'once', loopTimes: 2 };
-  if (mode === 'Forever') return { loopMode: 'forever', loopTimes: 2 };
-  if (typeof mode === 'object' && 'Times' in mode) return { loopMode: 'times', loopTimes: mode.Times };
-  return { loopMode: 'once', loopTimes: 2 };
+// Helper to extract loop times from LoopMode
+const getLoopTimes = (mode: LoopMode): number => {
+  if (typeof mode === 'object' && 'times' in mode) return mode.times;
+  return 2;
 };
 
-// Helper to convert QuantizeMode to internal state
-const parseQuantizeMode = (mode: QuantizeMode): 'immediate' | 'beat' | 'bar' | 'bars2' | 'bars4' | 'bars8' => {
-  if (mode === 'Immediate') return 'immediate';
-  if (mode === 'Beat') return 'beat';
-  if (mode === 'Bar') return 'bar';
-  if (typeof mode === 'object' && 'Bars' in mode) {
-    if (mode.Bars === 2) return 'bars2';
-    if (mode.Bars === 4) return 'bars4';
-    if (mode.Bars === 8) return 'bars8';
-  }
+// Helper to get the simple loop mode string for UI
+const getLoopModeType = (mode: LoopMode): 'once' | 'times' | 'forever' => {
+  if (mode === 'once') return 'once';
+  if (mode === 'forever') return 'forever';
+  if (typeof mode === 'object' && 'times' in mode) return 'times';
+  return 'once';
+};
+
+// Helper to get quantize mode string for UI select
+const getQuantizeModeType = (mode: QuantizeMode): string => {
+  if (mode === 'immediate') return 'immediate';
+  if (mode === 'beat') return 'beat';
+  if (mode === 'bar') return 'bar';
+  if (typeof mode === 'object' && 'bars' in mode) return `bars${mode.bars}`;
   return 'bar';
 };
 
-// Helper to convert CancelMode to internal state
-const parseCancelMode = (mode: CancelMode): 'none' | 'tag' | 'all' => {
-  if (mode === 'None') return 'none';
-  if (mode === 'CancelAll') return 'all';
-  if (typeof mode === 'object' && 'CancelByTag' in mode) return 'tag';
+// Helper to get cancel mode type for UI
+const getCancelModeType = (mode: CancelMode): 'none' | 'tag' | 'all' => {
+  if (mode === 'none') return 'none';
+  if (mode === 'cancel_all') return 'all';
+  if (typeof mode === 'object' && 'cancel_by_tag' in mode) return 'tag';
   return 'none';
 };
 
@@ -68,64 +70,67 @@ export const FugueComposer: React.FC<FugueComposerProps> = ({
   onCancel,
   initialFugue,
 }) => {
-  // Parse initial values from initialFugue if provided
-  const initialLoopState = initialFugue ? parseLoopMode(initialFugue.loop_mode) : { loopMode: 'once' as const, loopTimes: 2 };
-  const initialQuantize = initialFugue ? parseQuantizeMode(initialFugue.quantize) : 'bar';
-  const initialCancelMode = initialFugue ? parseCancelMode(initialFugue.cancel_mode) : 'none';
-
   const [events, setEvents] = useState<TimedFugueEvent[]>(initialFugue?.events ?? []);
   const [durationBeats, setDurationBeats] = useState(initialFugue?.duration_beats ?? DEFAULT_DURATION);
   const [tag, setTag] = useState(initialFugue?.tag ?? '');
-  const [loopMode, setLoopMode] = useState<'once' | 'times' | 'forever'>(initialLoopState.loopMode);
-  const [loopTimes, setLoopTimes] = useState(initialLoopState.loopTimes);
-  const [quantize, setQuantize] = useState<'immediate' | 'beat' | 'bar' | 'bars2' | 'bars4' | 'bars8'>(initialQuantize);
-  const [cancelMode, setCancelMode] = useState<'none' | 'tag' | 'all'>(initialCancelMode);
+  const [loopModeType, setLoopModeType] = useState<'once' | 'times' | 'forever'>(
+    initialFugue ? getLoopModeType(initialFugue.loop_mode) : 'once'
+  );
+  const [loopTimes, setLoopTimes] = useState(initialFugue ? getLoopTimes(initialFugue.loop_mode) : 2);
+  const [quantizeModeType, setQuantizeModeType] = useState(
+    initialFugue ? getQuantizeModeType(initialFugue.quantize) : 'bar'
+  );
+  const [cancelModeType, setCancelModeType] = useState<'none' | 'tag' | 'all'>(
+    initialFugue ? getCancelModeType(initialFugue.cancel_mode) : 'none'
+  );
   const [midiChannel, setMidiChannel] = useState(0);
 
   const handleQueue = useCallback(() => {
-    // Build the fugue definition
+    // Build LoopMode from UI state
     let loop_mode: LoopMode;
-    if (loopMode === 'once') {
-      loop_mode = 'Once';
-    } else if (loopMode === 'times') {
-      loop_mode = { Times: loopTimes };
+    if (loopModeType === 'once') {
+      loop_mode = 'once';
+    } else if (loopModeType === 'times') {
+      loop_mode = { times: loopTimes };
     } else {
-      loop_mode = 'Forever';
+      loop_mode = 'forever';
     }
 
-    let quantize_mode: QuantizeMode;
-    switch (quantize) {
+    // Build QuantizeMode from UI state
+    let quantize: QuantizeMode;
+    switch (quantizeModeType) {
       case 'immediate':
-        quantize_mode = 'Immediate';
+        quantize = 'immediate';
         break;
       case 'beat':
-        quantize_mode = 'Beat';
+        quantize = 'beat';
         break;
       case 'bar':
-        quantize_mode = 'Bar';
+        quantize = 'bar';
         break;
       case 'bars2':
-        quantize_mode = { Bars: 2 };
+        quantize = { bars: 2 };
         break;
       case 'bars4':
-        quantize_mode = { Bars: 4 };
+        quantize = { bars: 4 };
         break;
       case 'bars8':
-        quantize_mode = { Bars: 8 };
+        quantize = { bars: 8 };
         break;
       default:
-        quantize_mode = 'Bar';
+        quantize = 'bar';
     }
 
+    // Build CancelMode from UI state
     let cancel_mode: CancelMode;
-    if (cancelMode === 'none') {
-      cancel_mode = 'None';
-    } else if (cancelMode === 'tag' && tag) {
-      cancel_mode = { CancelByTag: tag };
-    } else if (cancelMode === 'all') {
-      cancel_mode = 'CancelAll';
+    if (cancelModeType === 'none') {
+      cancel_mode = 'none';
+    } else if (cancelModeType === 'tag' && tag) {
+      cancel_mode = { cancel_by_tag: tag };
+    } else if (cancelModeType === 'all') {
+      cancel_mode = 'cancel_all';
     } else {
-      cancel_mode = 'None';
+      cancel_mode = 'none';
     }
 
     const fugue: ComposerFugue = {
@@ -133,12 +138,12 @@ export const FugueComposer: React.FC<FugueComposerProps> = ({
       events,
       duration_beats: durationBeats,
       loop_mode,
-      quantize: quantize_mode,
+      quantize,
       cancel_mode,
     };
 
     onQueue(fugue);
-  }, [events, durationBeats, tag, loopMode, loopTimes, quantize, cancelMode, onQueue]);
+  }, [events, durationBeats, tag, loopModeType, loopTimes, quantizeModeType, cancelModeType, onQueue]);
 
   const handleClear = useCallback(() => {
     setEvents([]);
@@ -177,12 +182,12 @@ export const FugueComposer: React.FC<FugueComposerProps> = ({
 
         <div className="control-group">
           <label>Loop</label>
-          <select value={loopMode} onChange={(e) => setLoopMode(e.target.value as 'once' | 'times' | 'forever')}>
+          <select value={loopModeType} onChange={(e) => setLoopModeType(e.target.value as 'once' | 'times' | 'forever')}>
             <option value="once">Once</option>
             <option value="times">Times</option>
             <option value="forever">Forever</option>
           </select>
-          {loopMode === 'times' && (
+          {loopModeType === 'times' && (
             <input
               type="number"
               min={1}
@@ -196,7 +201,7 @@ export const FugueComposer: React.FC<FugueComposerProps> = ({
 
         <div className="control-group">
           <label>Quantize</label>
-          <select value={quantize} onChange={(e) => setQuantize(e.target.value as 'immediate' | 'beat' | 'bar' | 'bars2' | 'bars4' | 'bars8')}>
+          <select value={quantizeModeType} onChange={(e) => setQuantizeModeType(e.target.value)}>
             <option value="immediate">Immediate</option>
             <option value="beat">1 Beat</option>
             <option value="bar">1 Bar</option>
@@ -208,7 +213,7 @@ export const FugueComposer: React.FC<FugueComposerProps> = ({
 
         <div className="control-group">
           <label>Cancel</label>
-          <select value={cancelMode} onChange={(e) => setCancelMode(e.target.value as 'none' | 'tag' | 'all')}>
+          <select value={cancelModeType} onChange={(e) => setCancelModeType(e.target.value as 'none' | 'tag' | 'all')}>
             <option value="none">None</option>
             <option value="tag">Same Tag</option>
             <option value="all">All</option>

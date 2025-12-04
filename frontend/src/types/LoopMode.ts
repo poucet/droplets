@@ -3,4 +3,4 @@
 /**
  * How a fugue should loop
  */
-export type LoopMode = "Once" | { "Times": number } | "Forever";
+export type LoopMode = "once" | { "times": number } | "forever";
