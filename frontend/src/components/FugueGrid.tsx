@@ -7,22 +7,10 @@
  * - Playhead synced to transport position
  */
 
-import React, { useMemo, useCallback, useState, useRef, useEffect } from 'react';
-import type { TimedFugueEvent, FugueEvent } from '../types';
+import React, { useMemo } from 'react';
+import type { TimedFugueEvent } from '../types';
+import { NoteLayer, NoteCell } from './NoteLayer';
 import './FugueGrid.css';
-
-// Drag operation types
-type DragType = 'move' | 'resize-start' | 'resize-end';
-
-interface DragState {
-  type: DragType;
-  noteKey: string;           // `${note}-${beat}` identifier
-  originalBeat: number;
-  originalNote: number;
-  originalDuration: number;
-  startX: number;
-  startY: number;
-}
 
 // Note names for display
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -34,33 +22,25 @@ export interface FugueGridProps {
   durationBeats: number;
 
   // Playback
-  playheadBeat?: number;        // undefined = no playhead shown
-  isPlaying?: boolean;          // affects playhead animation style
+  playheadBeat?: number;
+  isPlaying?: boolean;
 
   // Display options
   mode: 'view' | 'edit';
-  noteRange?: { min: number; max: number };  // default: auto from events or 48-72
-  visibleCCs?: number[];        // which CC lanes to show (default: auto from events)
-  beatsPerBar?: number;         // for grid lines (default: 4)
+  noteRange?: { min: number; max: number };
+  visibleCCs?: number[];
+  beatsPerBar?: number;
 
   // Edit mode callbacks
   onEventsChange?: (events: TimedFugueEvent[]) => void;
 
   // Edit mode options
-  midiChannel?: number;         // MIDI channel for new notes (default: 0)
+  midiChannel?: number;
 
   // Sizing
-  pixelsPerBeat?: number;       // horizontal zoom (default: 40)
-  noteHeight?: number;          // vertical note size (default: 16)
-  ccLaneHeight?: number;        // CC automation lane height (default: 60)
-}
-
-interface NoteCell {
-  beat: number;
-  note: number;
-  velocity: number;
-  duration: number; // in beats
-  channel: number;
+  pixelsPerBeat?: number;
+  noteHeight?: number;
+  ccLaneHeight?: number;
 }
 
 interface CCPoint {
@@ -86,16 +66,13 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
 }) => {
   // Parse events into notes and CC points
   const { notes, ccPoints, autoNoteRange, autoCCs } = useMemo(() => {
-    const noteMap = new Map<string, NoteCell>(); // key: `${note}-${beat}`
-    const ccMap = new Map<number, CCPoint[]>(); // key: cc number
+    const noteMap = new Map<string, NoteCell>();
+    const ccMap = new Map<number, CCPoint[]>();
     let minNote = 127;
     let maxNote = 0;
     const ccSet = new Set<number>();
 
-    // Track active notes for calculating duration
     const activeNotes = new Map<number, { beat: number; velocity: number; channel: number }>();
-
-    // Sort events by beat
     const sortedEvents = [...events].sort((a, b) => a.beat_offset - b.beat_offset);
 
     for (const { beat_offset, event } of sortedEvents) {
@@ -112,7 +89,7 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
             beat: start.beat,
             note: event.note,
             velocity: start.velocity,
-            duration: Math.max(duration, 0.25), // minimum duration
+            duration: Math.max(duration, 0.25),
             channel: start.channel,
           });
           activeNotes.delete(event.note);
@@ -125,7 +102,7 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
       }
     }
 
-    // Handle notes that don't have explicit note-off
+    // Handle notes without explicit note-off
     Array.from(activeNotes.entries()).forEach(([note, start]) => {
       const key = `${note}-${start.beat}`;
       noteMap.set(key, {
@@ -160,195 +137,6 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
   const noteGridHeight = noteCount * noteHeight;
   const totalCCHeight = visibleCCs.length * ccLaneHeight;
 
-  // Drag state for note manipulation
-  const [dragState, setDragState] = useState<DragState | null>(null);
-  const svgRef = useRef<SVGSVGElement>(null);
-
-  // Snap beat to grid (16th notes)
-  const snapBeat = (beat: number) => Math.round(beat * 4) / 4;
-
-  // Update note in events array
-  const updateNote = useCallback((
-    originalBeat: number,
-    originalNote: number,
-    newBeat: number,
-    newNote: number,
-    newDuration: number,
-    channel: number,
-    velocity: number
-  ) => {
-    if (!onEventsChange) return;
-
-    // Remove the original note events
-    const filteredEvents = events.filter(e => {
-      const ev = e.event;
-      if (ev.type === 'note_on') {
-        if (Math.abs(e.beat_offset - originalBeat) < 0.01 && ev.note === originalNote) {
-          return false;
-        }
-      }
-      if (ev.type === 'note_off') {
-        if (ev.note === originalNote) {
-          // Find if this note-off corresponds to our note-on
-          const noteOnBeat = events.find(e2 =>
-            e2.event.type === 'note_on' &&
-            Math.abs(e2.beat_offset - originalBeat) < 0.01 &&
-            e2.event.note === originalNote
-          );
-          if (noteOnBeat && e.beat_offset > originalBeat) {
-            return false;
-          }
-        }
-      }
-      return true;
-    });
-
-    // Add the updated note
-    const noteOn: TimedFugueEvent = {
-      beat_offset: newBeat,
-      event: { type: 'note_on', channel, note: newNote, velocity },
-    };
-    const noteOff: TimedFugueEvent = {
-      beat_offset: newBeat + newDuration,
-      event: { type: 'note_off', channel, note: newNote },
-    };
-
-    onEventsChange([...filteredEvents, noteOn, noteOff]);
-  }, [events, onEventsChange]);
-
-  // Handle drag start on a note
-  const handleNoteDragStart = useCallback((
-    e: React.MouseEvent,
-    cell: NoteCell,
-    dragType: DragType
-  ) => {
-    if (mode !== 'edit') return;
-    e.stopPropagation();
-    e.preventDefault();
-
-    setDragState({
-      type: dragType,
-      noteKey: `${cell.note}-${cell.beat}`,
-      originalBeat: cell.beat,
-      originalNote: cell.note,
-      originalDuration: cell.duration,
-      startX: e.clientX,
-      startY: e.clientY,
-    });
-  }, [mode]);
-
-  // Handle drag move
-  useEffect(() => {
-    if (!dragState || mode !== 'edit') return;
-
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!svgRef.current || !dragState) return;
-
-      const deltaX = e.clientX - dragState.startX;
-      const deltaY = e.clientY - dragState.startY;
-      const beatDelta = deltaX / pixelsPerBeat;
-      const noteDelta = -Math.round(deltaY / noteHeight);
-
-      const cell = notes.find(n =>
-        Math.abs(n.beat - dragState.originalBeat) < 0.01 &&
-        n.note === dragState.originalNote
-      );
-      if (!cell) return;
-
-      let newBeat = dragState.originalBeat;
-      let newNote = dragState.originalNote;
-      let newDuration = dragState.originalDuration;
-
-      switch (dragState.type) {
-        case 'move':
-          newBeat = snapBeat(Math.max(0, dragState.originalBeat + beatDelta));
-          newNote = Math.max(noteRange.min, Math.min(noteRange.max, dragState.originalNote + noteDelta));
-          break;
-        case 'resize-start':
-          const startDelta = snapBeat(beatDelta);
-          newBeat = Math.max(0, dragState.originalBeat + startDelta);
-          newDuration = Math.max(0.25, dragState.originalDuration - startDelta);
-          break;
-        case 'resize-end':
-          newDuration = Math.max(0.25, snapBeat(dragState.originalDuration + beatDelta));
-          break;
-      }
-
-      // Ensure note doesn't extend past duration
-      if (newBeat + newDuration > durationBeats) {
-        newDuration = durationBeats - newBeat;
-      }
-
-      updateNote(
-        dragState.originalBeat,
-        dragState.originalNote,
-        newBeat,
-        newNote,
-        newDuration,
-        cell.channel,
-        cell.velocity
-      );
-
-      // Update drag state to track from new position
-      setDragState(prev => prev ? {
-        ...prev,
-        originalBeat: newBeat,
-        originalNote: newNote,
-        originalDuration: newDuration,
-        startX: e.clientX,
-        startY: e.clientY,
-      } : null);
-    };
-
-    const handleMouseUp = () => {
-      setDragState(null);
-    };
-
-    document.addEventListener('mousemove', handleMouseMove);
-    document.addEventListener('mouseup', handleMouseUp);
-
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [dragState, mode, notes, noteRange, pixelsPerBeat, noteHeight, durationBeats, updateNote]);
-
-  // Handle note cell click in edit mode
-  const handleNoteClick = useCallback((beat: number, note: number) => {
-    if (mode !== 'edit' || !onEventsChange) return;
-
-    // Find if there's already a note at this position
-    const existingIndex = events.findIndex(e =>
-      e.event.type === 'note_on' &&
-      Math.abs(e.beat_offset - beat) < 0.125 &&
-      e.event.note === note
-    );
-
-    if (existingIndex >= 0) {
-      // Remove note (and its note-off)
-      const newEvents = events.filter((e, i) => {
-        if (i === existingIndex) return false;
-        // Also remove corresponding note-off
-        if (e.event.type === 'note_off' && e.event.note === note && e.beat_offset > beat) {
-          return false;
-        }
-        return true;
-      });
-      onEventsChange(newEvents);
-    } else {
-      // Add new note (default 0.5 beat duration)
-      const noteOn: TimedFugueEvent = {
-        beat_offset: beat,
-        event: { type: 'note_on', channel: midiChannel, note, velocity: 100 },
-      };
-      const noteOff: TimedFugueEvent = {
-        beat_offset: beat + 0.5,
-        event: { type: 'note_off', channel: midiChannel, note },
-      };
-      onEventsChange([...events, noteOn, noteOff]);
-    }
-  }, [mode, events, onEventsChange, midiChannel]);
-
   // Render beat grid lines
   const renderGridLines = () => {
     const lines = [];
@@ -369,11 +157,11 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
     return lines;
   };
 
-  // Render note rows
+  // Render note rows (background)
   const renderNoteRows = () => {
     const rows = [];
     for (let i = 0; i < noteCount; i++) {
-      const note = noteRange.max - i; // Top to bottom = high to low
+      const note = noteRange.max - i;
       const y = i * noteHeight;
       const isBlack = isBlackKey(note);
       rows.push(
@@ -390,107 +178,13 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
     return rows;
   };
 
-  // Render note cells (the actual notes) with drag handles in edit mode
-  const renderNotes = () => {
-    const handleWidth = 6; // Width of resize handles
-
-    return notes.map((cell, i) => {
-      const x = cell.beat * pixelsPerBeat;
-      const y = (noteRange.max - cell.note) * noteHeight;
-      const width = Math.max(cell.duration * pixelsPerBeat - 1, 4);
-      const opacity = 0.4 + (cell.velocity / 127) * 0.6;
-      const isDragging = dragState?.noteKey === `${cell.note}-${cell.beat}`;
-
-      if (mode === 'edit') {
-        return (
-          <g key={`${cell.note}-${cell.beat}-${i}`} className={`note-group ${isDragging ? 'dragging' : ''}`}>
-            {/* Main note body - drag to move */}
-            <rect
-              x={x + handleWidth}
-              y={y + 1}
-              width={Math.max(width - handleWidth * 2, 2)}
-              height={noteHeight - 2}
-              className="note-cell note-body"
-              style={{ opacity }}
-              onMouseDown={(e) => handleNoteDragStart(e, cell, 'move')}
-            />
-            {/* Left resize handle */}
-            <rect
-              x={x}
-              y={y + 1}
-              width={handleWidth}
-              height={noteHeight - 2}
-              rx={2}
-              className="note-cell note-handle note-handle-start"
-              style={{ opacity }}
-              onMouseDown={(e) => handleNoteDragStart(e, cell, 'resize-start')}
-            />
-            {/* Right resize handle */}
-            <rect
-              x={x + width - handleWidth}
-              y={y + 1}
-              width={handleWidth}
-              height={noteHeight - 2}
-              rx={2}
-              className="note-cell note-handle note-handle-end"
-              style={{ opacity }}
-              onMouseDown={(e) => handleNoteDragStart(e, cell, 'resize-end')}
-            />
-          </g>
-        );
-      }
-
-      // View mode - simple rectangle
-      return (
-        <rect
-          key={`${cell.note}-${cell.beat}-${i}`}
-          x={x}
-          y={y + 1}
-          width={width}
-          height={noteHeight - 2}
-          rx={2}
-          className="note-cell"
-          style={{ opacity }}
-        />
-      );
-    });
-  };
-
-  // Render clickable cells for edit mode
-  const renderEditCells = () => {
-    if (mode !== 'edit') return null;
-
-    const cells = [];
-    const beatSnap = 0.25; // Snap to 16th notes
-    const numCells = Math.ceil(durationBeats / beatSnap);
-
-    for (let i = 0; i < numCells; i++) {
-      for (let j = 0; j < noteCount; j++) {
-        const beat = i * beatSnap;
-        const note = noteRange.max - j;
-        cells.push(
-          <rect
-            key={`edit-${beat}-${note}`}
-            x={beat * pixelsPerBeat}
-            y={j * noteHeight}
-            width={beatSnap * pixelsPerBeat}
-            height={noteHeight}
-            className="edit-cell"
-            onClick={() => handleNoteClick(beat, note)}
-          />
-        );
-      }
-    }
-    return cells;
-  };
-
   // Render piano roll sidebar
   const renderPianoKeys = () => {
     const keys = [];
     for (let i = 0; i < noteCount; i++) {
       const note = noteRange.max - i;
       const isBlack = isBlackKey(note);
-      const showLabel = note % 12 === 0; // Show C notes
+      const showLabel = note % 12 === 0;
       keys.push(
         <div
           key={note}
@@ -510,7 +204,6 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
       const points = ccPoints.get(cc) || [];
       const y = laneIndex * ccLaneHeight;
 
-      // Build SVG path for CC line
       let pathD = '';
       if (points.length > 0) {
         const sorted = [...points].sort((a, b) => a.beat - b.beat);
@@ -552,7 +245,6 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
   const renderPlayhead = () => {
     if (playheadBeat === undefined) return null;
 
-    // Handle looping - wrap playhead within duration
     const wrappedBeat = playheadBeat % durationBeats;
     const x = wrappedBeat * pixelsPerBeat;
 
@@ -571,7 +263,6 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
     <div className={`fugue-grid ${mode}`}>
       <div className="piano-sidebar">
         {renderPianoKeys()}
-        {/* Spacer for CC lanes */}
         {visibleCCs.length > 0 && (
           <div className="cc-sidebar" style={{ height: totalCCHeight }}>
             {visibleCCs.map(cc => (
@@ -585,7 +276,6 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
 
       <div className="grid-scroll">
         <svg
-          ref={svgRef}
           width={gridWidth}
           height={noteGridHeight + totalCCHeight}
           className="grid-svg"
@@ -594,8 +284,17 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
           <g className="note-grid">
             {renderNoteRows()}
             {renderGridLines()}
-            {mode === 'edit' && renderEditCells()}
-            {renderNotes()}
+            <NoteLayer
+              notes={notes}
+              events={events}
+              mode={mode}
+              noteRange={noteRange}
+              durationBeats={durationBeats}
+              pixelsPerBeat={pixelsPerBeat}
+              noteHeight={noteHeight}
+              midiChannel={midiChannel}
+              onEventsChange={onEventsChange}
+            />
           </g>
 
           {/* CC lanes */}
