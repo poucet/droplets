@@ -19,7 +19,7 @@ use clack_plugin::prelude::{InputEvents, OutputEvents};
 use clack_plugin::process::{Audio, Events, PluginAudioConfiguration, Process, ProcessStatus};
 use rtrb::Consumer;
 
-use crate::fugue::{FugueInfoHandle, FugueSequencer};
+use crate::fugue::{FugueInfoHandle, FugueSequencer, TransportState};
 use crate::mcp::{CcMessage, MidiMessage, NoteMessage, PerNoteExpressionMessage, PerNoteExpressionType};
 use crate::{DropletMainThread, DropletShared};
 
@@ -230,10 +230,22 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
             self.output_midi_message(&msg, sample_offset, &mut events);
         }
 
-        // Update fugue info cache for MCP listing (lock-free)
+        // Update caches for MCP/GUI (lock-free)
+        // Always update transport for smooth playhead in UI
+        self.fugue_info_handle.update_transport(TransportState {
+            beat: current_beat,
+            tempo,
+            playing: is_playing,
+            time_sig_numerator: time_sig_num,
+        });
+
+        // Update fugue info and definitions when there are active fugues
         if self.fugue_sequencer.active_count() > 0 || is_playing {
             let infos = self.fugue_sequencer.list_fugues(current_beat);
             self.fugue_info_handle.update(infos);
+
+            let definitions = self.fugue_sequencer.get_definitions();
+            self.fugue_info_handle.update_definitions(definitions);
         }
 
         // For VSTi: Output silence to audio buffers (required for instrument classification)

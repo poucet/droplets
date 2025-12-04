@@ -1,76 +1,101 @@
 // SimplyVST message system for communication between frontend and Rust
 (function() {
   const listeners = new Map();
-  
+
   // Initialize namespace
   window.simplyvst = window.simplyvst || {};
-  
-  // Send message to plugin
-  window.simplyvst.sendToPlugin = function(msg) {
-    window.ipc.postMessage(JSON.stringify(msg));
-  };
-  
-  // Add message listener
-  window.simplyvst.addListener = function(messageType, callback) {
-    if (!listeners.has(messageType)) {
-      listeners.set(messageType, []);
+
+  // Declare that we're running in plugin mode (injected by wry)
+  window.simplyvst.isPluginMode = true;
+
+  // API base URL for fetch requests (custom protocol in plugin)
+  window.simplyvst.apiBase = 'droplets://api';
+
+  // ==========================================================================
+  // WebSocket-like shim for IPC communication
+  // ==========================================================================
+  // This allows the frontend to use the same WebSocket API in both plugin
+  // and standalone mode. In plugin mode, we receive push messages from Rust
+  // via evaluate_script calling window.simplyvst._onRealtimeMessage().
+
+  // Active IPCWebSocket instances that should receive messages
+  const activeConnections = new Set();
+
+  class IPCWebSocket {
+    constructor(url) {
+      this.url = url;
+      this.readyState = 0; // CONNECTING
+      this.onopen = null;
+      this.onmessage = null;
+      this.onclose = null;
+      this.onerror = null;
+
+      // Register this connection
+      activeConnections.add(this);
+
+      // Connect on next tick (like real WebSocket)
+      setTimeout(() => this._connect(), 0);
     }
-    listeners.get(messageType).push(callback);
-    
-    // Return unsubscribe function
-    return function() {
-      window.simplyvst.removeListener(messageType, callback);
-    };
-  };
-  
-  // Remove specific listener
-  window.simplyvst.removeListener = function(messageType, callback) {
-    const callbacks = listeners.get(messageType);
-    if (callbacks) {
-      const index = callbacks.indexOf(callback);
-      if (index > -1) {
-        callbacks.splice(index, 1);
+
+    _connect() {
+      this.readyState = 1; // OPEN
+      if (this.onopen) {
+        this.onopen({ type: 'open' });
       }
     }
-  };
-  
-  // Remove all listeners for a message type
-  window.simplyvst.removeAllListeners = function(messageType) {
-    if (messageType) {
-      listeners.delete(messageType);
-    } else {
-      listeners.clear();
-    }
-  };
-  
-  // Called from Rust via evaluate_script to send JSON to frontend
-  window.simplyvst.receiveFromPlugin = function(msg) {
-    try {
-      const json = JSON.parse(msg);
-      const messageType = json.type || 'default';
-      
-      // Call all registered listeners for this message type
-      const callbacks = listeners.get(messageType);
-      if (callbacks) {
-        callbacks.forEach(callback => {
-          try {
-            callback(json.data || json, json);
-          } catch (error) {
-            console.error('Error in message listener:', error);
-          }
+
+    // Called when we receive a message from Rust
+    _receiveMessage(data) {
+      if (this.readyState !== 1) return;
+      if (this.onmessage) {
+        this.onmessage({
+          type: 'message',
+          data: typeof data === 'string' ? data : JSON.stringify(data)
         });
       }
-      
-      // Also call legacy handler if it exists
-      if (window.onPluginMessage) {
-        window.onPluginMessage(json);
+    }
+
+    send(data) {
+      // Send to plugin via IPC
+      if (window.ipc) {
+        window.ipc.postMessage(JSON.stringify({ type: 'ws_message', data }));
       }
-    } catch (error) {
-      console.error('Error parsing plugin message:', error);
+    }
+
+    close() {
+      activeConnections.delete(this);
+      this.readyState = 3; // CLOSED
+      if (this.onclose) {
+        this.onclose({ type: 'close' });
+      }
+    }
+  }
+
+  // Expose the shim
+  window.simplyvst.WebSocket = IPCWebSocket;
+
+  // Called by Rust via evaluate_script to push realtime messages
+  window.simplyvst._onRealtimeMessage = function(data) {
+    const jsonStr = typeof data === 'string' ? data : JSON.stringify(data);
+    for (const conn of activeConnections) {
+      conn._receiveMessage(jsonStr);
     }
   };
-  
-  // Legacy support - keep for backward compatibility
-  window.sendToPlugin = window.simplyvst.sendToPlugin;
-  window.onPluginMessage = null;
+
+  // Convenience: Push transport update
+  window.simplyvst._pushTransport = function(transport) {
+    window.simplyvst._onRealtimeMessage({
+      type: 'transport',
+      transport: transport
+    });
+  };
+
+  // Convenience: Push fugues update
+  window.simplyvst._pushFugues = function(infos, definitions) {
+    window.simplyvst._onRealtimeMessage({
+      type: 'fugues',
+      infos: infos,
+      definitions: definitions
+    });
+  };
 })();

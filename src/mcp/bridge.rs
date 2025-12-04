@@ -422,6 +422,13 @@ impl CcBridge {
         }
     }
 
+    /// Get params for the default instance (first registered)
+    /// Used by GUI server for HTTP API endpoints
+    pub fn get_default_params() -> Option<ParamsRef> {
+        let reg = registry().read().ok()?;
+        reg.values().next().map(|e| Arc::clone(&e.params))
+    }
+
     /// Set a parameter slot value (called from MCP server)
     ///
     /// If the slot is mapped to a CC, sends the MIDI CC message through the ring buffer.

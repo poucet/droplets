@@ -1,6 +1,6 @@
 //! Fugue playback state - tracks active notes and playback position
 
-use super::{FugueDefinition, FugueInfo, LoopMode};
+use super::types::{FugueDefinition, FugueInfo, LoopMode};
 
 /// Runtime state for an active fugue
 pub struct FugueState {
@@ -130,7 +130,6 @@ impl FugueState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fugue::{FugueDefinition, TimedFugueEvent, FugueEvent};
 
     fn make_test_fugue() -> FugueDefinition {
         FugueDefinition::new(vec![], 4.0)

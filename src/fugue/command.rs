@@ -1,6 +1,6 @@
 //! Fugue commands - messages sent from MCP thread to audio thread
 
-use super::FugueDefinition;
+use super::types::FugueDefinition;
 
 /// Commands sent through the ring buffer from MCP to audio thread
 #[derive(Debug)]

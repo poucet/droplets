@@ -1,0 +1,37 @@
+/* FugueViewer Component Styles */
+
+.fugue-viewer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: #16162a;
+  border-radius: 8px;
+  border: 1px solid #2d2d44;
+}
+
+.viewer-header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 13px;
+}
+
+.viewer-tag {
+  font-weight: 600;
+  color: #e0e0e0;
+}
+
+.viewer-loop {
+  color: #888;
+}
+
+.viewer-duration {
+  color: #666;
+}
+
+.viewer-waiting {
+  color: #ffc107;
+  font-style: italic;
+  margin-left: auto;
+}

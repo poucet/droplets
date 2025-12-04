@@ -279,7 +279,7 @@ impl Default for DropletParams {
     }
 }
 
-/// Slot info for serialization
+/// Slot info for serialization (internal use - API type in gui::api::SlotInfo)
 #[derive(Clone, serde::Serialize)]
 pub struct SlotInfo {
     pub index: usize,

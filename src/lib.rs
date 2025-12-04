@@ -62,8 +62,9 @@ impl DefaultPluginFactory for DropletPlugin {
         let (fugue_consumer, fugue_info_handle) = FugueBridge::register(&instance_id, &instance_id);
         log::info!("Registered MCP instance: {}", instance_id);
 
-        // Start singleton MCP server (only first instance actually starts it)
+        // Start singleton servers (only first instance actually starts them)
         mcp::start_server(mcp::DEFAULT_MCP_PORT);
+        gui::server::start_server(gui::server::DEFAULT_GUI_PORT);
 
         Ok(DropletShared {
             host,
@@ -121,11 +122,23 @@ pub struct DropletMainThread<'a> {
 
 impl<'a> PluginMainThread<'a, DropletShared<'a>> for DropletMainThread<'a> {
     fn on_main_thread(&mut self) {
-        // IPC is now handled via custom protocol in gui/mod.rs
-        // This callback can be used for any future main-thread-only operations
-
         // Drain any old IPC messages (no longer used, but prevents queue buildup)
         while self.shared.ipc_receiver.try_recv().is_ok() {}
+
+        // Push realtime updates to webview if GUI is active
+        if self.gui.is_active() {
+            // Get transport state from FugueBridge cache
+            if let Ok(transport) = FugueBridge::get_transport(&self.shared.instance_id) {
+                self.gui.push_transport(&transport);
+            }
+
+            // Get fugue info from FugueBridge cache
+            if let Ok(infos) = FugueBridge::get_fugue_info(&self.shared.instance_id) {
+                if let Ok(definitions) = FugueBridge::get_definitions(&self.shared.instance_id) {
+                    self.gui.push_fugues(&infos, &definitions);
+                }
+            }
+        }
     }
 }
 

@@ -10,7 +10,8 @@ use rtrb::{Consumer, Producer, RingBuffer};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-use super::{FugueCommand, FugueDefinition, FugueInfo};
+use super::command::FugueCommand;
+use super::types::{FugueDefinition, FugueInfo, TransportState};
 
 /// Ring buffer size for fugue commands
 /// Larger than MIDI ring buffer because FugueDefinition can be big
@@ -20,8 +21,12 @@ const RING_BUFFER_SIZE: usize = 64;
 struct FugueInstanceEntry {
     name: String,
     producer: Mutex<Producer<FugueCommand>>,
-    /// Lock-free cache of fugue info (updated by audio thread, read by MCP)
+    /// Lock-free cache of fugue info (updated by audio thread, read by MCP/GUI)
     info_cache: Arc<ArcSwap<Vec<FugueInfo>>>,
+    /// Lock-free cache of transport state (updated by audio thread, read by GUI)
+    transport_cache: Arc<ArcSwap<TransportState>>,
+    /// Lock-free cache of full fugue definitions (for UI visualization)
+    definitions_cache: Arc<ArcSwap<Vec<FugueDefinition>>>,
 }
 
 /// Global registry of fugue producers (keyed by instance ID)
@@ -34,15 +39,27 @@ fn registry() -> &'static RwLock<HashMap<String, FugueInstanceEntry>> {
 /// Bridge for sending fugue commands from MCP to audio thread
 pub struct FugueBridge;
 
-/// Handle for the audio thread to update fugue info without locking
+/// Handle for the audio thread to update caches without locking
 pub struct FugueInfoHandle {
     info_cache: Arc<ArcSwap<Vec<FugueInfo>>>,
+    transport_cache: Arc<ArcSwap<TransportState>>,
+    definitions_cache: Arc<ArcSwap<Vec<FugueDefinition>>>,
 }
 
 impl FugueInfoHandle {
     /// Update the fugue info cache (lock-free, safe for audio thread)
     pub fn update(&self, infos: Vec<FugueInfo>) {
         self.info_cache.store(Arc::new(infos));
+    }
+
+    /// Update the transport state cache (lock-free, safe for audio thread)
+    pub fn update_transport(&self, transport: TransportState) {
+        self.transport_cache.store(Arc::new(transport));
+    }
+
+    /// Update the fugue definitions cache (lock-free, safe for audio thread)
+    pub fn update_definitions(&self, definitions: Vec<FugueDefinition>) {
+        self.definitions_cache.store(Arc::new(definitions));
     }
 }
 
@@ -54,6 +71,8 @@ impl FugueBridge {
     pub fn register(id: &str, name: &str) -> (Consumer<FugueCommand>, FugueInfoHandle) {
         let (producer, consumer) = RingBuffer::new(RING_BUFFER_SIZE);
         let info_cache = Arc::new(ArcSwap::from_pointee(Vec::new()));
+        let transport_cache = Arc::new(ArcSwap::from_pointee(TransportState::default()));
+        let definitions_cache = Arc::new(ArcSwap::from_pointee(Vec::new()));
 
         let mut reg = registry().write().unwrap();
         reg.insert(
@@ -62,11 +81,20 @@ impl FugueBridge {
                 name: name.to_string(),
                 producer: Mutex::new(producer),
                 info_cache: Arc::clone(&info_cache),
+                transport_cache: Arc::clone(&transport_cache),
+                definitions_cache: Arc::clone(&definitions_cache),
             },
         );
 
         log::info!("FugueBridge: Registered instance '{}'", id);
-        (consumer, FugueInfoHandle { info_cache })
+        (
+            consumer,
+            FugueInfoHandle {
+                info_cache,
+                transport_cache,
+                definitions_cache,
+            },
+        )
     }
 
     /// Unregister a plugin instance
@@ -171,7 +199,7 @@ fn find_entry<'a>(
 }
 
 impl FugueBridge {
-    /// Get cached fugue info for an instance (called from MCP)
+    /// Get cached fugue info for an instance (called from MCP/GUI)
     ///
     /// This reads from the lock-free ArcSwap cache updated by the audio thread.
     pub fn get_fugue_info(instance: &str) -> Result<Vec<FugueInfo>, &'static str> {
@@ -181,5 +209,27 @@ impl FugueBridge {
         // Load from the lock-free cache
         let infos = entry.info_cache.load();
         Ok((**infos).clone())
+    }
+
+    /// Get cached transport state for an instance (called from GUI)
+    pub fn get_transport(instance: &str) -> Result<TransportState, &'static str> {
+        let reg = registry().read().unwrap();
+        let entry = find_entry(&reg, instance)?;
+        let transport = entry.transport_cache.load();
+        Ok(**transport)
+    }
+
+    /// Get cached fugue definitions for an instance (called from GUI for visualization)
+    pub fn get_definitions(instance: &str) -> Result<Vec<FugueDefinition>, &'static str> {
+        let reg = registry().read().unwrap();
+        let entry = find_entry(&reg, instance)?;
+        let defs = entry.definitions_cache.load();
+        Ok((**defs).clone())
+    }
+
+    /// Get a specific fugue definition by ID
+    pub fn get_definition(instance: &str, id: u64) -> Result<Option<FugueDefinition>, &'static str> {
+        let defs = Self::get_definitions(instance)?;
+        Ok(defs.into_iter().find(|d| d.id == id))
     }
 }

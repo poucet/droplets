@@ -46,7 +46,7 @@ fastrand = "2.0"
 
 # MCP server for AI control
 rmcp = { version = "0.9.1", features = ["server", "transport-streamable-http-server"] }
-axum = "0.7"
+axum = { version = "0.7", features = ["ws"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros"] }
 tokio-util = "0.7"
 tower = "0.5"
@@ -57,6 +57,13 @@ rtrb = "0.3"
 
 # Lock-free atomic pointer swapping for audio-safe data sharing
 arc-swap = "1.7"
+
+# TypeScript type generation from Rust types
+ts-rs = "10"
+
+# WebSocket support for real-time UI updates
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
 
 [features]
 default = []

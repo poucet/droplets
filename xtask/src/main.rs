@@ -18,15 +18,17 @@ enum Commands {
         /// Build profile to use
         #[arg(long, short, default_value = "release")]
         profile: Profile,
-        
+
         /// Plugin format to build
         #[arg(long, short, default_value = "both")]
         format: Format,
-        
+
         /// Enable development GUI features (devtools, debugging)
         #[arg(long)]
         dev_gui: bool,
     },
+    /// Generate TypeScript types from Rust structs
+    GenTypes,
 }
 
 #[derive(ValueEnum, Clone)]
@@ -58,13 +60,16 @@ fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Build { profile, format, dev_gui } => {
             let profile_str = profile.as_str();
-            
-            // Build the React frontend first
+
+            // Generate TypeScript types first
+            gen_types()?;
+
+            // Build the React frontend
             build_frontend()?;
-            
+
             // Then, build the plugin
             build_plugin(profile_str, dev_gui)?;
-            
+
             // Finally, create the bundle(s)
             match format {
                 Format::Clap => create_clap_bundle(profile_str)?,
@@ -75,8 +80,42 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Commands::GenTypes => {
+            gen_types()?;
+        }
     }
     
+    Ok(())
+}
+
+fn gen_types() -> anyhow::Result<()> {
+    println!("Generating TypeScript types from Rust...");
+
+    // Determine project root
+    let current_dir = env::current_dir()?;
+    let project_root = if current_dir.file_name().and_then(|n| n.to_str()) == Some("xtask") {
+        current_dir.parent().unwrap().to_path_buf()
+    } else {
+        current_dir
+    };
+
+    // Ensure the types directory exists
+    let types_dir = project_root.join("frontend/src/types");
+    fs::create_dir_all(&types_dir)?;
+
+    // Run cargo test with TS_RS_EXPORT_DIR set
+    let status = Command::new("cargo")
+        .arg("test")
+        .arg("export_bindings")
+        .env("TS_RS_EXPORT_DIR", "frontend/src/types")
+        .current_dir(&project_root)
+        .status()?;
+
+    if !status.success() {
+        return Err(anyhow::anyhow!("Failed to generate TypeScript types"));
+    }
+
+    println!("TypeScript types generated at: {}", types_dir.display());
     Ok(())
 }
 

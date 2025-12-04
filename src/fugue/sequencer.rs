@@ -4,7 +4,9 @@
 
 use rtrb::Consumer;
 
-use super::{CancelMode, FugueCommand, FugueEvent, FugueInfo, FugueState, QuantizeMode};
+use super::command::FugueCommand;
+use super::state::FugueState;
+use super::types::{CancelMode, FugueDefinition, FugueEvent, FugueInfo, QuantizeMode};
 use crate::mcp::{CcMessage, MidiMessage, NoteMessage, PerNoteExpressionMessage};
 
 /// Buffer capacity for output MIDI messages per process cycle
@@ -267,6 +269,15 @@ impl FugueSequencer {
     /// Get the number of active fugues
     pub fn active_count(&self) -> usize {
         self.fugues.iter().filter(|f| !f.is_finished()).count()
+    }
+
+    /// Get all active fugue definitions (for UI visualization)
+    pub fn get_definitions(&self) -> Vec<FugueDefinition> {
+        self.fugues
+            .iter()
+            .filter(|f| !f.is_finished())
+            .map(|f| f.definition.clone())
+            .collect()
     }
 }
 
