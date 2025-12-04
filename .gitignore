@@ -7,4 +7,5 @@ Cargo.lock
 .DS_Store
 /frontend/node_modules/
 .jj-worskpaces
+/frontend/package-lock.json.jj-workspaces/
 /frontend/package-lock.json
