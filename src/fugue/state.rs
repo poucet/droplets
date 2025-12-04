@@ -123,6 +123,7 @@ impl FugueState {
             is_waiting: self.waiting_for_start,
             progress_beats: progress,
             duration_beats: self.definition.duration_beats,
+            start_beat: self.start_beat,
         }
     }
 }

@@ -306,7 +306,8 @@ async fn handle_socket(socket: WebSocket, instance: String) {
         let mut fugue_interval = tokio::time::interval(FUGUE_UPDATE_INTERVAL);
 
         let mut last_transport: Option<TransportState> = None;
-        let mut last_fugue_count: usize = 0;
+        let mut last_fugue_ids: Vec<u64> = Vec::new();
+        let mut last_waiting_states: Vec<bool> = Vec::new();
 
         loop {
             tokio::select! {
@@ -334,14 +335,20 @@ async fn handle_socket(socket: WebSocket, instance: String) {
                 _ = fugue_interval.tick() => {
                     let response = api::get_fugues(&instance_for_send);
 
-                    if response.infos.len() != last_fugue_count {
+                    // Check if fugue list changed (IDs or waiting states)
+                    let current_ids: Vec<u64> = response.infos.iter().map(|f| f.id).collect();
+                    let current_waiting: Vec<bool> = response.infos.iter().map(|f| f.is_waiting).collect();
+                    let changed = current_ids != last_fugue_ids || current_waiting != last_waiting_states;
+
+                    if changed {
                         let msg = WsMessage::Fugues(response.clone());
                         if let Ok(json) = serde_json::to_string(&msg) {
                             if sender.send(Message::Text(json)).await.is_err() {
                                 break;
                             }
                         }
-                        last_fugue_count = response.infos.len();
+                        last_fugue_ids = current_ids;
+                        last_waiting_states = current_waiting;
                     }
                 }
             }

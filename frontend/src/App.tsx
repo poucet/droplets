@@ -274,6 +274,7 @@ const App: React.FC = () => {
                 <FugueList
                   fugues={fugueInfos}
                   selectedId={selectedFugueId}
+                  transport={transport}
                   onSelect={handleSelectFugue}
                   onCancel={handleCancelFugue}
                 />

@@ -261,6 +261,8 @@ pub struct FugueInfo {
     pub is_waiting: bool,
     pub progress_beats: f64,
     pub duration_beats: f64,
+    /// Absolute beat when this fugue started (for UI position calculation)
+    pub start_beat: f64,
 }
 
 /// Transport state for UI synchronization

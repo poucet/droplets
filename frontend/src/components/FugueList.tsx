@@ -3,12 +3,13 @@
  */
 
 import React from 'react';
-import type { FugueInfo } from '../types';
+import type { FugueInfo, TransportState } from '../types';
 import './FugueList.css';
 
 export interface FugueListProps {
   fugues: FugueInfo[];
   selectedId?: bigint;
+  transport: TransportState;
   onSelect: (id: bigint) => void;
   onCancel: (id: bigint) => void;
 }
@@ -16,6 +17,7 @@ export interface FugueListProps {
 export const FugueList: React.FC<FugueListProps> = ({
   fugues,
   selectedId,
+  transport,
   onSelect,
   onCancel,
 }) => {
@@ -25,8 +27,11 @@ export const FugueList: React.FC<FugueListProps> = ({
   };
 
   const getProgressPercent = (info: FugueInfo): number => {
-    if (info.duration_beats === 0) return 0;
-    return (info.progress_beats / info.duration_beats) * 100;
+    if (info.duration_beats === 0 || info.is_waiting) return 0;
+    // Compute from transport position for smooth animation
+    const localBeat = transport.beat - info.start_beat;
+    const progress = Math.max(0, localBeat % info.duration_beats);
+    return (progress / info.duration_beats) * 100;
   };
 
   if (fugues.length === 0) {

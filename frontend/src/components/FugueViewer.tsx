@@ -18,14 +18,16 @@ export const FugueViewer: React.FC<FugueViewerProps> = ({
   info,
   transport,
 }) => {
-  // Calculate playhead position within the fugue
-  // This requires knowing when the fugue started, which we approximate from progress
+  // Calculate playhead position within the fugue from transport position
+  // This allows smooth animation without constant server updates
   const playheadBeat = useMemo(() => {
-    if (!info || !transport.playing) return undefined;
+    if (!info || info.is_waiting) return undefined;
 
-    // Use progress_beats from info as the current position within the fugue
-    return info.progress_beats;
-  }, [info, transport.playing]);
+    // Compute local position from transport beat and fugue start_beat
+    const localBeat = transport.beat - info.start_beat;
+    // Clamp to fugue duration (handles looping display)
+    return Math.max(0, Math.min(localBeat % fugue.duration_beats, fugue.duration_beats));
+  }, [info, transport.beat, fugue.duration_beats]);
 
   const loopDisplay = useMemo(() => {
     if (!info) return null;

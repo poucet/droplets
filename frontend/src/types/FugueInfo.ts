@@ -3,4 +3,8 @@
 /**
  * Information about an active fugue for listing
  */
-export type FugueInfo = { id: bigint, tag: string | null, current_loop: number, total_loops: number | null, is_waiting: boolean, progress_beats: number, duration_beats: number, };
+export type FugueInfo = { id: bigint, tag: string | null, current_loop: number, total_loops: number | null, is_waiting: boolean, progress_beats: number, duration_beats: number, 
+/**
+ * Absolute beat when this fugue started (for UI position calculation)
+ */
+start_beat: number, };

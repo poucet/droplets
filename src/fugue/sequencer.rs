@@ -192,7 +192,21 @@ impl FugueSequencer {
 
             // Check if we've reached the target
             if let Some(target) = fugue.target_start_beat {
-                if target >= current_beat && target < end_beat {
+                // If playhead is past the target (e.g., transport restarted and jumped past it),
+                // recalculate the target based on current position
+                if target < current_beat {
+                    let new_target = calculate_quantize_target(
+                        &fugue.definition.quantize,
+                        current_beat,
+                        time_sig_numerator,
+                    );
+                    fugue.target_start_beat = Some(new_target);
+                    // Check the new target immediately
+                    if new_target >= current_beat && new_target < end_beat {
+                        fugue.waiting_for_start = false;
+                        fugue.start_beat = new_target;
+                    }
+                } else if target >= current_beat && target < end_beat {
                     fugue.waiting_for_start = false;
                     fugue.start_beat = target;
                 }
