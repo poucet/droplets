@@ -4,27 +4,33 @@
 
 import React, { useMemo } from 'react';
 import { FugueGrid } from './FugueGrid';
-import type { FugueDefinition, FugueInfo, TransportState } from '../types';
+import type { FugueDefinition, FugueInfo } from '../types';
+import { useBeat, useTimingManager } from '../timing';
 import './FugueViewer.css';
 
 export interface FugueViewerProps {
   fugue: FugueDefinition;
   info?: FugueInfo;
-  transport: TransportState;
   onEdit?: (fugue: FugueDefinition) => void;
 }
 
 export const FugueViewer: React.FC<FugueViewerProps> = ({
   fugue,
   info,
-  transport,
   onEdit,
 }) => {
-  // Use progress_beats from backend - already calculated correctly for loops
+  // Client-side interpolated beat for smooth playhead animation
+  const currentBeat = useBeat();
+  const timing = useTimingManager();
+
+  // Calculate playhead position using client-side interpolated beat
   const playheadBeat = useMemo(() => {
     if (!info || info.is_waiting) return undefined;
-    return info.progress_beats;
-  }, [info]);
+    const localBeat = currentBeat - info.start_beat;
+    // Wrap within duration for looping
+    const wrappedBeat = localBeat % fugue.duration_beats;
+    return Math.max(0, Math.min(wrappedBeat, fugue.duration_beats));
+  }, [info, currentBeat, fugue.duration_beats]);
 
   const loopDisplay = useMemo(() => {
     if (!info) return null;
@@ -54,9 +60,9 @@ export const FugueViewer: React.FC<FugueViewerProps> = ({
         events={fugue.events}
         durationBeats={fugue.duration_beats}
         playheadBeat={playheadBeat}
-        isPlaying={transport.playing && !info?.is_waiting}
+        isPlaying={timing.isPlaying() && !info?.is_waiting}
         mode="view"
-        beatsPerBar={transport.time_sig_numerator}
+        beatsPerBar={timing.getTimeSigNumerator()}
         pixelsPerBeat={50}
         noteHeight={14}
       />

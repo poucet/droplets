@@ -3,13 +3,13 @@
  */
 
 import React from 'react';
-import type { FugueInfo, TransportState } from '../types';
+import type { FugueInfo } from '../types';
+import { useBeat } from '../timing';
 import './FugueList.css';
 
 export interface FugueListProps {
   fugues: FugueInfo[];
   selectedId?: string;
-  transport: TransportState;
   onSelect: (id: string) => void;
   onCancel: (id: string) => void;
 }
@@ -17,10 +17,12 @@ export interface FugueListProps {
 export const FugueList: React.FC<FugueListProps> = ({
   fugues,
   selectedId,
-  transport,
   onSelect,
   onCancel,
 }) => {
+  // Client-side interpolated beat for smooth animation
+  const currentBeat = useBeat();
+
   const getLoopDisplay = (info: FugueInfo): string => {
     if (info.total_loops === null) return '∞';
     return `${info.current_loop + 1}/${info.total_loops}`;
@@ -29,10 +31,12 @@ export const FugueList: React.FC<FugueListProps> = ({
   const getProgressPercent = (info: FugueInfo): number => {
     if (info.duration_beats === 0 || info.is_waiting) return 0;
 
-    // Calculate local position from transport beat and the fugue's current start_beat
-    // start_beat advances by duration_beats on each loop iteration
-    const localBeat = transport.beat - info.start_beat;
-    const progress = Math.max(0, Math.min(localBeat, info.duration_beats));
+    // Calculate progress using client-side interpolated beat
+    // start_beat is updated by server on each loop iteration
+    const localBeat = currentBeat - info.start_beat;
+    // Wrap within duration for looping (handles case where server hasn't updated start_beat yet)
+    const wrappedBeat = localBeat % info.duration_beats;
+    const progress = Math.max(0, Math.min(wrappedBeat, info.duration_beats));
     return (progress / info.duration_beats) * 100;
   };
 

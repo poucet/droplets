@@ -16,23 +16,16 @@ import type {
   SlotInfo,
   FugueInfo,
   FugueDefinition,
-  TransportState,
   FuguesResponse,
   ActivityEventDto,
 } from './types';
 import { FugueList, FugueViewer, FugueComposer } from './components';
 import type { ComposerFugue } from './components';
+import { useTransport, useTimingSync } from './timing';
 
 // Note names for display
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const getNoteName = (midi: number) => `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`;
-
-const DEFAULT_TRANSPORT: TransportState = {
-  beat: 0,
-  tempo: 120,
-  playing: false,
-  time_sig_numerator: 4,
-};
 
 type TabView = 'sequencer' | 'monitor';
 
@@ -46,13 +39,16 @@ const App: React.FC = () => {
   // Fugue state
   const [fugueInfos, setFugueInfos] = useState<FugueInfo[]>([]);
   const [fugueDefinitions, setFugueDefinitions] = useState<Map<string, FugueDefinition>>(new Map());
-  const [transport, setTransport] = useState<TransportState>(DEFAULT_TRANSPORT);
   const [selectedFugueId, setSelectedFugueId] = useState<string | undefined>();
   const [showComposer, setShowComposer] = useState(false);
   const [editingFugue, setEditingFugue] = useState<FugueDefinition | null>(null);
 
   // Tab navigation
   const [activeTab, setActiveTab] = useState<TabView>('sequencer');
+
+  // Client-side interpolated transport (smooth animation)
+  const transport = useTransport();
+  const syncTiming = useTimingSync();
 
   const realtimeRef = useRef<RealtimeConnection | null>(null);
 
@@ -93,11 +89,11 @@ const App: React.FC = () => {
   const fetchTransport = useCallback(async () => {
     try {
       const response = await getTransport();
-      setTransport(response.transport);
+      syncTiming(response.transport);
     } catch (e) {
       console.error('Failed to fetch transport:', e);
     }
-  }, []);
+  }, [syncTiming]);
 
   const handleWiggle = useCallback(async (slotIndex: number) => {
     if (wigglingSlot !== null) return;
@@ -187,7 +183,7 @@ const App: React.FC = () => {
 
     // Setup realtime connection for transport/fugue updates
     const realtime = new RealtimeConnection({
-      onTransport: setTransport,
+      onTransport: syncTiming,
       onFugues: handleFuguesUpdate,
       onConnect: () => setServerStatus('connected'),
       onDisconnect: () => setServerStatus('connecting'),
@@ -206,7 +202,7 @@ const App: React.FC = () => {
       clearInterval(interval);
       realtime.disconnect();
     };
-  }, [fetchSlots, fetchActivity, fetchFugues, fetchTransport, handleFuguesUpdate]);
+  }, [fetchSlots, fetchActivity, fetchFugues, fetchTransport, handleFuguesUpdate, syncTiming]);
 
   const formatTimestamp = (ts: bigint) => {
     const date = new Date(Number(ts));
@@ -293,7 +289,6 @@ const App: React.FC = () => {
                 <FugueList
                   fugues={fugueInfos}
                   selectedId={selectedFugueId}
-                  transport={transport}
                   onSelect={handleSelectFugue}
                   onCancel={handleCancelFugue}
                 />
@@ -302,7 +297,6 @@ const App: React.FC = () => {
                   <FugueViewer
                     fugue={selectedFugue}
                     info={selectedInfo}
-                    transport={transport}
                     onEdit={handleEditFugue}
                   />
                 )}
