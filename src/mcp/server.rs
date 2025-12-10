@@ -327,7 +327,12 @@ pub struct CancelFuguesByTagData {
 }
 
 fn default_loop_mode() -> String {
-    "once".to_string()
+    // Serialize the default LoopMode to get the string representation
+    // This ensures consistency with the LoopMode::default() implementation
+    serde_json::to_string(&LoopMode::default())
+        .unwrap()
+        .trim_matches('"')
+        .to_string()
 }
 
 fn default_quantize() -> String {

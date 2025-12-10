@@ -20,7 +20,7 @@ pub enum LoopMode {
 
 impl Default for LoopMode {
     fn default() -> Self {
-        Self::Once
+        Self::Forever
     }
 }
 
