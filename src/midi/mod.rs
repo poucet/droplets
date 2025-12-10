@@ -7,7 +7,6 @@
 //! - Outputs MIDI 2.0 UMP for high-resolution in CLAP hosts
 //! - Outputs MIDI 1.0 for CC (no native CLAP CC type)
 
-use clack_extensions::params::PluginAudioProcessorParams;
 use clack_plugin::events::event_types::{
     Midi2Event, MidiEvent, NoteExpressionEvent, NoteExpressionType, NoteOffEvent, NoteOnEvent,
     TransportFlags,
@@ -15,7 +14,6 @@ use clack_plugin::events::event_types::{
 use clack_plugin::events::{Match, Pckn};
 use clack_plugin::host::HostAudioProcessorHandle;
 use clack_plugin::plugin::{PluginAudioProcessor, PluginError};
-use clack_plugin::prelude::{InputEvents, OutputEvents};
 use clack_plugin::process::{Audio, Events, PluginAudioConfiguration, Process, ProcessStatus};
 use rtrb::Consumer;
 
@@ -440,17 +438,3 @@ impl<'a> DropletMidiProcessor<'a> {
     }
 }
 
-/// Handle parameter changes from the DAW during processing
-impl<'a> PluginAudioProcessorParams for DropletMidiProcessor<'a> {
-    fn flush(&mut self, input_parameter_changes: &InputEvents, _output_parameter_changes: &mut OutputEvents) {
-        for event in input_parameter_changes {
-            if let Some(clack_plugin::events::spaces::CoreEventSpace::ParamValue(pv)) = event.as_core_event() {
-                if let Some(param_id) = pv.param_id() {
-                    if let Some(index) = crate::param_id_to_slot(param_id) {
-                        self.shared.params.slots[index].value.store(pv.value());
-                    }
-                }
-            }
-        }
-    }
-}

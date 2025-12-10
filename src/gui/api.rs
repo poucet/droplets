@@ -203,7 +203,8 @@ pub fn cancel_learn(instance: &str) -> Result<OkResponse, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Trigger wiggle for a slot (visual feedback)
+/// Trigger wiggle for a slot (visual feedback for MIDI learn)
+/// Includes a 2-second delay before wiggling to give time to switch windows
 pub fn wiggle_slot(instance: &str, slot: usize) -> Result<OkResponse, String> {
     let slots = CcBridge::get_slots(instance).map_err(|e| e.to_string())?;
 
@@ -216,13 +217,17 @@ pub fn wiggle_slot(instance: &str, slot: usize) -> Result<OkResponse, String> {
     let channel = slot_info.channel;
     let instance_owned = instance.to_string();
 
-    // Spawn thread to wiggle
+    // Spawn thread to wiggle with delay
     std::thread::spawn(move || {
-        for i in 0..6 {
+        // 2-second delay to allow switching to another plugin's MIDI learn
+        std::thread::sleep(std::time::Duration::from_secs(2));
+
+        // Wiggle 10 times (5 full cycles) with 200ms intervals for ~2 seconds of wiggling
+        for i in 0..10 {
             let value = if i % 2 == 0 { 127u8 } else { 0u8 };
             let msg = crate::mcp::CcMessage::new(channel, cc, value);
             let _ = CcBridge::send(&instance_owned, msg);
-            std::thread::sleep(std::time::Duration::from_millis(150));
+            std::thread::sleep(std::time::Duration::from_millis(200));
         }
         // Return to center
         let msg = crate::mcp::CcMessage::new(channel, cc, 64);
@@ -231,7 +236,7 @@ pub fn wiggle_slot(instance: &str, slot: usize) -> Result<OkResponse, String> {
 
     Ok(OkResponse {
         ok: true,
-        message: Some(format!("wiggling CC{}", cc)),
+        message: Some(format!("wiggling CC{} in 2 seconds...", cc)),
     })
 }
 
