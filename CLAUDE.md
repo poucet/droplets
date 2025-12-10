@@ -71,22 +71,17 @@ The plugin uses `clack-plugin` framework with these key components:
 3. **Bundle and Test**: Use `cargo xtask bundle` to create plugin files for DAW testing
 4. **Git Best Practices**: After each atomic task, commit changes with descriptive messages
 
-### Git Workflow
-**IMPORTANT**: Always commit work atomically after completing discrete tasks:
+### Version Control (jj)
+**IMPORTANT**: This project uses `jj` (Jujutsu) for version control. Always use `jj commit` (not `jj describe` or `git commit`) after completing discrete tasks:
 
 ```bash
 # After each logical unit of work:
-git add <relevant-files>
-git commit -m "Descriptive commit message
-
-🤖 Generated with [Claude Code](https://claude.ai/code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>"
+jj commit -m "Descriptive commit message"
 ```
 
 Examples of atomic commits:
 - Add new audio processing feature
-- Update UI component  
+- Update UI component
 - Fix specific bug
 - Add documentation
 - Update dependencies
