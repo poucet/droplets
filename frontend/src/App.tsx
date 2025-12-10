@@ -339,11 +339,6 @@ const App: React.FC = () => {
                     ))
                   )}
                 </div>
-                <div className="slots-hint">
-                  <p><strong>How to use:</strong></p>
-                  <p>1. Map parameters to any plugin via DAW modulation</p>
-                  <p>2. AI sets values via MCP <code>set_param</code></p>
-                </div>
               </section>
 
               <section className="activity-section">

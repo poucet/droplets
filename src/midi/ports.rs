@@ -44,12 +44,13 @@ impl<'a> PluginNotePortsImpl for DropletMainThread<'a> {
                     preferred_dialect: Some(NoteDialect::Midi),
                 });
             } else {
-                // Output: CLAP-native (for VST3) + MIDI 2.0 (for high-res CLAP hosts)
+                // Output: Prefer MIDI dialect for CC support (CLAP has no native CC type)
+                // Also support CLAP notes and MIDI 2.0 for high-res
                 writer.set(&NotePortInfo {
                     id: ClapId::new(2),
                     name: b"MIDI Out",
                     supported_dialects: NoteDialects::CLAP | NoteDialects::MIDI | NoteDialects::MIDI2,
-                    preferred_dialect: Some(NoteDialect::Clap),
+                    preferred_dialect: Some(NoteDialect::Midi),
                 });
             }
         }
