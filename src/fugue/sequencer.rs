@@ -133,19 +133,6 @@ impl FugueSequencer {
         }
     }
 
-    /// Apply a cancel mode (cancel existing fugues as needed)
-    fn apply_cancel_mode(&mut self, cancel_mode: &CancelMode) {
-        match cancel_mode {
-            CancelMode::None => {}
-            CancelMode::CancelByTag(tag) => {
-                self.cancel_fugues_by_tag(tag);
-            }
-            CancelMode::CancelAll => {
-                self.clear_all_fugues();
-            }
-        }
-    }
-
     /// Cancel a fugue by ID, sending note-offs for active notes
     fn cancel_fugue_by_id(&mut self, id: u64) {
         for fugue in &mut self.fugues {

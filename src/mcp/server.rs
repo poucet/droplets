@@ -242,73 +242,118 @@ pub struct PerNoteManagementData {
 }
 
 // =============================================================================
-// Fugue sequencing types
+// Fugue sequencing types - compact format for LLM efficiency
 // =============================================================================
 
-/// Event payload types for fugue sequencing - reuses existing MCP data types
+/// Content type for a fugue - either notes or CC automation
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum FugueEventType {
-    /// Note on event (reuses NoteOnData)
-    NoteOn(NoteOnData),
-    /// Note off event (reuses NoteOffData)
-    NoteOff(NoteOffData),
-    /// CC event (reuses CcData)
-    Cc(CcData),
-    /// Per-note pitch bend (reuses PerNotePitchBendData)
-    PitchBend(PerNotePitchBendData),
-    /// Per-note pressure (reuses PerNotePressureData)
-    Pressure(PerNotePressureData),
+pub enum FugueContent {
+    /// MIDI notes with automatic note-off generation
+    Notes {
+        /// Array of notes to play
+        #[schemars(description = "Array of notes. Each note auto-generates a note_off at beat + duration.")]
+        notes: Vec<CompactNote>,
+    },
+    /// CC automation as discrete keyframe points
+    Cc {
+        /// CC number (0-127)
+        #[schemars(description = "CC number (0-127)")]
+        cc: u8,
+        /// Array of [beat, value] pairs. Values are 0-127. CC messages sent at each beat (no interpolation).
+        #[schemars(description = "Array of [beat, value] pairs. CC messages sent exactly at each beat position (no interpolation). For smooth sweeps, use more points (8-16 per bar).")]
+        points: Vec<[f64; 2]>,
+    },
 }
 
-/// A single event within a fugue sequence
-///
-/// JSON is flat and LLM-friendly:
-/// ```json
-/// {"beat": 0.0, "type": "note_on", "channel": 1, "note": 60, "velocity": 100}
-/// {"beat": 1.0, "type": "cc", "channel": 1, "cc": 74, "value": 127}
-/// ```
+/// A single note in a compact fugue
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct FugueEventData {
-    /// Beat offset from fugue start (0.0 = start of fugue)
-    #[serde(default)]
-    #[schemars(description = "Beat offset from fugue start (0.0 = start of fugue, defaults to 0.0)")]
+pub struct CompactNote {
+    /// Beat offset from fugue start
+    #[schemars(description = "Beat offset from fugue start (0.0 = start)")]
     pub beat: f64,
-
-    /// The event payload (type + type-specific fields)
-    #[serde(flatten)]
-    pub event: FugueEventType,
+    /// MIDI note number (0-127)
+    #[schemars(description = "MIDI note number (0-127)")]
+    pub note: u8,
+    /// Duration in beats (note_off auto-generated at beat + duration)
+    #[schemars(description = "Duration in beats. Note-off is automatically sent at beat + duration.")]
+    pub duration: f64,
+    /// Velocity (1-127, defaults to 100)
+    #[serde(default = "default_note_velocity")]
+    #[schemars(description = "Velocity (1-127, defaults to 100)")]
+    pub velocity: Option<u8>,
+    /// Channel override (1-16, defaults to fugue channel)
+    #[schemars(description = "Channel override (1-16). If not set, uses fugue's channel.")]
+    pub channel: Option<u8>,
 }
 
-/// Queue a fugue sequence request data
+fn default_note_velocity() -> Option<u8> {
+    Some(100)
+}
+
+/// A single fugue definition within a batch
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CompactFugue {
+    /// Tag for grouping/cancellation (e.g., "melody", "filter")
+    #[schemars(description = "Tag for grouping/cancellation. Use with cancel_mode:'tag:NAME' to replace specific fugues.")]
+    pub tag: Option<String>,
+    /// What to cancel when this fugue starts: "none", "tag:NAME", or "all"
+    #[serde(default = "default_cancel_mode")]
+    #[schemars(description = "What to cancel when starting: 'none', 'tag:NAME' (cancels matching tag), or 'all'")]
+    pub cancel_mode: Option<String>,
+    /// Default MIDI channel for this fugue (1-16, defaults to 1)
+    #[serde(default = "default_fugue_channel")]
+    #[schemars(description = "Default MIDI channel (1-16, defaults to 1)")]
+    pub channel: Option<u8>,
+
+    // Per-fugue overrides for shared settings
+    /// Override quantize mode for this fugue
+    #[schemars(description = "Override quantize: 'immediate', 'beat', 'bar', or 'bars:N'")]
+    pub quantize: Option<String>,
+    /// Override duration for this fugue
+    #[schemars(description = "Override duration in beats")]
+    pub duration_beats: Option<f64>,
+    /// Override loop mode for this fugue
+    #[schemars(description = "Override loop mode: 'once', 'forever', or a number")]
+    pub loop_mode: Option<String>,
+
+    /// The fugue content (notes or CC automation)
+    #[serde(flatten)]
+    pub content: FugueContent,
+}
+
+fn default_fugue_channel() -> Option<u8> {
+    Some(1)
+}
+
+/// Queue one or more fugues for transport-synchronized playback
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct QueueFugueData {
-    /// Optional tag for grouping/cancellation (e.g., "melody", "bass")
-    #[schemars(description = "Optional tag for grouping/cancellation (e.g., 'melody', 'bass')")]
-    pub tag: Option<String>,
+    /// Array of fugues to queue. Each fugue is atomic - use separate fugues for notes vs CC.
+    #[schemars(description = "Array of fugues. Each is atomic - use separate fugues for notes vs CC automation so they can be updated independently.")]
+    pub fugues: Vec<CompactFugue>,
 
-    /// Duration of the fugue in beats (required for looping)
-    #[schemars(description = "Duration of the fugue in beats")]
-    pub duration_beats: f64,
-
-    /// Loop mode: "once", "forever", or a number for specific count
-    #[serde(default = "default_loop_mode")]
-    #[schemars(description = "Loop mode: 'once', 'forever', or a number like '4' for 4 times")]
-    pub loop_mode: String,
-
-    /// Quantize mode: "immediate", "beat", "bar", or "bars:N"
+    // Shared defaults (can be overridden per-fugue)
+    /// Default quantize mode: "immediate", "beat", "bar", or "bars:N"
     #[serde(default = "default_quantize")]
-    #[schemars(description = "When to start: 'immediate', 'beat', 'bar', or 'bars:N'")]
-    pub quantize: String,
+    #[schemars(description = "Default quantize: 'immediate', 'beat', 'bar', or 'bars:N' (default: 'bar')")]
+    pub quantize: Option<String>,
+    /// Default duration in beats
+    #[serde(default = "default_duration")]
+    #[schemars(description = "Default duration in beats (default: 4.0)")]
+    pub duration_beats: Option<f64>,
+    /// Default loop mode: "once", "forever", or a number
+    #[serde(default = "default_loop_mode_opt")]
+    #[schemars(description = "Default loop mode: 'once', 'forever', or a number (default: 'forever')")]
+    pub loop_mode: Option<String>,
+}
 
-    /// Cancel mode: "none", "tag:NAME", or "all"
-    #[serde(default = "default_cancel_mode")]
-    #[schemars(description = "What to cancel when starting: 'none', 'tag:NAME', or 'all'")]
-    pub cancel_mode: String,
+fn default_duration() -> Option<f64> {
+    Some(4.0)
+}
 
-    /// Events in the fugue sequence
-    #[schemars(description = "Array of events in the fugue sequence")]
-    pub events: Vec<FugueEventData>,
+fn default_loop_mode_opt() -> Option<String> {
+    Some("forever".to_string())
 }
 
 /// Cancel a specific fugue by ID
@@ -327,21 +372,12 @@ pub struct CancelFuguesByTagData {
     pub tag: String,
 }
 
-fn default_loop_mode() -> String {
-    // Serialize the default LoopMode to get the string representation
-    // This ensures consistency with the LoopMode::default() implementation
-    serde_json::to_string(&LoopMode::default())
-        .unwrap()
-        .trim_matches('"')
-        .to_string()
+fn default_quantize() -> Option<String> {
+    Some("bar".to_string())
 }
 
-fn default_quantize() -> String {
-    "immediate".to_string()
-}
-
-fn default_cancel_mode() -> String {
-    "none".to_string()
+fn default_cancel_mode() -> Option<String> {
+    Some("none".to_string())
 }
 
 // Fugue request types
@@ -723,106 +759,137 @@ impl DropletsMcp {
     // Fugue Sequencing Tools
     // =========================================================================
 
-    /// Queue a pre-composed musical sequence (fugue) for transport-synchronized playback.
-    #[tool(description = "Queue a pre-composed musical sequence (fugue) for transport-synchronized playback. Events play with sample-accurate timing relative to the DAW transport. Returns a fugue_id for later cancellation. Supports looping, quantization to beats/bars, and tag-based layering/cancellation.")]
+    /// Queue one or more fugues for transport-synchronized playback.
+    #[tool(description = "Queue one or more fugues for transport-synchronized playback. Each fugue is atomic - use separate fugues for notes vs CC automation so they can be updated independently.\n\nFugue types:\n- 'notes': MIDI notes with auto note-off. Each note has beat, note (0-127), duration (beats).\n- 'cc': CC automation as discrete keyframes. Points are [beat, value] pairs where value is 0-127. CC messages sent exactly at each beat (no interpolation). For smooth sweeps, use more points (8-16 per bar).\n\nUse tags + cancel_mode for layering: tag:'melody' with cancel_mode:'tag:melody' replaces the previous melody while leaving other fugues untouched.")]
     fn queue_fugue(&self, Parameters(req): Parameters<QueueFugueRequest>) -> Result<CallToolResult, McpError> {
-        // Parse loop mode
-        let loop_mode = match req.data.loop_mode.to_lowercase().as_str() {
-            "once" => LoopMode::Once,
-            "forever" => LoopMode::Forever,
-            s => {
-                if let Ok(n) = s.parse::<u32>() {
-                    LoopMode::Times(n)
-                } else {
-                    LoopMode::Once
+        // Get shared defaults
+        let default_quantize_str = req.data.quantize.as_deref().unwrap_or("bar");
+        let default_duration = req.data.duration_beats.unwrap_or(4.0);
+        let default_loop_mode_str = req.data.loop_mode.as_deref().unwrap_or("forever");
+
+        let mut fugue_ids: Vec<u64> = Vec::new();
+        let mut errors: Vec<String> = Vec::new();
+
+        for compact in &req.data.fugues {
+            // Use per-fugue overrides or fall back to shared defaults
+            let quantize_str = compact.quantize.as_deref().unwrap_or(default_quantize_str);
+            let duration_beats = compact.duration_beats.unwrap_or(default_duration);
+            let loop_mode_str = compact.loop_mode.as_deref().unwrap_or(default_loop_mode_str);
+            let fugue_channel = compact.channel.unwrap_or(1).saturating_sub(1).min(15);
+
+            // Parse loop mode
+            let loop_mode = match loop_mode_str.to_lowercase().as_str() {
+                "once" => LoopMode::Once,
+                "forever" => LoopMode::Forever,
+                s => {
+                    if let Ok(n) = s.parse::<u32>() {
+                        LoopMode::Times(n)
+                    } else {
+                        LoopMode::Forever
+                    }
+                }
+            };
+
+            // Parse quantize mode
+            let quantize = match quantize_str.to_lowercase().as_str() {
+                "immediate" => QuantizeMode::Immediate,
+                "beat" => QuantizeMode::Beat,
+                "bar" => QuantizeMode::Bar,
+                s if s.starts_with("bars:") => {
+                    let n = s.strip_prefix("bars:").and_then(|n| n.parse().ok()).unwrap_or(1);
+                    QuantizeMode::Bars(n)
+                }
+                _ => QuantizeMode::Bar,
+            };
+
+            // Parse cancel mode
+            let cancel_mode_str = compact.cancel_mode.as_deref().unwrap_or("none");
+            let cancel_mode = match cancel_mode_str.to_lowercase().as_str() {
+                "none" => CancelMode::None,
+                "all" => CancelMode::CancelAll,
+                s if s.starts_with("tag:") => {
+                    let tag = s.strip_prefix("tag:").unwrap_or("").to_string();
+                    CancelMode::CancelByTag(tag)
+                }
+                _ => CancelMode::None,
+            };
+
+            // Convert content to events
+            let mut events: Vec<TimedFugueEvent> = Vec::new();
+
+            match &compact.content {
+                FugueContent::Notes { notes } => {
+                    for note in notes {
+                        let channel = note.channel.map(|c| c.saturating_sub(1).min(15)).unwrap_or(fugue_channel);
+                        let velocity = note.velocity.unwrap_or(100).clamp(1, 127);
+
+                        // Note on
+                        events.push(TimedFugueEvent::new(
+                            note.beat,
+                            FugueEvent::NoteOn {
+                                channel,
+                                note: note.note.min(127),
+                                velocity,
+                            },
+                        ));
+
+                        // Auto-generated note off
+                        events.push(TimedFugueEvent::new(
+                            note.beat + note.duration,
+                            FugueEvent::NoteOff {
+                                channel,
+                                note: note.note.min(127),
+                            },
+                        ));
+                    }
+                }
+                FugueContent::Cc { cc, points } => {
+                    let cc_num = (*cc).min(127);
+                    for point in points {
+                        let beat = point[0];
+                        let value = (point[1] as u8).min(127);
+                        events.push(TimedFugueEvent::new(
+                            beat,
+                            FugueEvent::Cc {
+                                channel: fugue_channel,
+                                cc: cc_num,
+                                value,
+                            },
+                        ));
+                    }
                 }
             }
-        };
 
-        // Parse quantize mode (interval-based: beat, bar, or N bars)
-        let quantize = match req.data.quantize.to_lowercase().as_str() {
-            "immediate" => QuantizeMode::Immediate,
-            "beat" => QuantizeMode::Beat,
-            "bar" => QuantizeMode::Bar,
-            s if s.starts_with("bars:") => {
-                let n = s.strip_prefix("bars:").and_then(|n| n.parse().ok()).unwrap_or(1);
-                QuantizeMode::Bars(n)
+            // Sort events by beat offset
+            events.sort_by(|a, b| a.beat_offset.partial_cmp(&b.beat_offset).unwrap_or(std::cmp::Ordering::Equal));
+
+            // Create fugue definition
+            let mut definition = FugueDefinition::new(events, duration_beats)
+                .with_loop_mode(loop_mode)
+                .with_quantize(quantize)
+                .with_cancel_mode(cancel_mode);
+
+            if let Some(tag) = compact.tag.clone() {
+                definition = definition.with_tag(tag);
             }
-            _ => QuantizeMode::Bar, // Default to bar quantization
-        };
 
-        // Parse cancel mode
-        let cancel_mode = match req.data.cancel_mode.to_lowercase().as_str() {
-            "none" => CancelMode::None,
-            "all" => CancelMode::CancelAll,
-            s if s.starts_with("tag:") => {
-                let tag = s.strip_prefix("tag:").unwrap_or("").to_string();
-                CancelMode::CancelByTag(tag)
+            match FugueBridge::queue(&req.instance, definition) {
+                Ok(fugue_id) => fugue_ids.push(fugue_id),
+                Err(e) => errors.push(e.to_string()),
             }
-            _ => CancelMode::None,
-        };
-
-        // Parse events - now type-safe via FugueEventType enum
-        let events: Vec<TimedFugueEvent> = req.data.events
-            .iter()
-            .map(|e| {
-                let event = match &e.event {
-                    FugueEventType::NoteOn(data) => FugueEvent::NoteOn {
-                        channel: data.channel.saturating_sub(1).min(15),
-                        note: data.note.min(127),
-                        velocity: data.velocity.clamp(1, 127),
-                    },
-                    FugueEventType::NoteOff(data) => FugueEvent::NoteOff {
-                        channel: data.channel.saturating_sub(1).min(15),
-                        note: data.note.min(127),
-                    },
-                    FugueEventType::Cc(data) => FugueEvent::Cc {
-                        channel: data.channel.saturating_sub(1).min(15),
-                        cc: data.cc.min(127),
-                        value: data.value.min(127),
-                    },
-                    FugueEventType::PitchBend(data) => FugueEvent::PerNotePitchBend {
-                        channel: data.channel.saturating_sub(1).min(15),
-                        note: data.note.min(127),
-                        semitones: data.semitones.clamp(-64.0, 64.0),
-                    },
-                    FugueEventType::Pressure(data) => FugueEvent::PerNotePressure {
-                        channel: data.channel.saturating_sub(1).min(15),
-                        note: data.note.min(127),
-                        pressure: data.pressure.clamp(0.0, 1.0),
-                    },
-                };
-                TimedFugueEvent::new(e.beat, event)
-            })
-            .collect();
-
-        // Sort events by beat offset
-        let mut events = events;
-        events.sort_by(|a, b| a.beat_offset.partial_cmp(&b.beat_offset).unwrap_or(std::cmp::Ordering::Equal));
-
-        // Create fugue definition
-        let mut definition = FugueDefinition::new(events, req.data.duration_beats)
-            .with_loop_mode(loop_mode)
-            .with_quantize(quantize)
-            .with_cancel_mode(cancel_mode);
-
-        if let Some(tag) = req.data.tag.clone() {
-            definition = definition.with_tag(tag);
         }
 
-        let result = match FugueBridge::queue(&req.instance, definition) {
-            Ok(fugue_id) => {
-                let json = serde_json::json!({
-                    "fugue_id": fugue_id,
-                    "tag": req.data.tag,
-                    "duration_beats": req.data.duration_beats,
-                    "loop_mode": req.data.loop_mode,
-                    "quantize": req.data.quantize,
-                    "event_count": req.data.events.len()
-                });
-                serde_json::to_string_pretty(&json).unwrap_or_else(|_| format!("{{\"fugue_id\": {}}}", fugue_id))
-            }
-            Err(e) => format!("Error: {}", e),
+        let result = if errors.is_empty() {
+            let json = serde_json::json!({
+                "fugue_ids": fugue_ids,
+                "count": fugue_ids.len(),
+                "duration_beats": default_duration,
+                "quantize": default_quantize_str,
+                "loop_mode": default_loop_mode_str,
+            });
+            serde_json::to_string_pretty(&json).unwrap_or_else(|_| format!("{{\"fugue_ids\": {:?}}}", fugue_ids))
+        } else {
+            format!("Errors: {:?}", errors)
         };
         Ok(CallToolResult::success(vec![Content::text(result)]))
     }
