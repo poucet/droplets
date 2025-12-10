@@ -71,17 +71,26 @@ impl FugueSequencer {
                 self.send_all_note_offs();
             }
             self.was_playing = false;
-            self.last_beat = current_beat;
+            // Don't update last_beat here - we'll sync it when transport starts
             return self.output_buffer.drain(..);
         }
+
+        // 3. Handle transport state transitions and jumps
+        let just_started = !self.was_playing;
         self.was_playing = true;
 
-        // 3. Detect transport jumps (seeking)
-        let beat_jump = (current_beat - self.last_beat).abs();
-        let expected_advance = tempo_bpm / 60.0 / self.sample_rate * frames as f64;
-        if beat_jump > expected_advance * 2.0 + 0.01 {
-            // Transport jumped - send note-offs for all active notes
-            self.handle_transport_jump();
+        if just_started {
+            // Transport just started - sync last_beat to current position
+            // This is NOT a jump, just a normal start from wherever the playhead is
+            self.last_beat = current_beat;
+        } else {
+            // Transport was already playing - detect jumps (seeking)
+            let beat_jump = (current_beat - self.last_beat).abs();
+            let expected_advance = tempo_bpm / 60.0 / self.sample_rate * frames as f64;
+            if beat_jump > expected_advance * 2.0 + 0.01 {
+                // Transport jumped while playing - send note-offs for all active notes
+                self.handle_transport_jump();
+            }
         }
 
         // 4. Calculate beat range for this buffer
@@ -89,7 +98,7 @@ impl FugueSequencer {
         let end_beat = current_beat + beats_per_sample * frames as f64;
 
         // 5. Start pending fugues whose quantization point has arrived
-        self.start_pending_fugues(current_beat, end_beat, time_sig_numerator);
+        self.start_pending_fugues(current_beat, end_beat, time_sig_numerator, beats_per_sample);
 
         // 6. Process active fugues
         self.process_active_fugues(current_beat, end_beat, beats_per_sample);
@@ -106,8 +115,8 @@ impl FugueSequencer {
         while let Ok(cmd) = self.command_consumer.pop() {
             match cmd {
                 FugueCommand::Queue(def) => {
-                    // Apply cancel mode before queueing
-                    self.apply_cancel_mode(&def.cancel_mode);
+                    // Don't apply cancel mode here - defer until the fugue actually starts
+                    // This ensures seamless transitions at quantization boundaries
                     let state = FugueState::new(def);
                     self.fugues.push(state);
                 }
@@ -188,13 +197,20 @@ impl FugueSequencer {
     /// Uses the interval-based quantization model: fugues start when the transport
     /// reaches a grid line (where current_beat % interval == 0). Beat 0 is always
     /// a valid grid line for all intervals.
+    ///
+    /// Cancel modes are applied here (not when queued) to ensure seamless transitions.
     fn start_pending_fugues(
         &mut self,
         current_beat: f64,
         end_beat: f64,
         time_sig_numerator: u32,
+        beats_per_sample: f64,
     ) {
-        for fugue in &mut self.fugues {
+        // Collect indices of fugues that are ready to start, along with their cancel modes
+        // We need to collect first to avoid borrow issues when applying cancel modes
+        let mut starting_fugues: Vec<(usize, CancelMode)> = Vec::new();
+
+        for (idx, fugue) in self.fugues.iter_mut().enumerate() {
             if !fugue.waiting_for_start {
                 continue;
             }
@@ -209,10 +225,59 @@ impl FugueSequencer {
 
             // Check if the target falls within this buffer's beat range
             if target >= current_beat && target < end_beat {
-                fugue.waiting_for_start = false;
-                fugue.start_beat = target;
+                starting_fugues.push((idx, fugue.definition.cancel_mode.clone()));
             }
         }
+
+        // Apply cancel modes and start fugues
+        for (idx, cancel_mode) in starting_fugues {
+            // Calculate sample offset for when this fugue starts
+            let fugue = &self.fugues[idx];
+            let target = fugue.target_start_beat.unwrap_or(current_beat);
+            let sample_offset = ((target - current_beat) / beats_per_sample).round().max(0.0) as u32;
+
+            // Apply cancel mode at the same sample offset as the new fugue starts
+            self.apply_cancel_mode_at_offset(&cancel_mode, sample_offset);
+
+            // Now start the fugue
+            let fugue = &mut self.fugues[idx];
+            fugue.waiting_for_start = false;
+            fugue.start_beat = target;
+        }
+    }
+
+    /// Apply a cancel mode with note-offs at a specific sample offset
+    fn apply_cancel_mode_at_offset(&mut self, cancel_mode: &CancelMode, sample_offset: u32) {
+        match cancel_mode {
+            CancelMode::None => {}
+            CancelMode::CancelByTag(tag) => {
+                self.cancel_fugues_by_tag_at_offset(tag, sample_offset);
+            }
+            CancelMode::CancelAll => {
+                self.clear_all_fugues_at_offset(sample_offset);
+            }
+        }
+    }
+
+    /// Cancel all fugues with a given tag, with note-offs at specific sample offset
+    fn cancel_fugues_by_tag_at_offset(&mut self, tag: &str, sample_offset: u32) {
+        for fugue in &mut self.fugues {
+            if fugue.definition.tag.as_deref() == Some(tag) && !fugue.is_finished() && !fugue.waiting_for_start {
+                send_note_offs_for_fugue_at_offset(fugue, &mut self.output_buffer, sample_offset);
+                fugue.cancel();
+            }
+        }
+    }
+
+    /// Clear all active fugues, with note-offs at specific sample offset
+    fn clear_all_fugues_at_offset(&mut self, sample_offset: u32) {
+        for fugue in &mut self.fugues {
+            if !fugue.waiting_for_start {
+                send_note_offs_for_fugue_at_offset(fugue, &mut self.output_buffer, sample_offset);
+            }
+        }
+        // Only clear non-waiting fugues, keep pending ones
+        self.fugues.retain(|f| f.waiting_for_start);
     }
 
     /// Process active fugues and emit events
@@ -312,11 +377,20 @@ impl FugueSequencer {
     }
 }
 
-/// Send note-offs for all active notes in a fugue
+/// Send note-offs for all active notes in a fugue at sample offset 0
 fn send_note_offs_for_fugue(fugue: &mut FugueState, output_buffer: &mut Vec<(u32, MidiMessage)>) {
+    send_note_offs_for_fugue_at_offset(fugue, output_buffer, 0);
+}
+
+/// Send note-offs for all active notes in a fugue at a specific sample offset
+fn send_note_offs_for_fugue_at_offset(
+    fugue: &mut FugueState,
+    output_buffer: &mut Vec<(u32, MidiMessage)>,
+    sample_offset: u32,
+) {
     for (channel, note) in fugue.get_active_notes() {
         let msg = MidiMessage::Note(NoteMessage::new(channel, note, 0, false));
-        output_buffer.push((0, msg));
+        output_buffer.push((sample_offset, msg));
     }
     fugue.clear_active_notes();
 }
