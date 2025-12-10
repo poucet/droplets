@@ -15,7 +15,8 @@ use serde::Deserialize;
 
 use super::bridge::{CcBridge, CcMessage, NoteMessage, PerNoteExpressionMessage};
 use crate::fugue::{
-    CancelMode, FugueBridge, FugueDefinition, FugueEvent, LoopMode, QuantizeMode, TimedFugueEvent,
+    CancelMode, FugueBridge, FugueDefinition, FugueEvent, InterpolationMode, LoopMode, QuantizeMode,
+    TimedFugueEvent,
 };
 
 /// MCP Server for Simply Droplets
@@ -255,14 +256,18 @@ pub enum FugueContent {
         #[schemars(description = "Array of notes. Each note auto-generates a note_off at beat + duration.")]
         notes: Vec<CompactNote>,
     },
-    /// CC automation as discrete keyframe points
+    /// CC automation with automatic linear interpolation between points
     Cc {
         /// CC number (0-127)
         #[schemars(description = "CC number (0-127)")]
         cc: u8,
-        /// Array of [beat, value] pairs. Values are 0-127. CC messages sent at each beat (no interpolation).
-        #[schemars(description = "Array of [beat, value] pairs. CC messages sent exactly at each beat position (no interpolation). For smooth sweeps, use more points (8-16 per bar).")]
+        /// Array of [beat, value] pairs. Linear interpolation is automatic between consecutive points.
+        #[schemars(description = "Array of [beat, value] pairs. Values 0-127. Linear interpolation happens automatically between points - just specify keyframes (e.g., [[0,0],[4,127]] ramps smoothly over 4 beats).")]
         points: Vec<[f64; 2]>,
+        /// Interpolation mode: "linear" (default, smooth ramps) or "none" (stepped/discrete)
+        #[serde(default)]
+        #[schemars(description = "Interpolation: 'linear' (default, smooth ramps between points) or 'none' (stepped, values change instantly at each point)")]
+        interpolation: Option<String>,
     },
 }
 
@@ -816,6 +821,7 @@ impl DropletsMcp {
 
             // Convert content to events
             let mut events: Vec<TimedFugueEvent> = Vec::new();
+            let mut cc_interpolation = InterpolationMode::Linear; // Default
 
             match &compact.content {
                 FugueContent::Notes { notes } => {
@@ -843,7 +849,7 @@ impl DropletsMcp {
                         ));
                     }
                 }
-                FugueContent::Cc { cc, points } => {
+                FugueContent::Cc { cc, points, interpolation } => {
                     let cc_num = (*cc).min(127);
                     for point in points {
                         let beat = point[0];
@@ -857,6 +863,11 @@ impl DropletsMcp {
                             },
                         ));
                     }
+                    // Parse interpolation mode (applies to this CC fugue)
+                    cc_interpolation = match interpolation.as_deref() {
+                        Some("none") => InterpolationMode::None,
+                        _ => InterpolationMode::Linear, // Default to linear
+                    };
                 }
             }
 
@@ -867,7 +878,8 @@ impl DropletsMcp {
             let mut definition = FugueDefinition::new(events, duration_beats)
                 .with_loop_mode(loop_mode)
                 .with_quantize(quantize)
-                .with_cancel_mode(cancel_mode);
+                .with_cancel_mode(cancel_mode)
+                .with_cc_interpolation(cc_interpolation);
 
             if let Some(tag) = compact.tag.clone() {
                 definition = definition.with_tag(tag);

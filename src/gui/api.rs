@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::fugue::{
-    CancelMode, FugueBridge, FugueDefinition, FugueInfo, LoopMode, QuantizeMode, TimedFugueEvent,
-    TransportState,
+    CancelMode, FugueBridge, FugueDefinition, FugueInfo, InterpolationMode, LoopMode, QuantizeMode,
+    TimedFugueEvent, TransportState,
 };
 use crate::mcp::CcBridge;
 use crate::params;
@@ -274,6 +274,8 @@ pub struct QueueFugueRequest {
     pub loop_mode: LoopMode,
     pub quantize: QuantizeMode,
     pub cancel_mode: CancelMode,
+    #[serde(default)]
+    pub cc_interpolation: InterpolationMode,
 }
 
 /// Response from queuing a fugue
@@ -327,6 +329,7 @@ pub fn queue_fugue(instance: &str, req: QueueFugueRequest) -> QueueFugueResponse
         loop_mode: req.loop_mode,
         quantize: req.quantize,
         cancel_mode: req.cancel_mode,
+        cc_interpolation: req.cc_interpolation,
     };
 
     match FugueBridge::queue(instance, definition) {

@@ -124,6 +124,19 @@ impl Default for CancelMode {
     }
 }
 
+/// Interpolation mode for CC automation
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum InterpolationMode {
+    /// No interpolation - stepped/discrete values
+    None,
+    /// Linear interpolation between points
+    #[default]
+    Linear,
+    // Future: Exponential, SCurve
+}
+
 /// A single musical event in a fugue
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -263,6 +276,9 @@ pub struct FugueDefinition {
     pub quantize: QuantizeMode,
     /// What to cancel when this starts
     pub cancel_mode: CancelMode,
+    /// Interpolation mode for CC automation
+    #[serde(default)]
+    pub cc_interpolation: InterpolationMode,
 }
 
 impl FugueDefinition {
@@ -276,6 +292,7 @@ impl FugueDefinition {
             loop_mode: LoopMode::Once,
             quantize: QuantizeMode::Immediate,
             cancel_mode: CancelMode::None,
+            cc_interpolation: InterpolationMode::default(),
         }
     }
 
@@ -300,6 +317,12 @@ impl FugueDefinition {
     /// Set the cancel mode
     pub fn with_cancel_mode(mut self, mode: CancelMode) -> Self {
         self.cancel_mode = mode;
+        self
+    }
+
+    /// Set the CC interpolation mode
+    pub fn with_cc_interpolation(mut self, mode: InterpolationMode) -> Self {
+        self.cc_interpolation = mode;
         self
     }
 }
@@ -368,4 +391,33 @@ impl Default for TransportState {
             loop_end_beat: 0.0,
         }
     }
+}
+
+// =============================================================================
+// Sequencer output types (internal, not part of LLM API)
+// =============================================================================
+
+use crate::mcp::MidiMessage;
+
+/// Event output from the fugue sequencer
+///
+/// This is an internal type used between the sequencer and MIDI processor.
+/// It allows the sequencer to describe CC ramps that the processor will interpolate.
+#[derive(Debug, Clone)]
+pub enum ProcessedEvent {
+    /// An instant MIDI event at a specific sample offset
+    Instant {
+        sample_offset: u32,
+        message: MidiMessage,
+    },
+    /// A CC ramp to interpolate over a sample range
+    CcRamp {
+        channel: u8,
+        cc: u8,
+        start_value: u8,
+        end_value: u8,
+        start_sample: u32,
+        end_sample: u32,
+        interpolation: InterpolationMode,
+    },
 }

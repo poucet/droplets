@@ -5,9 +5,9 @@
 use rtrb::Consumer;
 
 use super::command::FugueCommand;
-use super::state::FugueState;
-use super::types::{CancelMode, FugueDefinition, FugueEvent, FugueInfo};
-use crate::mcp::{CcMessage, MidiMessage, NoteMessage, PerNoteExpressionMessage};
+use super::fugue::Fugue;
+use super::types::{CancelMode, FugueDefinition, FugueInfo, ProcessedEvent};
+use crate::mcp::{MidiMessage, NoteMessage};
 
 /// Buffer capacity for output MIDI messages per process cycle
 const OUTPUT_BUFFER_CAPACITY: usize = 256;
@@ -17,13 +17,13 @@ pub struct FugueSequencer {
     /// Ring buffer consumer for commands from MCP thread
     command_consumer: Consumer<FugueCommand>,
     /// Active and pending fugues
-    fugues: Vec<FugueState>,
+    fugues: Vec<Fugue>,
     /// Sample rate for timing calculations
     sample_rate: f64,
     /// Last known transport beat position (for jump detection)
     last_beat: f64,
-    /// Output buffer for MIDI messages to emit this cycle
-    output_buffer: Vec<(u32, MidiMessage)>,
+    /// Output buffer for processed events to emit this cycle
+    output_buffer: Vec<ProcessedEvent>,
     /// Whether transport was playing in the previous cycle
     was_playing: bool,
 }
@@ -43,7 +43,7 @@ impl FugueSequencer {
 
     /// Process one audio buffer cycle
     ///
-    /// Returns an iterator of (sample_offset, MidiMessage) to output.
+    /// Returns an iterator of ProcessedEvents to output.
     ///
     /// # Arguments
     /// * `is_playing` - Whether the transport is playing
@@ -58,7 +58,7 @@ impl FugueSequencer {
         tempo_bpm: f64,
         frames: u32,
         time_sig_numerator: u32,
-    ) -> impl Iterator<Item = (u32, MidiMessage)> + '_ {
+    ) -> impl Iterator<Item = ProcessedEvent> + '_ {
         self.output_buffer.clear();
 
         // 1. Process incoming commands
@@ -117,8 +117,8 @@ impl FugueSequencer {
                 FugueCommand::Queue(def) => {
                     // Don't apply cancel mode here - defer until the fugue actually starts
                     // This ensures seamless transitions at quantization boundaries
-                    let state = FugueState::new(def);
-                    self.fugues.push(state);
+                    let fugue = Fugue::new(def);
+                    self.fugues.push(fugue);
                 }
                 FugueCommand::Cancel { id } => {
                     self.cancel_fugue_by_id(id);
@@ -279,63 +279,24 @@ impl FugueSequencer {
                 continue;
             }
 
-            // Calculate beat range within this fugue
-            let mut local_start = current_beat - fugue.start_beat;
-            let mut local_end = end_beat - fugue.start_beat;
+            // Calculate local beat range
+            let local_end = end_beat - fugue.start_beat;
 
-            // We may need to process events twice if we cross a loop boundary
-            loop {
-                // Process events in this range
-                while fugue.next_event_index < fugue.definition.events.len() {
-                    let event = &fugue.definition.events[fugue.next_event_index];
+            // Process events and collect into output buffer
+            let events = fugue.process_buffer(current_beat, end_beat, beats_per_sample);
+            self.output_buffer.extend(events);
 
-                    if event.beat_offset >= local_end {
-                        break; // Event is in the future
-                    }
+            // Check for loop boundary
+            if local_end >= fugue.definition.duration_beats && !fugue.is_finished() {
+                // Reset for next loop
+                fugue.reset_for_loop();
 
-                    if event.beat_offset >= local_start {
-                        // Event is in this buffer - calculate sample offset
-                        // Account for time since buffer start: current_beat to fugue.start_beat + event.beat_offset
-                        let event_absolute_beat = fugue.start_beat + event.beat_offset;
-                        let beat_delta = event_absolute_beat - current_beat;
-                        let sample_offset = (beat_delta / beats_per_sample).round().max(0.0) as u32;
-
-                        // Emit the event
-                        let msg = fugue_event_to_midi(&event.event);
-                        self.output_buffer.push((sample_offset, msg));
-
-                        // Track note state
-                        match event.event {
-                            FugueEvent::NoteOn { channel, note, .. } => {
-                                fugue.set_note_active(channel, note);
-                            }
-                            FugueEvent::NoteOff { channel, note } => {
-                                fugue.set_note_inactive(channel, note);
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    fugue.next_event_index += 1;
+                // Process events from the start of the new loop if buffer extends into it
+                let new_local_end = end_beat - fugue.start_beat;
+                if new_local_end > 0.0 {
+                    let more_events = fugue.process_buffer(current_beat, end_beat, beats_per_sample);
+                    self.output_buffer.extend(more_events);
                 }
-
-                // Check for loop boundary
-                if local_end >= fugue.definition.duration_beats && !fugue.is_finished() {
-                    // Reset for next loop - this advances start_beat by duration_beats
-                    fugue.reset_for_loop();
-
-                    // Recalculate local range for the new loop iteration
-                    // This handles events at beat 0 of the new loop that fall within this buffer
-                    local_start = current_beat - fugue.start_beat;
-                    local_end = end_beat - fugue.start_beat;
-
-                    // Only continue if there's still buffer time in this new loop
-                    if local_end > 0.0 {
-                        continue;
-                    }
-                }
-
-                break;
             }
         }
     }
@@ -365,47 +326,22 @@ impl FugueSequencer {
 }
 
 /// Send note-offs for all active notes in a fugue at sample offset 0
-fn send_note_offs_for_fugue(fugue: &mut FugueState, output_buffer: &mut Vec<(u32, MidiMessage)>) {
+fn send_note_offs_for_fugue(fugue: &mut Fugue, output_buffer: &mut Vec<ProcessedEvent>) {
     send_note_offs_for_fugue_at_offset(fugue, output_buffer, 0);
 }
 
 /// Send note-offs for all active notes in a fugue at a specific sample offset
 fn send_note_offs_for_fugue_at_offset(
-    fugue: &mut FugueState,
-    output_buffer: &mut Vec<(u32, MidiMessage)>,
+    fugue: &mut Fugue,
+    output_buffer: &mut Vec<ProcessedEvent>,
     sample_offset: u32,
 ) {
     for (channel, note) in fugue.get_active_notes() {
         let msg = MidiMessage::Note(NoteMessage::new(channel, note, 0, false));
-        output_buffer.push((sample_offset, msg));
+        output_buffer.push(ProcessedEvent::Instant { sample_offset, message: msg });
     }
     fugue.clear_active_notes();
-}
-
-
-/// Convert a FugueEvent to a MidiMessage
-fn fugue_event_to_midi(event: &FugueEvent) -> MidiMessage {
-    match event {
-        FugueEvent::NoteOn { channel, note, velocity } => {
-            MidiMessage::Note(NoteMessage::new(*channel, *note, *velocity, true))
-        }
-        FugueEvent::NoteOff { channel, note } => {
-            MidiMessage::Note(NoteMessage::new(*channel, *note, 0, false))
-        }
-        FugueEvent::Cc { channel, cc, value } => {
-            MidiMessage::Cc(CcMessage::new(*channel, *cc, *value))
-        }
-        FugueEvent::PerNotePitchBend { channel, note, semitones } => {
-            MidiMessage::PerNoteExpression(
-                PerNoteExpressionMessage::pitch_bend_semitones(*channel, *note, *semitones)
-            )
-        }
-        FugueEvent::PerNotePressure { channel, note, pressure } => {
-            MidiMessage::PerNoteExpression(
-                PerNoteExpressionMessage::pressure_normalized(*channel, *note, *pressure)
-            )
-        }
-    }
+    fugue.clear_cc_state();
 }
 
 #[cfg(test)]
