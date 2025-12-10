@@ -74,7 +74,7 @@ export const FugueComposer: React.FC<FugueComposerProps> = ({
   const [durationBeats, setDurationBeats] = useState(initialFugue?.duration_beats ?? DEFAULT_DURATION);
   const [tag, setTag] = useState(initialFugue?.tag ?? '');
   const [loopModeType, setLoopModeType] = useState<'once' | 'times' | 'forever'>(
-    initialFugue ? getLoopModeType(initialFugue.loop_mode) : 'once'
+    initialFugue ? getLoopModeType(initialFugue.loop_mode) : 'forever'
   );
   const [loopTimes, setLoopTimes] = useState(initialFugue ? getLoopTimes(initialFugue.loop_mode) : 2);
   const [quantizeModeType, setQuantizeModeType] = useState(

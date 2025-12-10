@@ -1,5 +1,7 @@
 /**
  * FugueViewer - Wrapper for viewing active fugues with transport sync
+ *
+ * Uses client-side timing interpolation for smooth playhead animation.
  */
 
 import React, { useMemo } from 'react';
@@ -21,9 +23,8 @@ export const FugueViewer: React.FC<FugueViewerProps> = ({
 }) => {
   const timing = useTimingManager();
 
-  // Use progress_beats from server - it's already correctly calculated
-  // The server updates frequently enough for smooth playback
-  const playheadBeat = (info && !info.is_waiting) ? info.progress_beats : undefined;
+  // Show playhead only when fugue is actively playing (not waiting)
+  const showPlayhead = info !== undefined && !info.is_waiting;
 
   const loopDisplay = useMemo(() => {
     if (!info) return null;
@@ -52,8 +53,8 @@ export const FugueViewer: React.FC<FugueViewerProps> = ({
       <FugueGrid
         events={fugue.events}
         durationBeats={fugue.duration_beats}
-        playheadBeat={playheadBeat}
-        isPlaying={timing.isPlaying() && !info?.is_waiting}
+        startBeat={info?.start_beat}
+        showPlayhead={showPlayhead}
         mode="view"
         beatsPerBar={timing.getTimeSigNumerator()}
         pixelsPerBeat={50}

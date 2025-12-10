@@ -54,8 +54,9 @@ pub enum WsMessage {
     Fugues(api::FuguesResponse),
 }
 
-/// Interval for transport updates (targeting ~60fps for smooth playhead)
-const TRANSPORT_UPDATE_INTERVAL: Duration = Duration::from_millis(16);
+/// Interval for transport updates (client-side interpolation handles smooth animation)
+/// Only need updates for sync/state changes, not every frame
+const TRANSPORT_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Interval for fugue list updates
 const FUGUE_UPDATE_INTERVAL: Duration = Duration::from_millis(100);

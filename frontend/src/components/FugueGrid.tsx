@@ -4,12 +4,13 @@
  * Renders:
  * - Note events as a piano roll style grid
  * - CC events as automation lanes with line graphs
- * - Playhead synced to transport position
+ * - Playhead synced to transport position via direct DOM manipulation
  */
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef, useEffect } from 'react';
 import type { TimedFugueEvent } from '../types';
 import { NoteLayer, NoteCell } from './NoteLayer';
+import { getTimingManager } from '../timing';
 import './FugueGrid.css';
 
 // Note names for display
@@ -21,9 +22,11 @@ export interface FugueGridProps {
   events: TimedFugueEvent[];
   durationBeats: number;
 
-  // Playback
-  playheadBeat?: number;
-  isPlaying?: boolean;
+  // Playback - for client-side interpolated playhead
+  // startBeat: the transport beat when this fugue started playing
+  // When provided with showPlayhead=true, uses TimingManager for smooth animation
+  startBeat?: number;
+  showPlayhead?: boolean;
 
   // Display options
   mode: 'view' | 'edit';
@@ -52,8 +55,8 @@ interface CCPoint {
 export const FugueGrid: React.FC<FugueGridProps> = ({
   events,
   durationBeats,
-  playheadBeat,
-  isPlaying = false,
+  startBeat,
+  showPlayhead = false,
   mode,
   noteRange: noteRangeProp,
   visibleCCs: visibleCCsProp,
@@ -64,6 +67,8 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
   noteHeight = 16,
   ccLaneHeight = 60,
 }) => {
+  // Ref for direct DOM manipulation of playhead
+  const playheadRef = useRef<SVGLineElement>(null);
   // Parse events into notes and CC points
   const { notes, ccPoints, autoNoteRange, autoCCs } = useMemo(() => {
     const noteMap = new Map<string, NoteCell>();
@@ -241,24 +246,58 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
     });
   };
 
-  // Render playhead
-  const renderPlayhead = () => {
-    if (playheadBeat === undefined) return null;
+  // Subscribe to TimingManager for smooth playhead animation via direct DOM manipulation
+  useEffect(() => {
+    if (!showPlayhead || startBeat === undefined) return;
 
-    // playheadBeat is already wrapped by the caller, just clamp to valid range
-    const clampedBeat = Math.max(0, Math.min(playheadBeat, durationBeats));
-    const x = clampedBeat * pixelsPerBeat;
+    const timing = getTimingManager();
 
-    return (
-      <line
-        x1={x}
-        y1={0}
-        x2={x}
-        y2={noteGridHeight + totalCCHeight}
-        className={`playhead ${isPlaying ? 'playing' : ''}`}
-      />
-    );
-  };
+    const updatePlayhead = (currentBeat: number) => {
+      const line = playheadRef.current;
+      if (!line) return;
+
+      // Calculate local beat position within this fugue
+      // Account for DAW looping: if currentBeat < startBeat, the DAW has looped
+      // and the fugue is still playing from where it was
+      const transport = timing.getTransport();
+      let localBeat = currentBeat - startBeat;
+
+      // If DAW is looping and we appear to be before start, we're actually
+      // in a later iteration. Calculate how many loop cycles have passed.
+      if (localBeat < 0 && transport.is_looping) {
+        const loopLength = transport.loop_end_beat - transport.loop_start_beat;
+        if (loopLength > 0) {
+          // The fugue started at startBeat, DAW looped back, so add loop length
+          // to get the effective elapsed beats
+          const loopsPassed = Math.ceil((startBeat - currentBeat) / loopLength);
+          localBeat += loopsPassed * loopLength;
+        }
+      }
+
+      // Still negative means fugue hasn't started yet
+      if (localBeat < 0) {
+        line.style.display = 'none';
+        return;
+      }
+
+      // Wrap within duration for looping
+      const wrappedBeat = ((localBeat % durationBeats) + durationBeats) % durationBeats;
+      const x = wrappedBeat * pixelsPerBeat;
+
+      line.style.display = '';
+      line.setAttribute('x1', String(x));
+      line.setAttribute('x2', String(x));
+
+      // Update playing class based on transport state
+      if (timing.isPlaying()) {
+        line.classList.add('playing');
+      } else {
+        line.classList.remove('playing');
+      }
+    };
+
+    return timing.subscribe(updatePlayhead);
+  }, [showPlayhead, startBeat, durationBeats, pixelsPerBeat]);
 
   return (
     <div className={`fugue-grid ${mode}`}>
@@ -303,8 +342,18 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
             {renderCCLanes()}
           </g>
 
-          {/* Playhead (on top of everything) */}
-          {renderPlayhead()}
+          {/* Playhead (on top of everything) - positioned via direct DOM manipulation */}
+          {showPlayhead && startBeat !== undefined && (
+            <line
+              ref={playheadRef}
+              x1={0}
+              y1={0}
+              x2={0}
+              y2={noteGridHeight + totalCCHeight}
+              className="playhead"
+              style={{ display: 'none' }}
+            />
+          )}
         </svg>
       </div>
     </div>
