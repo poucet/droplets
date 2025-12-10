@@ -271,7 +271,8 @@ pub enum FugueEventType {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct FugueEventData {
     /// Beat offset from fugue start (0.0 = start of fugue)
-    #[schemars(description = "Beat offset from fugue start (0.0 = start of fugue)")]
+    #[serde(default)]
+    #[schemars(description = "Beat offset from fugue start (0.0 = start of fugue, defaults to 0.0)")]
     pub beat: f64,
 
     /// The event payload (type + type-specific fields)
@@ -883,20 +884,12 @@ impl ServerHandler for DropletsMcp {
             server_info: Implementation::from_build_env(),
             instructions: Some(
                 "Simply Droplets MCP Server - AI-controlled MIDI 1.0/2.0 output for DAW automation.\n\n\
-                 MIDI Note/CC Tools:\n\
-                 - send_note_on(note, velocity, channel): MIDI 1.0 Note On (7-bit velocity)\n\
-                 - send_note_on_hires(note, velocity, channel): MIDI 2.0 Note On (16-bit velocity)\n\
-                 - send_note_off(note, channel): Send MIDI Note Off\n\
-                 - send_cc(cc, value, channel): Send MIDI CC message\n\n\
                  Fugue Sequencing Tools (transport-synchronized):\n\
                  - queue_fugue(events, duration_beats, ...): Queue a musical sequence for transport-synced playback\n\
                  - list_fugues(): List active/pending fugues with IDs and status\n\
                  - cancel_fugue(id): Cancel a specific fugue by ID\n\
                  - cancel_fugues_by_tag(tag): Cancel all fugues with matching tag\n\
                  - clear_fugues(): Emergency stop - cancel all fugues\n\n\
-                 MIDI 2.0 Per-Note Expression Tools:\n\
-                 - send_per_note_pitch_bend(note, semitones, channel): Pitch bend individual notes\n\
-                 - send_per_note_pressure(note, pressure, channel): Per-note aftertouch\n\n\
                  Instance Tools:\n\
                  - list_instances(): See connected plugin instances\n\
                  - list_slots(): See slots with names, CC mappings, and values\n\

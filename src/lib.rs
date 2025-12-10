@@ -60,9 +60,16 @@ impl Plugin for DropletPlugin {
 
 impl DefaultPluginFactory for DropletPlugin {
     fn get_descriptor() -> PluginDescriptor {
+        // For VST3 builds, include INSTRUMENT so Ableton routes MIDI correctly.
+        // For CLAP builds, use NOTE_EFFECT only (proper categorization for Bitwig etc).
+        #[cfg(clap_wrapper_vst3)]
+        let features = [NOTE_EFFECT, INSTRUMENT];
+        #[cfg(not(clap_wrapper_vst3))]
+        let features = [NOTE_EFFECT];
+
         PluginDescriptor::new("com.simply-chris.simply-droplets", "Simply Droplets")
             .with_vendor("Simply Chris")
-            .with_features([NOTE_EFFECT])
+            .with_features(features)
     }
 
     fn new_shared(host: HostSharedHandle) -> Result<Self::Shared<'_>, PluginError> {
