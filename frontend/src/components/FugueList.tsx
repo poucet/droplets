@@ -8,10 +8,10 @@ import './FugueList.css';
 
 export interface FugueListProps {
   fugues: FugueInfo[];
-  selectedId?: bigint;
+  selectedId?: string;
   transport: TransportState;
-  onSelect: (id: bigint) => void;
-  onCancel: (id: bigint) => void;
+  onSelect: (id: string) => void;
+  onCancel: (id: string) => void;
 }
 
 export const FugueList: React.FC<FugueListProps> = ({
@@ -49,7 +49,7 @@ export const FugueList: React.FC<FugueListProps> = ({
     <div className="fugue-list">
       {fugues.map((info) => (
         <div
-          key={String(info.id)}
+          key={info.id}
           className={`fugue-list-item ${selectedId === info.id ? 'selected' : ''} ${info.is_waiting ? 'waiting' : ''}`}
           onClick={() => onSelect(info.id)}
         >

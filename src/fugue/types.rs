@@ -247,7 +247,9 @@ impl TimedFugueEvent {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct FugueDefinition {
-    /// Unique ID for this fugue instance
+    /// Unique ID for this fugue instance (serialized as string for JS compatibility)
+    #[serde(with = "crate::serde_u64_string")]
+    #[ts(type = "string")]
     pub id: u64,
     /// Optional tag for grouping/cancellation
     pub tag: Option<String>,
@@ -317,6 +319,9 @@ fn generate_fugue_id() -> u64 {
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export)]
 pub struct FugueInfo {
+    /// Serialized as string for JS compatibility
+    #[serde(with = "crate::serde_u64_string")]
+    #[ts(type = "string")]
     pub id: u64,
     pub tag: Option<String>,
     pub current_loop: u32,

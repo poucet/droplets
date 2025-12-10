@@ -9,9 +9,9 @@ import type { TimedFugueEvent } from "./TimedFugueEvent";
  */
 export type FugueDefinition = { 
 /**
- * Unique ID for this fugue instance
+ * Unique ID for this fugue instance (serialized as string for JS compatibility)
  */
-id: bigint, 
+id: string, 
 /**
  * Optional tag for grouping/cancellation
  */

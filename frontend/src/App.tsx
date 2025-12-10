@@ -45,9 +45,9 @@ const App: React.FC = () => {
 
   // Fugue state
   const [fugueInfos, setFugueInfos] = useState<FugueInfo[]>([]);
-  const [fugueDefinitions, setFugueDefinitions] = useState<Map<bigint, FugueDefinition>>(new Map());
+  const [fugueDefinitions, setFugueDefinitions] = useState<Map<string, FugueDefinition>>(new Map());
   const [transport, setTransport] = useState<TransportState>(DEFAULT_TRANSPORT);
-  const [selectedFugueId, setSelectedFugueId] = useState<bigint | undefined>();
+  const [selectedFugueId, setSelectedFugueId] = useState<string | undefined>();
   const [showComposer, setShowComposer] = useState(false);
   const [editingFugue, setEditingFugue] = useState<FugueDefinition | null>(null);
 
@@ -80,7 +80,7 @@ const App: React.FC = () => {
     try {
       const response = await getFugues();
       setFugueInfos(response.infos);
-      const defMap = new Map<bigint, FugueDefinition>();
+      const defMap = new Map<string, FugueDefinition>();
       for (const def of response.definitions) {
         defMap.set(def.id, def);
       }
@@ -133,11 +133,11 @@ const App: React.FC = () => {
   }, []);
 
   // Fugue handlers
-  const handleSelectFugue = useCallback((id: bigint) => {
+  const handleSelectFugue = useCallback((id: string) => {
     setSelectedFugueId(id);
   }, []);
 
-  const handleCancelFugue = useCallback(async (id: bigint) => {
+  const handleCancelFugue = useCallback(async (id: string) => {
     try {
       await cancelFugue(id);
       // Clear selection if we cancelled the selected fugue
@@ -171,7 +171,7 @@ const App: React.FC = () => {
   // Handle realtime updates
   const handleFuguesUpdate = useCallback((response: FuguesResponse) => {
     setFugueInfos(response.infos);
-    const defMap = new Map<bigint, FugueDefinition>();
+    const defMap = new Map<string, FugueDefinition>();
     for (const def of response.definitions) {
       defMap.set(def.id, def);
     }

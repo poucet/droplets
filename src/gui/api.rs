@@ -270,14 +270,29 @@ pub struct QueueFugueRequest {
 #[derive(Debug, Clone, Serialize)]
 pub struct QueueFugueResponse {
     pub ok: bool,
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_option_u64_string"
+    )]
     pub fugue_id: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
 
+fn serialize_option_u64_string<S>(value: &Option<u64>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match value {
+        Some(v) => serializer.serialize_str(&v.to_string()),
+        None => serializer.serialize_none(),
+    }
+}
+
 /// Request to cancel a fugue by ID
 #[derive(Debug, Clone, Deserialize)]
 pub struct CancelFugueRequest {
+    #[serde(with = "crate::serde_u64_string")]
     pub id: u64,
 }
 
