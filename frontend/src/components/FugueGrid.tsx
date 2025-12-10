@@ -245,8 +245,9 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
   const renderPlayhead = () => {
     if (playheadBeat === undefined) return null;
 
-    const wrappedBeat = playheadBeat % durationBeats;
-    const x = wrappedBeat * pixelsPerBeat;
+    // playheadBeat is already wrapped by the caller, just clamp to valid range
+    const clampedBeat = Math.max(0, Math.min(playheadBeat, durationBeats));
+    const x = clampedBeat * pixelsPerBeat;
 
     return (
       <line

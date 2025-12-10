@@ -34,10 +34,11 @@ export const FugueList: React.FC<FugueListProps> = ({
     // Calculate progress using client-side interpolated beat
     // start_beat is updated by server on each loop iteration
     const localBeat = currentBeat - info.start_beat;
-    // Wrap within duration for looping (handles case where server hasn't updated start_beat yet)
-    const wrappedBeat = localBeat % info.duration_beats;
-    const progress = Math.max(0, Math.min(wrappedBeat, info.duration_beats));
-    return (progress / info.duration_beats) * 100;
+    if (localBeat < 0) return 0;
+
+    // Positive modulo for proper wrapping (handles looping)
+    const wrappedBeat = ((localBeat % info.duration_beats) + info.duration_beats) % info.duration_beats;
+    return (wrappedBeat / info.duration_beats) * 100;
   };
 
   if (fugues.length === 0) {

@@ -24,13 +24,17 @@ export const FugueViewer: React.FC<FugueViewerProps> = ({
   const timing = useTimingManager();
 
   // Calculate playhead position using client-side interpolated beat
-  const playheadBeat = useMemo(() => {
-    if (!info || info.is_waiting) return undefined;
+  // Don't use useMemo here - currentBeat changes every frame and we want instant updates
+  let playheadBeat: number | undefined;
+  if (info && !info.is_waiting) {
     const localBeat = currentBeat - info.start_beat;
-    // Wrap within duration for looping
-    const wrappedBeat = localBeat % fugue.duration_beats;
-    return Math.max(0, Math.min(wrappedBeat, fugue.duration_beats));
-  }, [info, currentBeat, fugue.duration_beats]);
+    if (localBeat >= 0) {
+      // Positive modulo for proper wrapping
+      playheadBeat = ((localBeat % fugue.duration_beats) + fugue.duration_beats) % fugue.duration_beats;
+    } else {
+      playheadBeat = 0;
+    }
+  }
 
   const loopDisplay = useMemo(() => {
     if (!info) return null;

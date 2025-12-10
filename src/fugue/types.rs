@@ -348,6 +348,12 @@ pub struct TransportState {
     pub playing: bool,
     /// Time signature numerator (beats per bar)
     pub time_sig_numerator: u32,
+    /// Whether DAW loop is active
+    pub is_looping: bool,
+    /// Loop start beat (only valid if is_looping is true)
+    pub loop_start_beat: f64,
+    /// Loop end beat (only valid if is_looping is true)
+    pub loop_end_beat: f64,
 }
 
 impl Default for TransportState {
@@ -357,6 +363,9 @@ impl Default for TransportState {
             tempo: 120.0,
             playing: false,
             time_sig_numerator: 4,
+            is_looping: false,
+            loop_start_beat: 0.0,
+            loop_end_beat: 0.0,
         }
     }
 }

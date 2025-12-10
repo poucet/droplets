@@ -216,6 +216,19 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
             .map(|t| t.time_signature_numerator as u32)
             .unwrap_or(4);
 
+        // Extract loop info from DAW
+        let is_looping = transport
+            .map(|t| t.flags.contains(TransportFlags::IS_LOOP_ACTIVE))
+            .unwrap_or(false);
+
+        let loop_start_beat = transport
+            .map(|t| t.loop_start_beats.to_float())
+            .unwrap_or(0.0);
+
+        let loop_end_beat = transport
+            .map(|t| t.loop_end_beats.to_float())
+            .unwrap_or(0.0);
+
         // Process fugue sequencer - collect events first to avoid borrow conflict
         let fugue_events: Vec<_> = self.fugue_sequencer.process(
             is_playing,
@@ -237,6 +250,9 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
             tempo,
             playing: is_playing,
             time_sig_numerator: time_sig_num,
+            is_looping,
+            loop_start_beat,
+            loop_end_beat,
         });
 
         // Update fugue info and definitions when there are active fugues

@@ -19,4 +19,16 @@ playing: boolean,
 /**
  * Time signature numerator (beats per bar)
  */
-time_sig_numerator: number, };
+time_sig_numerator: number, 
+/**
+ * Whether DAW loop is active
+ */
+is_looping: boolean, 
+/**
+ * Loop start beat (only valid if is_looping is true)
+ */
+loop_start_beat: number, 
+/**
+ * Loop end beat (only valid if is_looping is true)
+ */
+loop_end_beat: number, };

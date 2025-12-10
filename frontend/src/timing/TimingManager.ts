@@ -16,6 +16,9 @@ export class TimingManager {
     tempo: 120,
     playing: false,
     time_sig_numerator: 4,
+    is_looping: false,
+    loop_start_beat: 0,
+    loop_end_beat: 0,
   };
 
   // Wall-clock time (ms) when we last synced with server
@@ -138,7 +141,21 @@ export class TimingManager {
     // Convert to beats: (ms / 1000) * (bpm / 60) = ms * bpm / 60000
     const elapsedBeats = (elapsedMs * this.transport.tempo) / 60000;
 
-    this.currentBeat = this.lastSyncBeat + elapsedBeats;
+    let beat = this.lastSyncBeat + elapsedBeats;
+
+    // Handle DAW loop: wrap beat within loop range
+    if (this.transport.is_looping) {
+      const loopStart = this.transport.loop_start_beat;
+      const loopEnd = this.transport.loop_end_beat;
+      const loopLength = loopEnd - loopStart;
+
+      if (loopLength > 0 && beat >= loopEnd) {
+        // Wrap within loop range
+        beat = loopStart + ((beat - loopStart) % loopLength);
+      }
+    }
+
+    this.currentBeat = beat;
   }
 
   private notifyListeners(): void {
