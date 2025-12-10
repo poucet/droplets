@@ -5,7 +5,7 @@
 import React, { useMemo } from 'react';
 import { FugueGrid } from './FugueGrid';
 import type { FugueDefinition, FugueInfo } from '../types';
-import { useBeat, useTimingManager } from '../timing';
+import { useTimingManager } from '../timing';
 import './FugueViewer.css';
 
 export interface FugueViewerProps {
@@ -19,22 +19,11 @@ export const FugueViewer: React.FC<FugueViewerProps> = ({
   info,
   onEdit,
 }) => {
-  // Client-side interpolated beat for smooth playhead animation
-  const currentBeat = useBeat();
   const timing = useTimingManager();
 
-  // Calculate playhead position using client-side interpolated beat
-  // Don't use useMemo here - currentBeat changes every frame and we want instant updates
-  let playheadBeat: number | undefined;
-  if (info && !info.is_waiting) {
-    const localBeat = currentBeat - info.start_beat;
-    if (localBeat >= 0) {
-      // Positive modulo for proper wrapping
-      playheadBeat = ((localBeat % fugue.duration_beats) + fugue.duration_beats) % fugue.duration_beats;
-    } else {
-      playheadBeat = 0;
-    }
-  }
+  // Use progress_beats from server - it's already correctly calculated
+  // The server updates frequently enough for smooth playback
+  const playheadBeat = (info && !info.is_waiting) ? info.progress_beats : undefined;
 
   const loopDisplay = useMemo(() => {
     if (!info) return null;

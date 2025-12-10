@@ -35,8 +35,11 @@ use std::net::SocketAddr;
 /// Singleton flag to ensure only one server starts
 static SERVER_STARTED: OnceLock<()> = OnceLock::new();
 
-/// Default port for the MCP server
+/// Default port for the MCP server (plugin)
 pub const DEFAULT_MCP_PORT: u16 = 9999;
+
+/// Default port for the MCP server (standalone)
+pub const STANDALONE_MCP_PORT: u16 = 9997;
 
 /// Start the singleton MCP server.
 ///

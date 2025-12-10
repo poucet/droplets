@@ -31,18 +31,18 @@ fn main() {
     let (_fugue_consumer, _fugue_info_handle) =
         simply_droplets::fugue::FugueBridge::register(instance_id, instance_id);
 
-    // Start MCP server (shared singleton)
-    simply_droplets::mcp::start_server(simply_droplets::mcp::DEFAULT_MCP_PORT);
+    // Start MCP server (shared singleton) - use standalone port to avoid conflict with plugin
+    simply_droplets::mcp::start_server(simply_droplets::mcp::STANDALONE_MCP_PORT);
     println!(
         "MCP server running on port {}",
-        simply_droplets::mcp::DEFAULT_MCP_PORT
+        simply_droplets::mcp::STANDALONE_MCP_PORT
     );
 
-    // Start GUI server (shared singleton) - enables browser-based UI access
-    simply_droplets::gui::server::start_server(simply_droplets::gui::server::DEFAULT_GUI_PORT);
+    // Start GUI server (shared singleton) - use standalone port to avoid conflict with plugin
+    simply_droplets::gui::server::start_server(simply_droplets::gui::server::STANDALONE_GUI_PORT);
     println!(
         "GUI server running on http://127.0.0.1:{}",
-        simply_droplets::gui::server::DEFAULT_GUI_PORT
+        simply_droplets::gui::server::STANDALONE_GUI_PORT
     );
 
     // Setup MIDI output
@@ -89,10 +89,13 @@ fn main() {
     println!("- GUI window will open");
     println!(
         "- Browser UI available at http://127.0.0.1:{}",
-        simply_droplets::gui::server::DEFAULT_GUI_PORT
+        simply_droplets::gui::server::STANDALONE_GUI_PORT
     );
     println!("- Click notes on the piano keyboard");
-    println!("- Or use MCP tools to send MIDI");
+    println!(
+        "- Or use MCP tools on port {}",
+        simply_droplets::mcp::STANDALONE_MCP_PORT
+    );
     println!("\nClose the window to quit\n");
 
     // Wrap MIDI connection in Arc<Mutex> to share with MIDI thread

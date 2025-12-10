@@ -24,8 +24,11 @@ use serde::{Deserialize, Serialize};
 use crate::fugue::{FugueBridge, TransportState};
 use super::api;
 
-/// Default port for the GUI server
+/// Default port for the GUI server (plugin)
 pub const DEFAULT_GUI_PORT: u16 = 9998;
+
+/// Default port for the GUI server (standalone)
+pub const STANDALONE_GUI_PORT: u16 = 9996;
 
 /// Singleton flag to ensure only one server starts
 static SERVER_STARTED: OnceLock<()> = OnceLock::new();

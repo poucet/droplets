@@ -4,7 +4,6 @@
 
 import React from 'react';
 import type { FugueInfo } from '../types';
-import { useBeat } from '../timing';
 import './FugueList.css';
 
 export interface FugueListProps {
@@ -20,9 +19,6 @@ export const FugueList: React.FC<FugueListProps> = ({
   onSelect,
   onCancel,
 }) => {
-  // Client-side interpolated beat for smooth animation
-  const currentBeat = useBeat();
-
   const getLoopDisplay = (info: FugueInfo): string => {
     if (info.total_loops === null) return '∞';
     return `${info.current_loop + 1}/${info.total_loops}`;
@@ -31,14 +27,8 @@ export const FugueList: React.FC<FugueListProps> = ({
   const getProgressPercent = (info: FugueInfo): number => {
     if (info.duration_beats === 0 || info.is_waiting) return 0;
 
-    // Calculate progress using client-side interpolated beat
-    // start_beat is updated by server on each loop iteration
-    const localBeat = currentBeat - info.start_beat;
-    if (localBeat < 0) return 0;
-
-    // Positive modulo for proper wrapping (handles looping)
-    const wrappedBeat = ((localBeat % info.duration_beats) + info.duration_beats) % info.duration_beats;
-    return (wrappedBeat / info.duration_beats) * 100;
+    // Use progress_beats from server - already correctly calculated
+    return (info.progress_beats / info.duration_beats) * 100;
   };
 
   if (fugues.length === 0) {
