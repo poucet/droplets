@@ -189,6 +189,16 @@ pub fn get_instances() -> InstancesResponse {
     InstancesResponse { instances }
 }
 
+/// Rename an instance
+pub fn rename_instance(instance: &str, new_name: &str) -> Result<OkResponse, String> {
+    CcBridge::rename(instance, new_name)
+        .map(|old_name| OkResponse {
+            ok: true,
+            message: Some(format!("Renamed '{}' to '{}'", old_name, new_name)),
+        })
+        .map_err(|e| e.to_string())
+}
+
 /// Start learning mode for a slot
 pub fn start_learn(instance: &str, slot: usize) -> Result<OkResponse, String> {
     CcBridge::start_learn(instance, slot)

@@ -5,6 +5,8 @@ import {
   getActivity,
   getFugues,
   getTransport,
+  getInstances,
+  renameInstance,
   noteOn,
   noteOff,
   wiggleSlot,
@@ -18,6 +20,7 @@ import type {
   FugueDefinition,
   FuguesResponse,
   ActivityEventDto,
+  InstanceInfo,
 } from './types';
 import { FugueList, FugueViewer, FugueComposer } from './components';
 import type { ComposerFugue } from './components';
@@ -36,6 +39,11 @@ const App: React.FC = () => {
   const [wigglingSlot, setWigglingSlot] = useState<number | null>(null);
   const [activeNotes, setActiveNotes] = useState<Set<number>>(new Set());
 
+  // Instance state
+  const [instances, setInstances] = useState<InstanceInfo[]>([]);
+  const [selectedInstance, setSelectedInstance] = useState<string>('default');
+  const [editingInstanceName, setEditingInstanceName] = useState<string | null>(null);
+
   // Fugue state
   const [fugueInfos, setFugueInfos] = useState<FugueInfo[]>([]);
   const [fugueDefinitions, setFugueDefinitions] = useState<Map<string, FugueDefinition>>(new Map());
@@ -51,6 +59,19 @@ const App: React.FC = () => {
   const syncTiming = useTimingSync();
 
   const realtimeRef = useRef<RealtimeConnection | null>(null);
+
+  const fetchInstances = useCallback(async () => {
+    try {
+      const response = await getInstances();
+      setInstances(response.instances);
+      // Auto-select first instance if none selected
+      if (response.instances.length > 0 && selectedInstance === 'default') {
+        setSelectedInstance(response.instances[0].id);
+      }
+    } catch (e) {
+      console.error('Failed to fetch instances:', e);
+    }
+  }, [selectedInstance]);
 
   const fetchSlots = useCallback(async () => {
     try {
@@ -174,8 +195,25 @@ const App: React.FC = () => {
     setFugueDefinitions(defMap);
   }, []);
 
+  // Handle instance rename
+  const handleRenameInstance = useCallback(async (newName: string) => {
+    if (!newName.trim() || newName === selectedInstance) {
+      setEditingInstanceName(null);
+      return;
+    }
+    try {
+      await renameInstance(selectedInstance, newName.trim());
+      setSelectedInstance(newName.trim());
+      await fetchInstances();
+    } catch (e) {
+      console.error('Failed to rename instance:', e);
+    }
+    setEditingInstanceName(null);
+  }, [selectedInstance, fetchInstances]);
+
   useEffect(() => {
     // Initial fetch
+    fetchInstances();
     fetchSlots();
     fetchActivity();
     fetchFugues();
@@ -202,7 +240,7 @@ const App: React.FC = () => {
       clearInterval(interval);
       realtime.disconnect();
     };
-  }, [fetchSlots, fetchActivity, fetchFugues, fetchTransport, handleFuguesUpdate, syncTiming]);
+  }, [fetchInstances, fetchSlots, fetchActivity, fetchFugues, fetchTransport, handleFuguesUpdate, syncTiming]);
 
   const formatTimestamp = (ts: bigint) => {
     const date = new Date(Number(ts));
@@ -239,6 +277,41 @@ const App: React.FC = () => {
             Monitor
           </button>
         </nav>
+        <div className="instance-selector">
+          {instances.length > 1 && (
+            <select
+              value={selectedInstance}
+              onChange={(e) => setSelectedInstance(e.target.value)}
+              className="instance-dropdown"
+            >
+              {instances.map((inst) => (
+                <option key={inst.id} value={inst.id}>{inst.name}</option>
+              ))}
+            </select>
+          )}
+          {editingInstanceName !== null ? (
+            <input
+              type="text"
+              className="instance-name-input"
+              value={editingInstanceName}
+              onChange={(e) => setEditingInstanceName(e.target.value)}
+              onBlur={() => handleRenameInstance(editingInstanceName)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleRenameInstance(editingInstanceName);
+                if (e.key === 'Escape') setEditingInstanceName(null);
+              }}
+              autoFocus
+            />
+          ) : (
+            <span
+              className="instance-name"
+              onClick={() => setEditingInstanceName(selectedInstance)}
+              title="Click to rename instance"
+            >
+              {selectedInstance}
+            </span>
+          )}
+        </div>
         <div className="header-right">
           <div className="transport-info">
             <span className="transport-beat">{transport.beat.toFixed(2)}</span>

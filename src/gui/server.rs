@@ -90,6 +90,7 @@ async fn run_server(port: u16) {
         .route("/ws", get(ws_handler))
         // REST API endpoints with instance query param support
         .route("/api/instances", get(api_instances))
+        .route("/api/rename_instance", post(api_rename_instance))
         .route("/api/slots", get(api_slots))
         .route("/api/activity", get(api_activity))
         .route("/api/fugues", get(api_fugues))
@@ -138,6 +139,20 @@ async fn serve_index() -> impl IntoResponse {
 async fn api_instances() -> impl IntoResponse {
     let response = api::get_instances();
     json_response(response)
+}
+
+/// Request body for renaming an instance
+#[derive(Debug, Deserialize)]
+pub struct RenameInstanceRequest {
+    instance: String,
+    name: String,
+}
+
+async fn api_rename_instance(Json(body): Json<RenameInstanceRequest>) -> impl IntoResponse {
+    match api::rename_instance(&body.instance, &body.name) {
+        Ok(response) => json_response(response),
+        Err(e) => error_response(StatusCode::BAD_REQUEST, &e),
+    }
 }
 
 async fn api_slots(Query(query): Query<InstanceQuery>) -> impl IntoResponse {

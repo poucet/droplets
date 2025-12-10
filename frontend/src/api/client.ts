@@ -75,6 +75,10 @@ export async function getInstances(): Promise<InstancesResponse> {
   return apiFetch<InstancesResponse>('/instances');
 }
 
+export async function renameInstance(instance: string, name: string): Promise<OkResponse> {
+  return apiPost<{ instance: string; name: string }, OkResponse>('/rename_instance', { instance, name });
+}
+
 export async function getSlots(instance = 'default'): Promise<SlotsResponse> {
   return apiFetch<SlotsResponse>('/slots', instance);
 }
