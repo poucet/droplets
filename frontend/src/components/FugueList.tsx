@@ -14,6 +14,7 @@ export interface FugueListProps {
   selectedId?: string;
   onSelect: (id: string) => void;
   onCancel: (id: string) => void;
+  onExport: (id: string) => void;
 }
 
 export const FugueList: React.FC<FugueListProps> = ({
@@ -21,6 +22,7 @@ export const FugueList: React.FC<FugueListProps> = ({
   selectedId,
   onSelect,
   onCancel,
+  onExport,
 }) => {
   // Refs to directly update progress bar widths without React re-renders
   const progressRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -115,6 +117,16 @@ export const FugueList: React.FC<FugueListProps> = ({
             {info.is_waiting && (
               <span className="waiting-badge">Waiting</span>
             )}
+            <button
+              className="export-btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                onExport(info.id);
+              }}
+              title="Export as MIDI file"
+            >
+              ↓
+            </button>
             <button
               className="cancel-btn"
               onClick={(e) => {

@@ -20,10 +20,14 @@ pub fn handle_request(path: &str, method: &str, body: &[u8], params: &Arc<Drople
         "/instances" => handle_instances(),
         "/cancel_learn" => handle_cancel_learn(instance, params),
         "/clear_fugues" => handle_clear_fugues(instance),
+        "/settings" if method == "GET" => handle_get_settings(),
+        "/reveal_exports" => handle_reveal_exports(),
         // POST endpoints
         "/queue_fugue" if method == "POST" => handle_queue_fugue(body, instance),
         "/cancel_fugue" if method == "POST" => handle_cancel_fugue(body, instance),
         "/cancel_fugues_by_tag" if method == "POST" => handle_cancel_fugues_by_tag(body, instance),
+        "/settings" if method == "POST" => handle_update_settings(body),
+        "/export_fugue" if method == "POST" => handle_export_fugue(body, instance),
         _ => handle_dynamic_route(path, instance, params),
     }
 }
@@ -246,4 +250,53 @@ fn serialize_error(error: &str) -> String {
         error: error.to_string(),
     };
     serde_json::to_string(&response).unwrap_or_else(|_| format!(r#"{{"error":"{}"}}"#, error))
+}
+
+// =============================================================================
+// Settings Handlers
+// =============================================================================
+
+fn handle_get_settings() -> String {
+    let response = api::get_settings();
+    serde_json::to_string(&response).unwrap_or_else(|_| serialize_error("serialize failed"))
+}
+
+fn handle_update_settings(body: &[u8]) -> String {
+    let Ok(req) = serde_json::from_slice::<crate::fugue::settings::UpdateSettingsRequest>(body) else {
+        return serialize_error("invalid request body");
+    };
+
+    match api::update_settings(req) {
+        Ok(response) => {
+            crate::logger::log_gui_event("settings_updated", "export path");
+            serde_json::to_string(&response).unwrap_or_else(|_| serialize_error("serialize failed"))
+        }
+        Err(e) => serialize_error(&e),
+    }
+}
+
+fn handle_reveal_exports() -> String {
+    match api::reveal_exports() {
+        Ok(response) => {
+            crate::logger::log_gui_event("reveal_exports", "opened folder");
+            serde_json::to_string(&response).unwrap_or_else(|_| serialize_error("serialize failed"))
+        }
+        Err(e) => serialize_error(&e),
+    }
+}
+
+// =============================================================================
+// Export Handlers
+// =============================================================================
+
+fn handle_export_fugue(body: &[u8], instance: &str) -> String {
+    let Ok(req) = serde_json::from_slice::<api::ExportFugueRequest>(body) else {
+        return serialize_error("invalid request body");
+    };
+
+    let response = api::export_fugue(instance, req);
+    if response.ok {
+        crate::logger::log_gui_event("export_fugue", response.path.as_deref().unwrap_or("success"));
+    }
+    serde_json::to_string(&response).unwrap_or_else(|_| serialize_error("serialize failed"))
 }

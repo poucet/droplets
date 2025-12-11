@@ -9,6 +9,9 @@ mod fugue;
 mod sequencer;
 mod types;
 
+pub mod export;
+pub mod settings;
+
 pub use bridge::{FugueBridge, FugueInfoHandle};
 pub use command::FugueCommand;
 pub use fugue::Fugue;

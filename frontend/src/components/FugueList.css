@@ -106,6 +106,7 @@
   border-radius: 4px;
 }
 
+.export-btn,
 .cancel-btn {
   display: flex;
   align-items: center;
@@ -119,6 +120,12 @@
   font-size: 14px;
   cursor: pointer;
   transition: all 0.15s;
+}
+
+.export-btn:hover {
+  background: #4fc3f7;
+  border-color: #4fc3f7;
+  color: #fff;
 }
 
 .cancel-btn:hover {

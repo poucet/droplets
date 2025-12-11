@@ -12,6 +12,7 @@ import {
   wiggleSlot,
   queueFugue,
   cancelFugue,
+  exportFugue,
   RealtimeConnection,
 } from './api';
 import type {
@@ -22,7 +23,7 @@ import type {
   ActivityEventDto,
   InstanceInfo,
 } from './types';
-import { FugueList, FugueViewer, FugueComposer } from './components';
+import { FugueList, FugueViewer, FugueComposer, Settings } from './components';
 import type { ComposerFugue } from './components';
 import { useTransport, useTimingSync } from './timing';
 
@@ -30,7 +31,7 @@ import { useTransport, useTimingSync } from './timing';
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const getNoteName = (midi: number) => `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`;
 
-type TabView = 'sequencer' | 'monitor';
+type TabView = 'sequencer' | 'monitor' | 'settings';
 
 const App: React.FC = () => {
   const [slots, setSlots] = useState<SlotInfo[]>([]);
@@ -185,6 +186,19 @@ const App: React.FC = () => {
     setShowComposer(true);
   }, []);
 
+  const handleExportFugue = useCallback(async (id: string) => {
+    try {
+      const response = await exportFugue(id, transport.tempo);
+      if (response.ok) {
+        console.log('Exported fugue to:', response.path);
+      } else {
+        console.error('Failed to export fugue:', response.error);
+      }
+    } catch (e) {
+      console.error('Failed to export fugue:', e);
+    }
+  }, [transport.tempo]);
+
   // Handle realtime updates
   const handleFuguesUpdate = useCallback((response: FuguesResponse) => {
     setFugueInfos(response.infos);
@@ -276,6 +290,12 @@ const App: React.FC = () => {
           >
             Monitor
           </button>
+          <button
+            className={`tab-btn ${activeTab === 'settings' ? 'active' : ''}`}
+            onClick={() => setActiveTab('settings')}
+          >
+            Settings
+          </button>
         </nav>
         <div className="instance-selector">
           {instances.length > 1 && (
@@ -364,6 +384,7 @@ const App: React.FC = () => {
                   selectedId={selectedFugueId}
                   onSelect={handleSelectFugue}
                   onCancel={handleCancelFugue}
+                  onExport={handleExportFugue}
                 />
 
                 {selectedFugue && (
@@ -376,7 +397,7 @@ const App: React.FC = () => {
               </div>
             )}
           </div>
-        ) : (
+        ) : activeTab === 'monitor' ? (
           /* Monitor Tab */
           <div className="monitor-view">
             <div className="monitor-columns">
@@ -459,7 +480,10 @@ const App: React.FC = () => {
               <p className="note-hint">Click and hold to play notes. Tests MIDI output routing.</p>
             </section>
           </div>
-        )}
+        ) : activeTab === 'settings' ? (
+          /* Settings Tab */
+          <Settings />
+        ) : null}
       </main>
     </div>
   );

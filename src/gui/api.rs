@@ -9,6 +9,8 @@ use ts_rs::TS;
 use crate::fugue::{
     CancelMode, FugueBridge, FugueDefinition, FugueInfo, InterpolationMode, LoopMode, QuantizeMode,
     TimedFugueEvent, TransportState,
+    export::{fugue_to_smf, generate_filename},
+    settings::{self, SettingsResponse, UpdateSettingsRequest},
 };
 use crate::mcp::CcBridge;
 use crate::params;
@@ -374,4 +376,134 @@ pub fn clear_fugues(instance: &str) -> Result<OkResponse, String> {
             message: Some("Cleared all fugues".to_string()),
         })
         .map_err(|e| e.to_string())
+}
+
+// =============================================================================
+// Settings API
+// =============================================================================
+
+/// Get current settings
+pub fn get_settings() -> SettingsResponse {
+    let settings = settings::get_settings();
+    SettingsResponse::new(&settings, crate::mcp::DEFAULT_MCP_PORT)
+}
+
+/// Update settings
+pub fn update_settings(req: UpdateSettingsRequest) -> Result<OkResponse, String> {
+    let mut current = settings::get_settings();
+
+    if let Some(path) = req.export_path {
+        current.export_path = std::path::PathBuf::from(path);
+    }
+
+    settings::update_settings(current)?;
+
+    Ok(OkResponse {
+        ok: true,
+        message: Some("Settings updated".to_string()),
+    })
+}
+
+/// Open the exports folder in the system file manager
+pub fn reveal_exports() -> Result<OkResponse, String> {
+    settings::reveal_export_dir()?;
+    Ok(OkResponse {
+        ok: true,
+        message: Some("Opened exports folder".to_string()),
+    })
+}
+
+// =============================================================================
+// Fugue Export API
+// =============================================================================
+
+/// Request to export a fugue as MIDI
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExportFugueRequest {
+    #[serde(with = "crate::serde_u64_string")]
+    pub id: u64,
+    /// Optional tempo override (defaults to current transport tempo)
+    pub tempo: Option<f64>,
+}
+
+/// Response from exporting a fugue
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
+pub struct ExportFugueResponse {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Export a fugue as a Standard MIDI File
+pub fn export_fugue(instance: &str, req: ExportFugueRequest) -> ExportFugueResponse {
+    // Get the fugue definition
+    let definition = match FugueBridge::get_definition(instance, req.id) {
+        Ok(Some(def)) => def,
+        Ok(None) => {
+            return ExportFugueResponse {
+                ok: false,
+                path: None,
+                error: Some(format!("Fugue {} not found", req.id)),
+            };
+        }
+        Err(e) => {
+            return ExportFugueResponse {
+                ok: false,
+                path: None,
+                error: Some(e.to_string()),
+            };
+        }
+    };
+
+    // Get tempo (from request or transport)
+    let tempo = req.tempo.unwrap_or_else(|| {
+        FugueBridge::get_transport(instance)
+            .map(|t| t.tempo)
+            .unwrap_or(120.0)
+    });
+
+    // Generate MIDI file
+    let midi_bytes = fugue_to_smf(&definition, tempo);
+
+    // Ensure export directory exists
+    let export_dir = match settings::ensure_export_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            return ExportFugueResponse {
+                ok: false,
+                path: None,
+                error: Some(e),
+            };
+        }
+    };
+
+    // Generate filename and full path
+    let filename = generate_filename(&definition);
+    let file_path = export_dir.join(&filename);
+
+    // Write MIDI file
+    if let Err(e) = std::fs::write(&file_path, midi_bytes) {
+        return ExportFugueResponse {
+            ok: false,
+            path: None,
+            error: Some(format!("Failed to write MIDI file: {}", e)),
+        };
+    }
+
+    log::info!("Exported fugue {} to {:?}", req.id, file_path);
+
+    // Reveal in file manager
+    if let Err(e) = settings::reveal_file(&file_path) {
+        log::warn!("Failed to reveal exported file: {}", e);
+        // Don't fail the export, just log the warning
+    }
+
+    ExportFugueResponse {
+        ok: true,
+        path: Some(file_path.to_string_lossy().to_string()),
+        error: None,
+    }
 }

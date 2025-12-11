@@ -168,6 +168,51 @@ export async function clearFugues(instance = 'default'): Promise<OkResponse> {
 }
 
 // =============================================================================
+// Settings API
+// =============================================================================
+
+export interface SettingsResponse {
+  export_path: string;
+  mcp_port: number;
+  mcp_url: string;
+}
+
+export async function getSettings(): Promise<SettingsResponse> {
+  return apiFetch<SettingsResponse>('/settings');
+}
+
+export interface UpdateSettingsRequest {
+  export_path?: string;
+}
+
+export async function updateSettings(settings: UpdateSettingsRequest): Promise<OkResponse> {
+  return apiPost<UpdateSettingsRequest, OkResponse>('/settings', settings);
+}
+
+export async function revealExports(): Promise<OkResponse> {
+  return apiFetch<OkResponse>('/reveal_exports');
+}
+
+// =============================================================================
+// Fugue Export API
+// =============================================================================
+
+export interface ExportFugueRequest {
+  id: string;
+  tempo?: number;
+}
+
+export interface ExportFugueResponse {
+  ok: boolean;
+  path?: string;
+  error?: string;
+}
+
+export async function exportFugue(id: string, tempo?: number, instance = 'default'): Promise<ExportFugueResponse> {
+  return apiPost<ExportFugueRequest, ExportFugueResponse>('/export_fugue', { id, tempo }, instance);
+}
+
+// =============================================================================
 // WebSocket for Real-time Updates
 // =============================================================================
 

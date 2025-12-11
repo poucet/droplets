@@ -61,6 +61,12 @@ arc-swap = "1.7"
 # TypeScript type generation from Rust types
 ts-rs = "10"
 
+# MIDI file generation for fugue export
+midly = "0.5"
+
+# Cross-platform directory paths
+dirs = "5"
+
 # WebSocket support for real-time UI updates
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
