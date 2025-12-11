@@ -11,6 +11,11 @@ use crate::params::DropletParams;
 
 use super::routes;
 
+/// The custom protocol scheme for serving app content
+const APP_PROTOCOL: &str = "droplets";
+/// The origin URL for the app (enables secure context)
+const APP_ORIGIN: &str = "droplets://localhost";
+
 /// Configuration for creating a WebView
 pub struct WebViewConfig {
     /// Whether to enable devtools (usually debug builds only)
@@ -55,9 +60,8 @@ impl WebViewConfig {
 /// Configure a WebViewBuilder with shared settings
 ///
 /// This applies the common configuration used by both plugin and standalone:
-/// - HTML content (bundled or dev mode)
+/// - Custom protocol handler for droplets:// (serves HTML, assets, and API)
 /// - Initialization script
-/// - Custom protocol handler for droplets:// API
 /// - IPC handler (if sender provided)
 /// - Navigation handler (opens external links in browser)
 /// - Devtools setting
@@ -66,42 +70,60 @@ pub fn configure_webview<'a>(
     params: Arc<DropletParams>,
     config: WebViewConfig,
 ) -> WebViewBuilder<'a> {
-    // Start with HTML content
-    let builder = configure_html(builder, config.dev_mode);
-
     // Add devtools
     let builder = builder.with_devtools(config.enable_devtools);
 
     // Add initialization script
     let builder = builder.with_initialization_script(include_str!("script.js"));
 
-    // Add custom protocol handler
+    // Add custom protocol handler that serves both HTML content and API
     let params_for_protocol = Arc::clone(&params);
-    let builder = builder.with_asynchronous_custom_protocol(
-        "droplets".to_string(),
-        move |_webview_id, request, responder| {
-            let params = Arc::clone(&params_for_protocol);
-            let uri = request.uri();
-            let path = uri.path();
-            let method = request.method().as_str();
-            let body = request.body();
+    let dev_mode = config.dev_mode;
+    let builder = builder
+        .with_asynchronous_custom_protocol(
+            APP_PROTOCOL.to_string(),
+            move |_webview_id, request, responder| {
+                let params = Arc::clone(&params_for_protocol);
+                let uri = request.uri();
+                let path = uri.path();
+                let method = request.method().as_str();
+                let body = request.body();
 
-            #[cfg(any(debug_assertions, feature = "dev-gui"))]
-            crate::logger::log_gui_event(
-                "api_request",
-                &format!("method={} uri={} path={:?}", method, uri, path),
-            );
+                #[cfg(any(debug_assertions, feature = "dev-gui"))]
+                crate::logger::log_gui_event(
+                    "protocol_request",
+                    &format!("method={} uri={} path={:?}", method, uri, path),
+                );
 
-            let response_body = routes::handle_request(path, method, body, &params);
+                // Serve HTML content for root path
+                if path == "/" || path.is_empty() {
+                    let html = get_html_content(dev_mode);
+                    let response = Response::builder()
+                        .header(CONTENT_TYPE, "text/html")
+                        .body(html.into_bytes())
+                        .unwrap();
+                    responder.respond(response);
+                    return;
+                }
 
-            let response = Response::builder()
-                .header(CONTENT_TYPE, "application/json")
-                .header("Access-Control-Allow-Origin", "*")
-                .body(response_body.into_bytes())
-                .unwrap();
-            responder.respond(response);
-        },
-    );
+                // Serve static assets
+                if let Some(response) = serve_static_asset(path, dev_mode) {
+                    responder.respond(response);
+                    return;
+                }
+
+                // Handle API requests
+                let response_body = routes::handle_request(path, method, body, &params);
+                let response = Response::builder()
+                    .header(CONTENT_TYPE, "application/json")
+                    .header("Access-Control-Allow-Origin", "*")
+                    .body(response_body.into_bytes())
+                    .unwrap();
+                responder.respond(response);
+            },
+        )
+        // Load content via custom protocol for secure context
+        .with_url(APP_ORIGIN);
 
     // Add IPC handler if sender provided
     let builder = if let Some(sender) = config.ipc_sender {
@@ -135,32 +157,75 @@ pub fn configure_webview<'a>(
     })
 }
 
-/// Configure HTML content for the WebView
-fn configure_html(builder: WebViewBuilder<'_>, dev_mode: bool) -> WebViewBuilder<'_> {
+/// Get HTML content (from filesystem in dev mode, bundled otherwise)
+fn get_html_content(dev_mode: bool) -> String {
     if dev_mode {
-        // Try to load from file system for live editing
         let dev_path =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("frontend/dist/index.html");
         if dev_path.exists() {
             #[cfg(any(debug_assertions, feature = "dev-gui"))]
             crate::logger::log_gui_event(
                 "webview_dev_mode",
-                &format!("Loading from: {:?}", dev_path),
+                &format!("Loading HTML from: {:?}", dev_path),
             );
-            match std::fs::read_to_string(&dev_path) {
-                Ok(html) => return builder.with_html(html),
-                Err(e) => {
-                    #[cfg(any(debug_assertions, feature = "dev-gui"))]
-                    crate::logger::log_error(&format!("Failed to read dev HTML: {}", e));
-                }
+            if let Ok(html) = std::fs::read_to_string(&dev_path) {
+                return html;
             }
-        } else {
-            #[cfg(any(debug_assertions, feature = "dev-gui"))]
-            crate::logger::log_gui_event(
-                "webview_dev_mode",
-                "Dev path not found, using bundled HTML",
-            );
         }
     }
-    builder.with_html(include_str!("../../frontend/dist/index.html"))
+    include_str!("../../frontend/dist/index.html").to_string()
+}
+
+/// Serve static assets (JS, CSS) from the frontend dist
+fn serve_static_asset(path: &str, dev_mode: bool) -> Option<Response<Vec<u8>>> {
+    // Determine content type from extension
+    let content_type = if path.ends_with(".js") {
+        "application/javascript"
+    } else if path.ends_with(".css") {
+        "text/css"
+    } else if path.ends_with(".svg") {
+        "image/svg+xml"
+    } else if path.ends_with(".png") {
+        "image/png"
+    } else if path.ends_with(".woff2") {
+        "font/woff2"
+    } else if path.ends_with(".woff") {
+        "font/woff"
+    } else {
+        return None;
+    };
+
+    // Try to load from filesystem in dev mode
+    if dev_mode {
+        let asset_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("frontend/dist")
+            .join(path.trim_start_matches('/'));
+        if asset_path.exists() {
+            if let Ok(content) = std::fs::read(&asset_path) {
+                #[cfg(any(debug_assertions, feature = "dev-gui"))]
+                crate::logger::log_gui_event("serve_asset", &format!("Serving: {:?}", asset_path));
+                return Some(
+                    Response::builder()
+                        .header(CONTENT_TYPE, content_type)
+                        .body(content)
+                        .unwrap(),
+                );
+            }
+        }
+    }
+
+    // For bundled assets, we need to handle common asset paths
+    // The bundled HTML references assets like /assets/index-xxx.js
+    let bundled_content: Option<&[u8]> = match path {
+        // Add bundled assets here if needed for production builds
+        // For now, we rely on dev mode or inline assets
+        _ => None,
+    };
+
+    bundled_content.map(|content| {
+        Response::builder()
+            .header(CONTENT_TYPE, content_type)
+            .body(content.to_vec())
+            .unwrap()
+    })
 }

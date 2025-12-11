@@ -68,10 +68,23 @@ export const Settings: React.FC = () => {
     }
   }, []);
 
-  const handleCopyUrl = useCallback(() => {
+  const handleCopyUrl = useCallback(async () => {
     if (settings) {
-      navigator.clipboard.writeText(settings.mcp_url);
-      setSuccess('URL copied to clipboard');
+      try {
+        await navigator.clipboard.writeText(settings.mcp_url);
+        setSuccess('URL copied to clipboard');
+      } catch {
+        // Fallback for non-secure contexts
+        const textArea = document.createElement('textarea');
+        textArea.value = settings.mcp_url;
+        textArea.style.position = 'fixed';
+        textArea.style.opacity = '0';
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+        setSuccess('URL copied to clipboard');
+      }
       setTimeout(() => setSuccess(null), 2000);
     }
   }, [settings]);

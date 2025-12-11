@@ -262,7 +262,7 @@ impl SettingsResponse {
         Self {
             export_path: settings.export_path.to_string_lossy().to_string(),
             mcp_port,
-            mcp_url: format!("http://localhost:{}", mcp_port),
+            mcp_url: format!("http://localhost:{}/mcp", mcp_port),
         }
     }
 }
