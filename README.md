@@ -193,7 +193,7 @@ Turn AI compositions into DAW clips:
 
 ```bash
 # Clone
-git clone https://github.com/simply-chris/simply-droplets.git
+git clone https://github.com/poucet/simply-droplets.git
 cd simply-droplets
 
 # Build frontend
@@ -287,5 +287,5 @@ Built with love using:
 ---
 
 <p align="center">
-  Made with 🎵 by <a href="https://github.com/simply-chris">Simply Chris</a>
+  Made with 🎵 by <a href="http://www.simplychris.ai">Simply Chris</a>
 </p>
