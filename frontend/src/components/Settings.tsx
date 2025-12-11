@@ -124,10 +124,6 @@ export const Settings: React.FC = () => {
           </div>
         </div>
 
-        <div className="settings-row">
-          <label>Port</label>
-          <code className="settings-code">{settings.mcp_port}</code>
-        </div>
       </section>
 
       <section className="settings-section">
