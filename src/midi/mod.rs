@@ -1,8 +1,7 @@
 //! MIDI processor for Simply Droplets
 //!
 //! This processor:
-//! - Listens for incoming MIDI CC for learning mode
-//! - Handles parameter automation from the DAW
+//! - Forwards all incoming MIDI events to output (MIDI thru)
 //! - Outputs CLAP-native note events (for VST3 compatibility)
 //! - Outputs MIDI 2.0 UMP for high-resolution in CLAP hosts
 //! - Outputs MIDI 1.0 for CC (no native CLAP CC type)
@@ -171,17 +170,33 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
     ) -> Result<ProcessStatus, PluginError> {
         self.shared.host.request_callback();
 
-        // Process incoming MIDI events for CC learning
+        // Forward all incoming MIDI events to output
         for event in events.input.iter() {
+            let time = event.header().time();
+
+            // Forward MIDI 1.0 events
             if let Some(midi) = event.as_event::<MidiEvent>() {
-                let data = midi.data();
-                let status = data[0];
-                if (0xB0..=0xBF).contains(&status) {
-                    let channel = status & 0x0F;
-                    let cc = data[1];
-                    if let Some(slot_idx) = self.shared.params.process_learn(channel, cc) {
-                        log::info!("Learned CC{} on channel {} for slot {}", cc, channel + 1, slot_idx);
-                    }
+                let _ = events.output.try_push(&MidiEvent::new(time, 0, midi.data()));
+            }
+
+            // Forward MIDI 2.0 events
+            if let Some(midi2) = event.as_event::<Midi2Event>() {
+                let _ = events.output.try_push(&Midi2Event::new(time, 0, midi2.data()));
+            }
+
+            // Forward CLAP note events
+            if let Some(note_on) = event.as_event::<NoteOnEvent>() {
+                let _ = events.output.try_push(&NoteOnEvent::new(time, note_on.pckn(), note_on.velocity()));
+            }
+
+            if let Some(note_off) = event.as_event::<NoteOffEvent>() {
+                let _ = events.output.try_push(&NoteOffEvent::new(time, note_off.pckn(), note_off.velocity()));
+            }
+
+            // Forward note expression events
+            if let Some(expr) = event.as_event::<NoteExpressionEvent>() {
+                if let Some(expr_type) = expr.expression_type() {
+                    let _ = events.output.try_push(&NoteExpressionEvent::new(time, expr.pckn(), expr_type, expr.value()));
                 }
             }
         }
