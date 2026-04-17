@@ -174,6 +174,76 @@
   cursor: move;
 }
 
+/* Per-note pressure lanes (MIDI 2.0) */
+.pressure-sidebar {
+  border-top: 2px solid #3d3d5c;
+}
+
+.pressure-sidebar-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: #a78bfa;
+  border-bottom: 1px solid #2d2d44;
+}
+
+.pressure-lane-bg {
+  fill: #1b1a28;
+  stroke: #3d3d5c;
+  stroke-width: 1;
+}
+
+.pressure-label {
+  fill: #a78bfa;
+  font-size: 10px;
+}
+
+.pressure-line {
+  stroke: #a78bfa;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Per-note pitch-bend lanes (MIDI 2.0) */
+.bend-sidebar {
+  border-top: 2px solid #3d3d5c;
+}
+
+.bend-sidebar-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  color: #4fc3f7;
+  border-bottom: 1px solid #2d2d44;
+}
+
+.bend-lane-bg {
+  fill: #19222e;
+  stroke: #3d3d5c;
+  stroke-width: 1;
+}
+
+.bend-center-line {
+  stroke: #2d2d44;
+  stroke-width: 1;
+  stroke-dasharray: 2 3;
+}
+
+.bend-label {
+  fill: #4fc3f7;
+  font-size: 10px;
+}
+
+.bend-line {
+  stroke: #4fc3f7;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
 /* Playhead */
 .playhead {
   stroke: #f44336;

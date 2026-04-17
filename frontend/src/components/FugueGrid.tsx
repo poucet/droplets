@@ -52,6 +52,17 @@ interface CCPoint {
   value: number;
 }
 
+interface PerNotePoint {
+  beat: number;
+  value: number; // pressure 0-1 OR semitones
+  note: number;
+  channel: number;
+}
+
+/// Semitone range displayed on a bend lane. Bends beyond this are clamped
+/// visually (the audio-thread still honors the real value).
+const BEND_DISPLAY_RANGE = 12;
+
 export const FugueGrid: React.FC<FugueGridProps> = ({
   events,
   durationBeats,
@@ -69,13 +80,22 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
 }) => {
   // Ref for direct DOM manipulation of playhead
   const playheadRef = useRef<SVGLineElement>(null);
-  // Parse events into notes and CC points
-  const { notes, ccPoints, autoNoteRange, autoCCs } = useMemo(() => {
+  // Parse events into notes, CC points, and per-note expression lanes.
+  const {
+    notes, ccPoints, pressurePoints, bendPoints,
+    autoNoteRange, autoCCs, autoPressureKeys, autoBendKeys,
+  } = useMemo(() => {
     const noteMap = new Map<string, NoteCell>();
     const ccMap = new Map<number, CCPoint[]>();
+    // Per-note expression keyed by `${note}-${channel}` so multiple notes can
+    // have independent lanes on the same instrument.
+    const pressureMap = new Map<string, PerNotePoint[]>();
+    const bendMap = new Map<string, PerNotePoint[]>();
     let minNote = 127;
     let maxNote = 0;
     const ccSet = new Set<number>();
+    const pressureSet = new Set<string>();
+    const bendSet = new Set<string>();
 
     const activeNotes = new Map<number, { beat: number; velocity: number; channel: number }>();
     const sortedEvents = [...events].sort((a, b) => a.beat_offset - b.beat_offset);
@@ -104,6 +124,28 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
         const points = ccMap.get(event.cc) || [];
         points.push({ beat: beat_offset, cc: event.cc, value: event.value });
         ccMap.set(event.cc, points);
+      } else if (event.type === 'per_note_pressure') {
+        const key = `${event.note}-${event.channel}`;
+        pressureSet.add(key);
+        const list = pressureMap.get(key) || [];
+        list.push({
+          beat: beat_offset,
+          value: event.pressure,
+          note: event.note,
+          channel: event.channel,
+        });
+        pressureMap.set(key, list);
+      } else if (event.type === 'per_note_pitch_bend') {
+        const key = `${event.note}-${event.channel}`;
+        bendSet.add(key);
+        const list = bendMap.get(key) || [];
+        list.push({
+          beat: beat_offset,
+          value: event.semitones,
+          note: event.note,
+          channel: event.channel,
+        });
+        bendMap.set(key, list);
       }
     }
 
@@ -119,11 +161,22 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
       });
     });
 
+    // Sort each per-note lane's points by beat for the polyline.
+    const sortLane = (m: Map<string, PerNotePoint[]>) => {
+      m.forEach(arr => arr.sort((a, b) => a.beat - b.beat));
+    };
+    sortLane(pressureMap);
+    sortLane(bendMap);
+
     return {
       notes: Array.from(noteMap.values()),
       ccPoints: ccMap,
+      pressurePoints: pressureMap,
+      bendPoints: bendMap,
       autoNoteRange: minNote <= maxNote ? { min: minNote, max: maxNote } : { min: 48, max: 72 },
       autoCCs: Array.from(ccSet).sort((a, b) => a - b),
+      autoPressureKeys: Array.from(pressureSet).sort(),
+      autoBendKeys: Array.from(bendSet).sort(),
     };
   }, [events, durationBeats]);
 
@@ -141,6 +194,9 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
   const gridWidth = durationBeats * pixelsPerBeat;
   const noteGridHeight = noteCount * noteHeight;
   const totalCCHeight = visibleCCs.length * ccLaneHeight;
+  const totalPressureHeight = autoPressureKeys.length * ccLaneHeight;
+  const totalBendHeight = autoBendKeys.length * ccLaneHeight;
+  const totalExtraHeight = totalCCHeight + totalPressureHeight + totalBendHeight;
 
   // Render beat grid lines
   const renderGridLines = () => {
@@ -246,6 +302,71 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
     });
   };
 
+  // Render per-note pressure lanes. Y axis is 0.0 (bottom) to 1.0 (top).
+  // Values are per-segment-expanded, so point density is high; drop the
+  // per-point circles that CC uses for legibility.
+  const renderPressureLanes = () => {
+    return autoPressureKeys.map((key, laneIndex) => {
+      const pts = pressurePoints.get(key) || [];
+      const [note] = key.split('-').map(Number);
+      const y = laneIndex * ccLaneHeight;
+
+      const pathD = pts.length > 0
+        ? pts.map((p, i) => {
+            const x = p.beat * pixelsPerBeat;
+            const clamped = Math.max(0, Math.min(1, p.value));
+            const py = ccLaneHeight - clamped * (ccLaneHeight - 4) - 2;
+            return `${i === 0 ? 'M' : 'L'} ${x} ${py}`;
+          }).join(' ')
+        : '';
+
+      return (
+        <g key={key} transform={`translate(0, ${y})`}>
+          <rect x={0} y={0} width={gridWidth} height={ccLaneHeight} className="pressure-lane-bg" />
+          <text x={4} y={14} className="pressure-label">♦ {getNoteName(note)} pressure</text>
+          {pathD && <path d={pathD} className="pressure-line" fill="none" />}
+        </g>
+      );
+    });
+  };
+
+  // Render per-note pitch-bend lanes. Y axis is semitones, clamped to
+  // ±BEND_DISPLAY_RANGE for display (audio-thread honors the real value).
+  // A horizontal center line marks zero bend.
+  const renderBendLanes = () => {
+    return autoBendKeys.map((key, laneIndex) => {
+      const pts = bendPoints.get(key) || [];
+      const [note] = key.split('-').map(Number);
+      const y = laneIndex * ccLaneHeight;
+      const centerY = ccLaneHeight / 2;
+
+      const pathD = pts.length > 0
+        ? pts.map((p, i) => {
+            const x = p.beat * pixelsPerBeat;
+            // Clamp to display range, then map to lane coords. Positive
+            // semitones go UP, so invert.
+            const clamped = Math.max(-BEND_DISPLAY_RANGE, Math.min(BEND_DISPLAY_RANGE, p.value));
+            const normalized = clamped / BEND_DISPLAY_RANGE; // [-1, 1]
+            const py = centerY - normalized * (centerY - 2);
+            return `${i === 0 ? 'M' : 'L'} ${x} ${py}`;
+          }).join(' ')
+        : '';
+
+      return (
+        <g key={key} transform={`translate(0, ${y})`}>
+          <rect x={0} y={0} width={gridWidth} height={ccLaneHeight} className="bend-lane-bg" />
+          <line
+            x1={0} y1={centerY}
+            x2={gridWidth} y2={centerY}
+            className="bend-center-line"
+          />
+          <text x={4} y={14} className="bend-label">↕ {getNoteName(note)} bend</text>
+          {pathD && <path d={pathD} className="bend-line" fill="none" />}
+        </g>
+      );
+    });
+  };
+
   // Subscribe to TimingManager for smooth playhead animation via direct DOM manipulation
   useEffect(() => {
     if (!showPlayhead || startBeat === undefined) return;
@@ -312,12 +433,36 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
             ))}
           </div>
         )}
+        {autoPressureKeys.length > 0 && (
+          <div className="pressure-sidebar" style={{ height: totalPressureHeight }}>
+            {autoPressureKeys.map(key => {
+              const [note] = key.split('-').map(Number);
+              return (
+                <div key={key} className="pressure-sidebar-label" style={{ height: ccLaneHeight }}>
+                  ♦ {getNoteName(note)}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {autoBendKeys.length > 0 && (
+          <div className="bend-sidebar" style={{ height: totalBendHeight }}>
+            {autoBendKeys.map(key => {
+              const [note] = key.split('-').map(Number);
+              return (
+                <div key={key} className="bend-sidebar-label" style={{ height: ccLaneHeight }}>
+                  ↕ {getNoteName(note)}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div className="grid-scroll">
         <svg
           width={gridWidth}
-          height={noteGridHeight + totalCCHeight}
+          height={noteGridHeight + totalExtraHeight}
           className="grid-svg"
         >
           {/* Note grid area */}
@@ -342,6 +487,16 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
             {renderCCLanes()}
           </g>
 
+          {/* Per-note pressure lanes */}
+          <g className="pressure-lanes" transform={`translate(0, ${noteGridHeight + totalCCHeight})`}>
+            {renderPressureLanes()}
+          </g>
+
+          {/* Per-note pitch-bend lanes */}
+          <g className="bend-lanes" transform={`translate(0, ${noteGridHeight + totalCCHeight + totalPressureHeight})`}>
+            {renderBendLanes()}
+          </g>
+
           {/* Playhead (on top of everything) - positioned via direct DOM manipulation */}
           {showPlayhead && startBeat !== undefined && (
             <line
@@ -349,7 +504,7 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
               x1={0}
               y1={0}
               x2={0}
-              y2={noteGridHeight + totalCCHeight}
+              y2={noteGridHeight + totalExtraHeight}
               className="playhead"
               style={{ display: 'none' }}
             />
