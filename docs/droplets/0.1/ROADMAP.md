@@ -15,8 +15,8 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | Done | Pri | # | Feature | Complexity | Impact |
 |------|-----|---|---------|------------|--------|
 | [x] | P0 | 1 | Per-note expressivity inside fugues | M | High — reshapes schema; must land before docs/prompt |
-| [ ] | P0 | 2 | Rewrite `ServerInfo::instructions` system prompt | S | Very High — shapes every LLM call |
-| [ ] | P0 | 3 | Add a worked example to `queue_fugue` tool description | S | Very High — LLMs imitate examples |
+| [x] | P0 | 2 | Rewrite `ServerInfo::instructions` system prompt | S | Very High — shapes every LLM call |
+| [x] | P0 | 3 | Add a worked example to `queue_fugue` tool description | S | Very High — LLMs imitate examples |
 | [ ] | P0 | 4 | Rewrite FUGUE.md to match the shipping compact schema | S | High — live demo reference |
 | [ ] | P1 | 5 | Add `get_transport` MCP tool | S | Medium-High — lets LLM reason about timing |
 | [ ] | P0 | 6 | Multi-instance end-to-end validation | M | Critical — central demo claim |

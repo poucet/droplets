@@ -361,7 +361,7 @@ impl DropletsMcp {
     // =========================================================================
 
     /// Queue one or more fugues for transport-synchronized playback.
-    #[tool(description = "Queue one or more fugues for transport-synchronized playback. Each fugue is atomic - use separate fugues for notes, CC automation, and per-note expression so they can be updated independently.\n\nFugue types:\n- 'notes': MIDI notes with auto note-off. Each note has beat, note (0-127), duration (beats).\n- 'cc': CC automation. Points are [beat, value] pairs (values 0-127). Interpolation: 'linear' (default), 'exp', 'log', or 'none'.\n- 'per_note_pitch_bend': MIDI 2.0 per-note pitch bend over time. Bends a single held note; points are [beat, semitones] or [beat, semitones, curve] tuples (-64.0 to +64.0). Requires a concurrent 'notes' fugue holding the target note on the same channel.\n- 'per_note_pressure': MIDI 2.0 per-note pressure/aftertouch over time. Points are [beat, pressure] or [beat, pressure, curve] tuples (0.0-1.0).\n\nPer-note trajectories support per-segment curves — each point's optional curve controls interpolation for the segment arriving at it (ignored on first point). Example crescendo-then-release: [[0,0],[2,1,\"exp\"],[4,0,\"log\"]].\n\nUse tags + cancel_mode for layering: tag:'melody' with cancel_mode:'tag:melody' replaces the previous melody while leaving other fugues untouched.")]
+    #[tool(description = "Queue one or more fugues for transport-synchronized playback. Each fugue is atomic — use separate fugues for notes, CC automation, and per-note expression so they can be updated independently.\n\nFugue types (use the 'type' field):\n- 'notes': MIDI notes with auto note-off at beat+duration. Each note has {beat, note (0-127), duration, velocity? (1-127, default 100), channel?}.\n- 'cc': CC automation with smooth per-fugue interpolation. Fields: cc (0-127), points ([beat, value] pairs, values 0-127), interpolation? ('linear' default, 'exp', 'log', 'none').\n- 'per_note_pitch_bend': MIDI 2.0 per-note bend on a SINGLE held note. Fields: note (0-127), points ([beat, semitones] or [beat, semitones, curve] tuples, semitones -64.0 to +64.0). Requires a concurrent 'notes' fugue holding the target note on the same channel.\n- 'per_note_pressure': MIDI 2.0 per-note pressure on a SINGLE held note. Fields: note (0-127), points ([beat, pressure] or [beat, pressure, curve] tuples, pressure 0.0-1.0). Same 'held note' requirement.\n\nPer-segment curves (per-note only): each point's optional third element is the curve used on the segment ARRIVING at that point (ignored on the first point). Valid: 'linear' (default), 'exp' (ease-in, accelerating), 'log' (ease-out, decelerating), 'none' (step).\n\nShared top-level fields (defaults across all fugues in the batch, per-fugue can override): duration_beats, quantize ('immediate'|'beat'|'bar'|'bars:N'), loop_mode ('once'|'forever'|N).\n\nTag + cancel_mode is how you update one part without disturbing others:\n  tag:'melody' + cancel_mode:'tag:melody' → replaces only the previous 'melody' fugue.\n\nWorked example — 4-bar phrase with bass, held melody note, filter sweep, and expressive bend:\n```json\n{\n  \"instance\": \"lead\",\n  \"duration_beats\": 4,\n  \"quantize\": \"bar\",\n  \"loop_mode\": \"forever\",\n  \"fugues\": [\n    {\"tag\":\"bass\",\"cancel_mode\":\"tag:bass\",\"type\":\"notes\",\"notes\":[\n      {\"beat\":0,\"note\":36,\"duration\":0.5},\n      {\"beat\":1,\"note\":36,\"duration\":0.5},\n      {\"beat\":2,\"note\":43,\"duration\":0.5},\n      {\"beat\":3,\"note\":36,\"duration\":0.5}\n    ]},\n    {\"tag\":\"melody\",\"cancel_mode\":\"tag:melody\",\"type\":\"notes\",\"notes\":[\n      {\"beat\":0,\"note\":60,\"duration\":4,\"velocity\":90}\n    ]},\n    {\"tag\":\"filter\",\"cancel_mode\":\"tag:filter\",\"type\":\"cc\",\"cc\":74,\n     \"points\":[[0,30],[2,110],[4,30]],\"interpolation\":\"exp\"},\n    {\"tag\":\"bend\",\"cancel_mode\":\"tag:bend\",\"type\":\"per_note_pitch_bend\",\"note\":60,\n     \"points\":[[0,0],[2,2,\"exp\"],[4,0,\"log\"]]}\n  ]\n}\n```\nTo swap just the melody later, queue a fugue with tag:'melody' and cancel_mode:'tag:melody'. Bass, filter, and bend keep playing.")]
     fn queue_fugue(&self, Parameters(req): Parameters<QueueFugueRequest>) -> Result<CallToolResult, McpError> {
         // Get shared defaults
         let default_quantize_str = req.data.quantize.as_deref().unwrap_or("bar");
@@ -579,19 +579,51 @@ impl ServerHandler for DropletsMcp {
                 .build(),
             server_info: Implementation::from_build_env(),
             instructions: Some(
-                "Simply Droplets MCP Server - AI-controlled MIDI 1.0/2.0 output for DAW automation.\n\n\
-                 Fugue Sequencing Tools (transport-synchronized):\n\
-                 - queue_fugue(events, duration_beats, ...): Queue a musical sequence for transport-synced playback\n\
-                 - list_fugues(): List active/pending fugues with IDs and status\n\
-                 - cancel_fugue(id): Cancel a specific fugue by ID\n\
-                 - cancel_fugues_by_tag(tag): Cancel all fugues with matching tag\n\
-                 - clear_fugues(): Emergency stop - cancel all fugues\n\n\
-                 Instance Tools:\n\
-                 - list_instances(): See connected plugin instances\n\
-                 - list_slots(): See slots with names, CC mappings, and values\n\
-                 - set_param(slot, value): Set slot value (0.0-1.0)\n\
-                 - get_activity(): See recent MIDI activity\n\n\
-                 Note: Fugues require DAW transport to be playing."
+                "Simply Droplets — AI-controlled MIDI 1.0/2.0 out of a DAW plugin.\n\
+                 \n\
+                 ## Multi-instance setup (do first when >1 plugin is loaded)\n\
+                 1. `list_instances` — shows connected IDs like 'droplets-a1b2c3d4'.\n\
+                 2. `set_instance_name` on each to give musical names: 'lead', 'bass', 'pad'. All subsequent calls target these names via the `instance` field.\n\
+                 3. The DAW transport MUST be PLAYING for fugues to produce sound.\n\
+                 \n\
+                 ## queue_fugue — primary composition tool\n\
+                 Batches multiple fugues into one call. Each fugue is atomic; swap one musical part by queueing a new fugue with the same tag + cancel_mode:'tag:<name>'. The other parts keep playing untouched.\n\
+                 \n\
+                 Fugue content types (each in its own fugue for independent control):\n\
+                 - 'notes'               — MIDI notes with auto note-off at beat+duration.\n\
+                 - 'cc'                  — CC automation with smooth per-fugue interpolation.\n\
+                 - 'per_note_pitch_bend' — MIDI 2.0 per-note bend on a held note.\n\
+                 - 'per_note_pressure'   — MIDI 2.0 per-note pressure on a held note.\n\
+                 \n\
+                 Shared fields (override per-fugue): duration_beats, quantize ('immediate'|'beat'|'bar'|'bars:N'), loop_mode ('once'|'forever'|N).\n\
+                 \n\
+                 Curves (on CC interpolation, and per-segment on per-note point tuples):\n\
+                 - 'linear' (default)  smooth straight line\n\
+                 - 'exp'               ease-in, accelerating (t²)\n\
+                 - 'log'               ease-out, decelerating (1-(1-t)²)\n\
+                 - 'none'              stepped/discrete\n\
+                 \n\
+                 See the queue_fugue tool description for a full worked example.\n\
+                 \n\
+                 ## Musical defaults that actually sound good\n\
+                 - Velocities 60-110 — save 110-120 for hits that need to cut through. Avoid 127 unless aggressive is the point.\n\
+                 - Use `quantize: 'bar'` so updates land on musical boundaries.\n\
+                 - Short fugues (2-8 bars) + loop_mode: 'forever'; replace via tag swap.\n\
+                 - Separate notes and automation into different fugues — update independently.\n\
+                 - Per-note bend/pressure REQUIRE a concurrent notes fugue holding the target note on the same channel; otherwise the expression has nothing to modulate.\n\
+                 \n\
+                 ## Other tools\n\
+                 - list_fugues / cancel_fugue / cancel_fugues_by_tag / clear_fugues\n\
+                 - send_note_on / send_note_off / send_cc — ONE-SHOT only, not for composition\n\
+                 - send_per_note_pitch_bend / send_per_note_pressure — MIDI 2.0 expression (one-shot)\n\
+                 - set_param / rename_slot / list_slots — parameter-slot automation\n\
+                 - get_activity — recent MIDI event log (debugging)\n\
+                 \n\
+                 ## Gotchas\n\
+                 - Fugues do not play while transport is stopped.\n\
+                 - Tempo changes mid-fugue drift the timing.\n\
+                 - MIDI 2.0 per-note expressions require a MIDI 2.0-capable host/instrument.\n\
+                 - There is no get_transport tool yet — ask the user what bar they're on if you need to reason about current position."
                     .to_string(),
             ),
         }
