@@ -244,10 +244,49 @@ impl FugueBridge {
     ///
     /// **Never call from the audio thread** — this sleeps.
     pub fn wait_for_fugue_visible(instance: &str, id: u64, timeout_ms: u64) -> bool {
+        Self::wait_until(instance, timeout_ms, |infos| {
+            infos.iter().any(|i| i.id == id)
+        })
+    }
+
+    /// Block until `id` disappears from the info cache, or until `timeout_ms`
+    /// elapses. Returns `true` if the fugue is gone. Mirror of
+    /// [`wait_for_fugue_visible`] for cancel paths — without this, the UI
+    /// reads the stale info cache and the cancelled fugue "sticks around."
+    ///
+    /// **Never call from the audio thread** — this sleeps.
+    pub fn wait_for_fugue_gone(instance: &str, id: u64, timeout_ms: u64) -> bool {
+        Self::wait_until(instance, timeout_ms, |infos| {
+            !infos.iter().any(|i| i.id == id)
+        })
+    }
+
+    /// Block until no fugue with a matching tag remains in the info cache.
+    /// Used by `cancel_fugues_by_tag` handlers to guarantee the caller's
+    /// next read is post-clear.
+    pub fn wait_for_tag_gone(instance: &str, tag: &str, timeout_ms: u64) -> bool {
+        Self::wait_until(instance, timeout_ms, |infos| {
+            !infos.iter().any(|i| i.tag.as_deref() == Some(tag))
+        })
+    }
+
+    /// Block until the info cache on `instance` is empty. Used by
+    /// `clear_fugues` handlers.
+    pub fn wait_for_no_fugues(instance: &str, timeout_ms: u64) -> bool {
+        Self::wait_until(instance, timeout_ms, |infos| infos.is_empty())
+    }
+
+    /// Shared polling loop behind the `wait_for_*` helpers. 2ms backoff;
+    /// bails at the first iteration where `predicate(&infos)` is true.
+    fn wait_until(
+        instance: &str,
+        timeout_ms: u64,
+        predicate: impl Fn(&[FugueInfo]) -> bool,
+    ) -> bool {
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
         while std::time::Instant::now() < deadline {
             if let Ok(infos) = Self::get_fugue_info(instance) {
-                if infos.iter().any(|i| i.id == id) {
+                if predicate(&infos) {
                     return true;
                 }
             }

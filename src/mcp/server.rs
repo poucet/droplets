@@ -564,7 +564,12 @@ impl DropletsMcp {
     #[tool(description = "Cancel a specific fugue by its ID. Sends note-offs for any active notes and stops playback. Use the fugue_id returned by queue_fugue.")]
     fn cancel_fugue(&self, Parameters(req): Parameters<CancelFugueRequest>) -> Result<CallToolResult, McpError> {
         let result = match FugueBridge::cancel(&req.instance, req.data.id) {
-            Ok(()) => format!("Cancelled fugue {}", req.data.id),
+            Ok(()) => {
+                // Wait for the audio thread to process the cancel so a
+                // follow-up list_fugues / UI fetch reflects the removal.
+                FugueBridge::wait_for_fugue_gone(&req.instance, req.data.id, 100);
+                format!("Cancelled fugue {}", req.data.id)
+            }
             Err(e) => format!("Error: {}", e),
         };
         Ok(CallToolResult::success(vec![Content::text(result)]))
@@ -574,7 +579,10 @@ impl DropletsMcp {
     #[tool(description = "Cancel all fugues with a matching tag. Sends note-offs for any active notes. Use this to stop all instances of a pattern, like all 'melody' fugues.")]
     fn cancel_fugues_by_tag(&self, Parameters(req): Parameters<CancelFuguesByTagRequest>) -> Result<CallToolResult, McpError> {
         let result = match FugueBridge::cancel_by_tag(&req.instance, &req.data.tag) {
-            Ok(()) => format!("Cancelled all fugues with tag '{}'", req.data.tag),
+            Ok(()) => {
+                FugueBridge::wait_for_tag_gone(&req.instance, &req.data.tag, 100);
+                format!("Cancelled all fugues with tag '{}'", req.data.tag)
+            }
             Err(e) => format!("Error: {}", e),
         };
         Ok(CallToolResult::success(vec![Content::text(result)]))
@@ -584,7 +592,10 @@ impl DropletsMcp {
     #[tool(description = "Emergency stop: cancel all fugues on a plugin instance. Sends note-offs for all active notes and clears the queue. Use when you need to stop everything immediately.")]
     fn clear_fugues(&self, Parameters(req): Parameters<GetSlotsRequest>) -> Result<CallToolResult, McpError> {
         let result = match FugueBridge::clear_all(&req.instance) {
-            Ok(()) => "Cleared all fugues".to_string(),
+            Ok(()) => {
+                FugueBridge::wait_for_no_fugues(&req.instance, 100);
+                "Cleared all fugues".to_string()
+            }
             Err(e) => format!("Error: {}", e),
         };
         Ok(CallToolResult::success(vec![Content::text(result)]))

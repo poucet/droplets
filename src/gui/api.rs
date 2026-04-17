@@ -355,32 +355,46 @@ pub fn queue_fugue(instance: &str, req: QueueFugueRequest) -> QueueFugueResponse
     }
 }
 
-/// Cancel a specific fugue by ID
+/// Cancel a specific fugue by ID.
+/// Waits briefly for the audio thread to process the cancel so the caller's
+/// next read of the info cache reflects the removal (without this, the UI
+/// sees the cancelled fugue stuck in the list).
 pub fn cancel_fugue(instance: &str, id: u64) -> Result<OkResponse, String> {
     FugueBridge::cancel(instance, id)
-        .map(|_| OkResponse {
-            ok: true,
-            message: Some(format!("Cancelled fugue {}", id)),
+        .map(|_| {
+            FugueBridge::wait_for_fugue_gone(instance, id, 100);
+            OkResponse {
+                ok: true,
+                message: Some(format!("Cancelled fugue {}", id)),
+            }
         })
         .map_err(|e| e.to_string())
 }
 
-/// Cancel all fugues with a specific tag
+/// Cancel all fugues with a specific tag. Waits for the audio thread to
+/// process the command so the follow-up read is clean.
 pub fn cancel_fugues_by_tag(instance: &str, tag: &str) -> Result<OkResponse, String> {
     FugueBridge::cancel_by_tag(instance, tag)
-        .map(|_| OkResponse {
-            ok: true,
-            message: Some(format!("Cancelled fugues with tag '{}'", tag)),
+        .map(|_| {
+            FugueBridge::wait_for_tag_gone(instance, tag, 100);
+            OkResponse {
+                ok: true,
+                message: Some(format!("Cancelled fugues with tag '{}'", tag)),
+            }
         })
         .map_err(|e| e.to_string())
 }
 
-/// Clear all fugues on an instance
+/// Clear all fugues on an instance. Waits for the audio thread to empty
+/// the info cache so the UI's next fetch returns [].
 pub fn clear_fugues(instance: &str) -> Result<OkResponse, String> {
     FugueBridge::clear_all(instance)
-        .map(|_| OkResponse {
-            ok: true,
-            message: Some("Cleared all fugues".to_string()),
+        .map(|_| {
+            FugueBridge::wait_for_no_fugues(instance, 100);
+            OkResponse {
+                ok: true,
+                message: Some("Cleared all fugues".to_string()),
+            }
         })
         .map_err(|e| e.to_string())
 }
