@@ -290,11 +290,20 @@ fn main() {
     // Create GUI window with wry/tao
     use tao::{
         event::{Event, WindowEvent},
-        event_loop::{ControlFlow, EventLoop},
+        event_loop::{ControlFlow, EventLoop, EventLoopBuilder},
         window::WindowBuilder,
     };
 
-    let event_loop = EventLoop::new();
+    // UserEvent::Poll wakes the event loop every ~100ms so we can push cached
+    // fugue/transport state to the webview via evaluate_script. The webview
+    // can't be moved to another thread (not Send), so any evaluate_script
+    // call has to happen on the event loop thread.
+    #[derive(Debug, Clone)]
+    enum UserEvent {
+        Poll,
+    }
+
+    let event_loop: EventLoop<UserEvent> = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let window = match WindowBuilder::new()
         .with_title("Simply Droplets - Standalone")
         .with_inner_size(DEFAULT_GUI_SIZE)
@@ -311,13 +320,36 @@ fn main() {
     let config = WebViewConfig::standalone().with_ipc_sender(ipc_sender);
     let builder = configure_webview(WebViewBuilder::new(), Arc::clone(&params_inst), config);
 
-    let _webview = match builder.build(&window) {
+    let webview = match builder.build(&window) {
         Ok(w) => w,
         Err(e) => {
             eprintln!("Failed to create webview: {}", e);
             return;
         }
     };
+
+    // Polling thread: every 100ms, poke the event loop to push cached fugue
+    // and transport state into the webview. Without this, LLM-queued fugues
+    // update the FugueBridge info cache but never reach the UI, because the
+    // webview's IPC-WebSocket shim only fires when Rust calls evaluate_script
+    // from the event loop thread (where the WebView lives — not Send).
+    let proxy = event_loop.create_proxy();
+    thread::spawn(move || {
+        loop {
+            thread::sleep(Duration::from_millis(100));
+            if proxy.send_event(UserEvent::Poll).is_err() {
+                // Event loop is gone (process shutting down).
+                break;
+            }
+        }
+    });
+
+    // Change-detection state for the push handler. Matches DropletGui's
+    // plugin-side logic: only push when IDs or waiting flags change so we
+    // don't flood the webview with identical messages every tick.
+    let mut last_transport: Option<simply_droplets::fugue::TransportState> = None;
+    let mut last_fugue_ids: Vec<u64> = Vec::new();
+    let mut last_waiting_states: Vec<bool> = Vec::new();
 
     // Keep handles for the two shutdown paths (window close, signal).
     let conn_out_shutdown = Arc::clone(&conn_out);
@@ -353,7 +385,68 @@ fn main() {
                 shutdown_midi(&conn_out_shutdown, instance_id);
                 *control_flow = ControlFlow::Exit;
             }
+            Event::UserEvent(UserEvent::Poll) => {
+                push_state_to_webview(
+                    &webview,
+                    instance_id,
+                    &mut last_transport,
+                    &mut last_fugue_ids,
+                    &mut last_waiting_states,
+                );
+            }
             _ => (),
         }
     });
+}
+
+/// Push cached fugue + transport state into the webview via evaluate_script.
+///
+/// Mirrors `DropletGui::push_fugues` / `push_transport` in the plugin path,
+/// inlined here because the standalone doesn't construct a `DropletGui`.
+/// Only emits messages when state actually changed — the frontend's render
+/// doesn't need the noise, and evaluate_script is not free.
+fn push_state_to_webview(
+    webview: &wry::WebView,
+    instance_id: &str,
+    last_transport: &mut Option<simply_droplets::fugue::TransportState>,
+    last_fugue_ids: &mut Vec<u64>,
+    last_waiting_states: &mut Vec<bool>,
+) {
+    // Transport: push when beat advances enough to matter, or playing/tempo change.
+    if let Ok(transport) = simply_droplets::fugue::FugueBridge::get_transport(instance_id) {
+        let should_send = last_transport
+            .map(|last| {
+                (transport.beat - last.beat).abs() > 0.001
+                    || transport.playing != last.playing
+                    || transport.tempo != last.tempo
+            })
+            .unwrap_or(true);
+        if should_send {
+            let js = format!(
+                "window.simplyvst._pushTransport({{beat:{},tempo:{},playing:{},time_sig_numerator:{}}})",
+                transport.beat, transport.tempo, transport.playing, transport.time_sig_numerator
+            );
+            let _ = webview.evaluate_script(&js);
+            *last_transport = Some(transport);
+        }
+    }
+
+    // Fugues: push when the set of IDs or waiting-flags changes.
+    if let Ok(infos) = simply_droplets::fugue::FugueBridge::get_fugue_info(instance_id) {
+        let current_ids: Vec<u64> = infos.iter().map(|f| f.id).collect();
+        let current_waiting: Vec<bool> = infos.iter().map(|f| f.is_waiting).collect();
+        if current_ids != *last_fugue_ids || current_waiting != *last_waiting_states {
+            let defs = simply_droplets::fugue::FugueBridge::get_definitions(instance_id)
+                .unwrap_or_default();
+            let infos_json = serde_json::to_string(&infos).unwrap_or_else(|_| "[]".into());
+            let defs_json = serde_json::to_string(&defs).unwrap_or_else(|_| "[]".into());
+            let js = format!(
+                "window.simplyvst._pushFugues({},{})",
+                infos_json, defs_json
+            );
+            let _ = webview.evaluate_script(&js);
+            *last_fugue_ids = current_ids;
+            *last_waiting_states = current_waiting;
+        }
+    }
 }
