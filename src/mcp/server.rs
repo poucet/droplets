@@ -361,7 +361,7 @@ impl DropletsMcp {
     // =========================================================================
 
     /// Queue one or more fugues for transport-synchronized playback.
-    #[tool(description = "Queue one or more fugues for transport-synchronized playback. Each fugue is atomic — use separate fugues for notes, CC automation, and per-note expression so they can be updated independently.\n\nFugue types (use the 'type' field):\n- 'notes': MIDI notes with auto note-off at beat+duration. Each note has {beat, note (0-127), duration, velocity? (1-127, default 100), channel?}.\n- 'cc': CC automation with smooth per-fugue interpolation. Fields: cc (0-127), points ([beat, value] pairs, values 0-127), interpolation? ('linear' default, 'exp', 'log', 'none').\n- 'per_note_pitch_bend': MIDI 2.0 per-note bend on a SINGLE held note. Fields: note (0-127), points ([beat, semitones] or [beat, semitones, curve] tuples, semitones -64.0 to +64.0). Requires a concurrent 'notes' fugue holding the target note on the same channel.\n- 'per_note_pressure': MIDI 2.0 per-note pressure on a SINGLE held note. Fields: note (0-127), points ([beat, pressure] or [beat, pressure, curve] tuples, pressure 0.0-1.0). Same 'held note' requirement.\n\nPer-segment curves (per-note only): each point's optional third element is the curve used on the segment ARRIVING at that point (ignored on the first point). Valid: 'linear' (default), 'exp' (ease-in, accelerating), 'log' (ease-out, decelerating), 'none' (step).\n\nShared top-level fields (defaults across all fugues in the batch, per-fugue can override): duration_beats, quantize ('immediate'|'beat'|'bar'|'bars:N'), loop_mode ('once'|'forever'|N).\n\nTag + cancel_mode is how you update one part without disturbing others:\n  tag:'melody' + cancel_mode:'tag:melody' → replaces only the previous 'melody' fugue.\n\nNote fields accept names (preferred) or numbers: 'C4' (middle C, 60), 'F#3', 'Bb5', 'C-1' (lowest MIDI), or 0-127.\n\nWorked example — 4-bar phrase with bass, held melody note, filter sweep, and expressive bend:\n```json\n{\n  \"instance\": \"lead\",\n  \"duration_beats\": 4,\n  \"quantize\": \"bar\",\n  \"loop_mode\": \"forever\",\n  \"fugues\": [\n    {\"tag\":\"bass\",\"cancel_mode\":\"tag:bass\",\"type\":\"notes\",\"notes\":[\n      {\"beat\":0,\"note\":\"C2\",\"duration\":0.5},\n      {\"beat\":1,\"note\":\"C2\",\"duration\":0.5},\n      {\"beat\":2,\"note\":\"G2\",\"duration\":0.5},\n      {\"beat\":3,\"note\":\"C2\",\"duration\":0.5}\n    ]},\n    {\"tag\":\"melody\",\"cancel_mode\":\"tag:melody\",\"type\":\"notes\",\"notes\":[\n      {\"beat\":0,\"note\":\"C4\",\"duration\":4,\"velocity\":90}\n    ]},\n    {\"tag\":\"filter\",\"cancel_mode\":\"tag:filter\",\"type\":\"cc\",\"cc\":74,\n     \"points\":[[0,30],[2,110],[4,30]],\"interpolation\":\"exp\"},\n    {\"tag\":\"bend\",\"cancel_mode\":\"tag:bend\",\"type\":\"per_note_pitch_bend\",\"note\":\"C4\",\n     \"points\":[[0,0],[2,2,\"exp\"],[4,0,\"log\"]]}\n  ]\n}\n```\nTo swap just the melody later, queue a fugue with tag:'melody' and cancel_mode:'tag:melody'. Bass, filter, and bend keep playing.")]
+    #[tool(description = "Queue one or more fugues for transport-synchronized playback. Each fugue is atomic — use separate fugues for notes, CC automation, and per-note expression so they can be updated independently.\n\nFugue types (use the 'type' field):\n- 'notes': MIDI notes with auto note-off at beat+duration. Each note has {beat, note (0-127), duration, velocity? (1-127, default 100), channel?}.\n- 'cc': CC automation. Fields: cc (0-127), points (tuple form [beat, value] or [beat, value, curve], values 0-127), interpolation? ('linear' default, 'exp', 'log', 'none'). CC is one curve per fugue today — if `interpolation` is set it wins; otherwise the first per-point curve becomes the fugue curve.\n- 'per_note_pitch_bend': MIDI 2.0 per-note bend on a SINGLE held note. Fields: note (0-127), points ([beat, semitones] or [beat, semitones, curve] tuples, semitones -64.0 to +64.0). Requires a concurrent 'notes' fugue holding the target note on the same channel.\n- 'per_note_pressure': MIDI 2.0 per-note pressure on a SINGLE held note. Fields: note (0-127), points ([beat, pressure] or [beat, pressure, curve] tuples, pressure 0.0-1.0). Same 'held note' requirement.\n\nPer-segment curves (per-note only): each point's optional third element is the curve used on the segment ARRIVING at that point (ignored on the first point). Valid: 'linear' (default), 'exp' (ease-in, accelerating), 'log' (ease-out, decelerating), 'none' (step).\n\nShared top-level fields (defaults across all fugues in the batch, per-fugue can override): duration_beats, quantize ('immediate'|'beat'|'bar'|'bars:N'), loop_mode ('once'|'forever'|N).\n\nTag + cancel_mode is how you update one part without disturbing others:\n  tag:'melody' + cancel_mode:'tag:melody' → replaces only the previous 'melody' fugue.\n\nNote fields accept names (preferred) or numbers: 'C4' (middle C, 60), 'F#3', 'Bb5', 'C-1' (lowest MIDI), or 0-127.\n\nWorked example — 4-bar phrase with bass, held melody note, filter sweep, and expressive bend:\n```json\n{\n  \"instance\": \"lead\",\n  \"duration_beats\": 4,\n  \"quantize\": \"bar\",\n  \"loop_mode\": \"forever\",\n  \"fugues\": [\n    {\"tag\":\"bass\",\"cancel_mode\":\"tag:bass\",\"type\":\"notes\",\"notes\":[\n      {\"beat\":0,\"note\":\"C2\",\"duration\":0.5},\n      {\"beat\":1,\"note\":\"C2\",\"duration\":0.5},\n      {\"beat\":2,\"note\":\"G2\",\"duration\":0.5},\n      {\"beat\":3,\"note\":\"C2\",\"duration\":0.5}\n    ]},\n    {\"tag\":\"melody\",\"cancel_mode\":\"tag:melody\",\"type\":\"notes\",\"notes\":[\n      {\"beat\":0,\"note\":\"C4\",\"duration\":4,\"velocity\":90}\n    ]},\n    {\"tag\":\"filter\",\"cancel_mode\":\"tag:filter\",\"type\":\"cc\",\"cc\":74,\n     \"points\":[[0,30],[2,110],[4,30]],\"interpolation\":\"exp\"},\n    {\"tag\":\"bend\",\"cancel_mode\":\"tag:bend\",\"type\":\"per_note_pitch_bend\",\"note\":\"C4\",\n     \"points\":[[0,0],[2,2,\"exp\"],[4,0,\"log\"]]}\n  ]\n}\n```\nTo swap just the melody later, queue a fugue with tag:'melody' and cancel_mode:'tag:melody'. Bass, filter, and bend keep playing.")]
     fn queue_fugue(&self, Parameters(req): Parameters<QueueFugueRequest>) -> Result<CallToolResult, McpError> {
         // Get shared defaults
         let default_quantize_str = req.data.quantize.as_deref().unwrap_or("bar");
@@ -446,18 +446,31 @@ impl DropletsMcp {
                     }
                 }
                 FugueContent::Cc { cc, points, interpolation } => {
-                    // CC has audio-thread ramps, so the mode is stored on the
-                    // fugue definition and interpolation happens per-sample.
+                    // CC uses audio-thread ramps with a single curve per fugue
+                    // (true per-segment CC ramps are Feature 10, post-demo).
+                    // Curve-resolution order for LLM-friendliness:
+                    //   1. Explicit `interpolation` on the fugue wins.
+                    //   2. Otherwise, the first per-point curve becomes the
+                    //      fugue-level mode — so [[0,0],[4,127,"exp"]] with no
+                    //      `interpolation` field gets "exp" as the LLM expects.
+                    //   3. Otherwise, default to Linear.
                     let cc_num = (*cc).min(127);
                     for point in points {
-                        let beat = point[0];
-                        let value = (point[1] as u8).min(127);
+                        let value = (point.value as u8).min(127);
                         events.push(TimedFugueEvent::new(
-                            beat,
+                            point.beat,
                             FugueEvent::Cc { channel: fugue_channel, cc: cc_num, value },
                         ));
                     }
-                    cc_interpolation = parse_interpolation_mode(interpolation.as_deref());
+                    cc_interpolation = if let Some(mode) = interpolation.as_deref() {
+                        parse_interpolation_mode(Some(mode))
+                    } else {
+                        points
+                            .iter()
+                            .find_map(|p| p.curve.as_deref())
+                            .map(|c| parse_interpolation_mode(Some(c)))
+                            .unwrap_or(InterpolationMode::Linear)
+                    };
                 }
                 FugueContent::PerNotePitchBend { note, points } => {
                     // Per-note has no audio-thread ramp path yet, so expand

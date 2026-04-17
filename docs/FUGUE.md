@@ -173,10 +173,16 @@ Every fugue carries a `type` discriminator. **Keep different musical concerns in
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `cc` | number | required | CC number (0–127). |
-| `points` | array of `[beat, value]` | required | Keyframes. Values 0–127. |
+| `points` | array | required | Each point is `[beat, value]` or `[beat, value, curve]`. Values 0–127. |
 | `interpolation` | string | `"linear"` | `"linear"`, `"exp"`, `"log"`, or `"none"` (stepped). |
 
 The audio thread interpolates per-sample between keyframes — you write sparse points and get smooth CC output.
+
+CC uses **one curve per fugue** for now (per-segment ramps are Feature 10, post-demo). Curve resolution:
+
+1. If `interpolation` is set on the fugue, that wins.
+2. Otherwise, the first per-point `curve` becomes the fugue curve — so `[[0,0],[4,127,"exp"]]` without an explicit `interpolation` field uses `"exp"`.
+3. Otherwise, default to `"linear"`.
 
 ### `per_note_pitch_bend` — MIDI 2.0 per-note bend
 

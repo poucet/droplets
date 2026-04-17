@@ -2,7 +2,7 @@
 //!
 //! Everything here is about turning MCP-wire JSON into typed Rust values:
 //! data structs with `#[derive(Deserialize, JsonSchema)]`, the
-//! [`InstanceRequest`] wrapper, the flat-tuple [`PerNotePoint`] with its
+//! [`InstanceRequest`] wrapper, the flat-tuple [`Point`] with its
 //! custom Deserialize + JsonSchema, and the helpers that turn LLM-friendly
 //! compact inputs into dense event streams.
 //!
@@ -392,17 +392,17 @@ pub enum FugueContent {
         #[schemars(description = "Array of notes. Each note auto-generates a note_off at beat + duration.")]
         notes: Vec<CompactNote>,
     },
-    /// CC automation with automatic linear interpolation between points
+    /// CC automation with smooth audio-thread interpolation between points
     Cc {
         /// CC number (0-127)
         #[schemars(description = "CC number (0-127)")]
         cc: u8,
-        /// Array of [beat, value] pairs. Linear interpolation is automatic between consecutive points.
-        #[schemars(description = "Array of [beat, value] pairs. Values 0-127. Linear interpolation happens automatically between points - just specify keyframes (e.g., [[0,0],[4,127]] ramps smoothly over 4 beats).")]
-        points: Vec<[f64; 2]>,
-        /// Interpolation mode: "linear" (default), "exp", "log", or "none"
+        /// Array of points. Same tuple shape as per-note: [beat, value] or [beat, value, curve].
+        #[schemars(description = "Array of [beat, value] or [beat, value, curve] points. Values 0-127. The audio thread smoothly interpolates between consecutive points. NOTE: CC uses ONE curve per fugue today — the `interpolation` field wins if set; otherwise the first per-point curve is used. Per-segment curves are planned post-demo (Feature 10). Example: [[0,0],[4,127]] ramps smoothly over 4 beats.")]
+        points: Vec<Point>,
+        /// Interpolation mode for the entire fugue: "linear" (default), "exp", "log", or "none"
         #[serde(default)]
-        #[schemars(description = "Interpolation: 'linear' (default), 'exp' (ease-in, accelerating), 'log' (ease-out, decelerating), or 'none' (stepped).")]
+        #[schemars(description = "Fugue-level interpolation: 'linear' (default), 'exp' (ease-in, accelerating), 'log' (ease-out, decelerating), or 'none' (stepped). If set, overrides any per-point curves.")]
         interpolation: Option<String>,
     },
     /// Per-note pitch bend over time (MIDI 2.0). Bends a single held note.
@@ -416,7 +416,7 @@ pub enum FugueContent {
         note: Note,
         /// Points forming the bend trajectory. Tuple form [beat, semitones] or [beat, semitones, curve].
         #[schemars(description = "Array of trajectory points. Each point is [beat, semitones] or [beat, semitones, curve]. Semitones -64.0 to +64.0 (0 = no bend). curve on each point controls interpolation for the segment arriving at it (ignored on first point); one of 'linear' (default), 'exp', 'log', 'none'. Example vibrato: [[0,0],[0.5,1,\"linear\"],[1,-1,\"linear\"],[1.5,0,\"linear\"]].")]
-        points: Vec<PerNotePoint>,
+        points: Vec<Point>,
     },
     /// Per-note pressure/aftertouch over time (MIDI 2.0). Modulates a single held note.
     /// Requires a concurrent Notes fugue holding the target note.
@@ -427,7 +427,7 @@ pub enum FugueContent {
         note: Note,
         /// Points forming the pressure trajectory. Tuple form [beat, pressure] or [beat, pressure, curve].
         #[schemars(description = "Array of trajectory points. Each point is [beat, pressure] or [beat, pressure, curve]. Pressure 0.0-1.0. Example crescendo-then-release: [[0,0],[2,1,\"exp\"],[4,0,\"log\"]]. Valid curves: 'linear' (default), 'exp' (accelerating), 'log' (decelerating), 'none' (step, ignored on first point).")]
-        points: Vec<PerNotePoint>,
+        points: Vec<Point>,
     },
 }
 
@@ -442,17 +442,17 @@ pub enum FugueContent {
 /// This lets one fugue combine distinct curves, e.g. `exp` on the way up and
 /// `log` on the way down for a crescendo–release shape.
 #[derive(Debug, Clone)]
-pub struct PerNotePoint {
+pub struct Point {
     pub beat: f64,
     pub value: f64,
     pub curve: Option<String>,
 }
 
-impl<'de> serde::Deserialize<'de> for PerNotePoint {
+impl<'de> serde::Deserialize<'de> for Point {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct PointVisitor;
         impl<'de> serde::de::Visitor<'de> for PointVisitor {
-            type Value = PerNotePoint;
+            type Value = Point;
 
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 f.write_str("array [beat, value] or [beat, value, curve]")
@@ -471,16 +471,16 @@ impl<'de> serde::Deserialize<'de> for PerNotePoint {
                 let curve: Option<String> = seq.next_element()?;
                 // Drain any extra elements silently — forward-compat.
                 while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
-                Ok(PerNotePoint { beat, value, curve })
+                Ok(Point { beat, value, curve })
             }
         }
         deserializer.deserialize_seq(PointVisitor)
     }
 }
 
-impl schemars::JsonSchema for PerNotePoint {
+impl schemars::JsonSchema for Point {
     fn schema_name() -> std::borrow::Cow<'static, str> {
-        "PerNotePoint".into()
+        "Point".into()
     }
 
     fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
@@ -727,7 +727,7 @@ pub const PER_NOTE_EXPANSION_DENSITY: f64 = 32.0;
 /// Intermediate values are generated at [`PER_NOTE_EXPANSION_DENSITY`]
 /// events/beat and routed through [`InterpolationMode::apply_curve`] so new
 /// curves added to that function pick up automatically.
-pub fn expand_per_note_points(points: &[PerNotePoint], mut emit: impl FnMut(f64, f64)) {
+pub fn expand_per_note_points(points: &[Point], mut emit: impl FnMut(f64, f64)) {
     if points.is_empty() {
         return;
     }
@@ -1112,12 +1112,12 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // PerNotePoint custom Deserialize
+    // Point custom Deserialize
     // ------------------------------------------------------------------
 
     #[test]
     fn per_note_point_2_tuple_no_curve() {
-        let p: PerNotePoint = serde_json::from_str("[1.5, 0.8]").unwrap();
+        let p: Point = serde_json::from_str("[1.5, 0.8]").unwrap();
         assert_eq!(p.beat, 1.5);
         assert_eq!(p.value, 0.8);
         assert!(p.curve.is_none());
@@ -1125,7 +1125,7 @@ mod tests {
 
     #[test]
     fn per_note_point_3_tuple_with_curve() {
-        let p: PerNotePoint = serde_json::from_str(r#"[2.0, -1.5, "exp"]"#).unwrap();
+        let p: Point = serde_json::from_str(r#"[2.0, -1.5, "exp"]"#).unwrap();
         assert_eq!(p.beat, 2.0);
         assert_eq!(p.value, -1.5);
         assert_eq!(p.curve.as_deref(), Some("exp"));
@@ -1135,7 +1135,7 @@ mod tests {
     fn per_note_point_accepts_all_curve_names() {
         for curve in ["linear", "exp", "log", "none"] {
             let json = format!(r#"[0, 0, "{}"]"#, curve);
-            let p: PerNotePoint = serde_json::from_str(&json).unwrap();
+            let p: Point = serde_json::from_str(&json).unwrap();
             assert_eq!(p.curve.as_deref(), Some(curve));
         }
     }
@@ -1143,47 +1143,47 @@ mod tests {
     #[test]
     fn per_note_point_accepts_unknown_curve_string() {
         // Parse succeeds (we don't validate here); expansion falls back to Linear.
-        let p: PerNotePoint = serde_json::from_str(r#"[0, 0, "bogus"]"#).unwrap();
+        let p: Point = serde_json::from_str(r#"[0, 0, "bogus"]"#).unwrap();
         assert_eq!(p.curve.as_deref(), Some("bogus"));
     }
 
     #[test]
     fn per_note_point_extra_elements_are_dropped() {
         // Forward-compat: extra tail elements are silently ignored.
-        let p: PerNotePoint = serde_json::from_str(r#"[0, 1, "log", 42, "future"]"#).unwrap();
+        let p: Point = serde_json::from_str(r#"[0, 1, "log", 42, "future"]"#).unwrap();
         assert_eq!(p.curve.as_deref(), Some("log"));
     }
 
     #[test]
     fn per_note_point_integer_values_deserialize() {
         // JSON integers should parse as f64.
-        let p: PerNotePoint = serde_json::from_str("[2, 1]").unwrap();
+        let p: Point = serde_json::from_str("[2, 1]").unwrap();
         assert_eq!(p.beat, 2.0);
         assert_eq!(p.value, 1.0);
     }
 
     #[test]
     fn per_note_point_negative_values() {
-        let p: PerNotePoint = serde_json::from_str("[0.5, -12.0]").unwrap();
+        let p: Point = serde_json::from_str("[0.5, -12.0]").unwrap();
         assert_eq!(p.value, -12.0);
     }
 
     #[test]
     fn per_note_point_missing_value_fails() {
-        let err: Result<PerNotePoint, _> = serde_json::from_str("[1.0]");
+        let err: Result<Point, _> = serde_json::from_str("[1.0]");
         assert!(err.is_err(), "single-element array should fail");
     }
 
     #[test]
     fn per_note_point_empty_array_fails() {
-        let err: Result<PerNotePoint, _> = serde_json::from_str("[]");
+        let err: Result<Point, _> = serde_json::from_str("[]");
         assert!(err.is_err(), "empty array should fail");
     }
 
     #[test]
     fn per_note_point_object_form_fails() {
         // Object form is explicitly not supported — tuple only.
-        let err: Result<PerNotePoint, _> =
+        let err: Result<Point, _> =
             serde_json::from_str(r#"{"beat": 0, "value": 1}"#);
         assert!(err.is_err(), "object form should not deserialize");
     }
@@ -1191,7 +1191,7 @@ mod tests {
     #[test]
     fn per_note_point_trajectory_parses() {
         // Crescendo-then-release: exp rise, log fall.
-        let pts: Vec<PerNotePoint> =
+        let pts: Vec<Point> =
             serde_json::from_str(r#"[[0,0],[2,1,"exp"],[4,0,"log"]]"#).unwrap();
         assert_eq!(pts.len(), 3);
         assert!(pts[0].curve.is_none());
@@ -1202,7 +1202,7 @@ mod tests {
     #[test]
     fn per_note_point_trajectory_mixed_tuple_lengths() {
         // Array of mixed-arity tuples should all deserialize.
-        let pts: Vec<PerNotePoint> =
+        let pts: Vec<Point> =
             serde_json::from_str(r#"[[0,0],[1,0.5],[2,1,"exp"],[3,0.5],[4,0,"log"]]"#).unwrap();
         assert_eq!(pts.len(), 5);
         assert!(pts[0].curve.is_none());
@@ -1239,14 +1239,14 @@ mod tests {
     // expand_per_note_points
     // ------------------------------------------------------------------
 
-    fn collect_expansion(pts: &[PerNotePoint]) -> Vec<(f64, f64)> {
+    fn collect_expansion(pts: &[Point]) -> Vec<(f64, f64)> {
         let mut out = Vec::new();
         expand_per_note_points(pts, |b, v| out.push((b, v)));
         out
     }
 
-    fn pt(beat: f64, value: f64, curve: Option<&str>) -> PerNotePoint {
-        PerNotePoint { beat, value, curve: curve.map(|s| s.to_string()) }
+    fn pt(beat: f64, value: f64, curve: Option<&str>) -> Point {
+        Point { beat, value, curve: curve.map(|s| s.to_string()) }
     }
 
     #[test]
@@ -1454,6 +1454,52 @@ mod tests {
             FugueContent::Cc { cc, interpolation, .. } => {
                 assert_eq!(cc, 74);
                 assert_eq!(interpolation.as_deref(), Some("exp"));
+            }
+            _ => panic!("expected Cc variant"),
+        }
+    }
+
+    #[test]
+    fn fugue_content_cc_accepts_3_element_point_tuples() {
+        // Regression: previously CC points were Vec<[f64; 2]>, which rejected
+        // 3-element tuples with an "invalid length 3, expected 2" error.
+        // LLMs generalize from per-note's 3-tuple shape to CC, so CC now
+        // accepts the unified Point form.
+        let json = r#"{
+            "type": "cc",
+            "cc": 74,
+            "points": [[0, 40], [4, 100, "exp"], [8, 60, "log"]],
+            "interpolation": "linear"
+        }"#;
+        let content: FugueContent = serde_json::from_str(json).unwrap();
+        match content {
+            FugueContent::Cc { cc, points, interpolation } => {
+                assert_eq!(cc, 74);
+                assert_eq!(points.len(), 3);
+                assert_eq!(points[0].curve, None);
+                assert_eq!(points[1].curve.as_deref(), Some("exp"));
+                assert_eq!(points[2].curve.as_deref(), Some("log"));
+                assert_eq!(interpolation.as_deref(), Some("linear"));
+            }
+            _ => panic!("expected Cc variant"),
+        }
+    }
+
+    #[test]
+    fn fugue_content_cc_mixed_tuple_arities_parse() {
+        // Some points with curves, some without — all must parse.
+        let json = r#"{
+            "type": "cc",
+            "cc": 1,
+            "points": [[0, 0], [2, 64, "exp"], [4, 127]]
+        }"#;
+        let content: FugueContent = serde_json::from_str(json).unwrap();
+        match content {
+            FugueContent::Cc { points, .. } => {
+                assert_eq!(points.len(), 3);
+                assert_eq!(points[0].curve, None);
+                assert_eq!(points[1].curve.as_deref(), Some("exp"));
+                assert_eq!(points[2].curve, None);
             }
             _ => panic!("expected Cc variant"),
         }

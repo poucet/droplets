@@ -8,19 +8,29 @@ Simply Droplets — AI-controlled MIDI 1.0/2.0 out of a DAW plugin.
 ## queue_fugue — primary composition tool
 Batches multiple fugues into one call. Each fugue is atomic; swap one musical part by queueing a new fugue with the same tag + `cancel_mode: "tag:<name>"`. The other parts keep playing untouched.
 
+**Default to looping.** Unless the user explicitly asks for a one-shot, set (or omit — it's the default) `loop_mode: "forever"` and write short, composable fugues you can replace via tag swap. This is what makes the system feel musical — patterns keep running while you edit one layer at a time.
+
 Fugue content types (each in its own fugue for independent control):
 - `notes`               — MIDI notes with auto note-off at beat+duration.
-- `cc`                  — CC automation with smooth per-fugue interpolation.
+- `cc`                  — CC automation with smooth audio-thread interpolation.
 - `per_note_pitch_bend` — MIDI 2.0 per-note bend on a held note.
 - `per_note_pressure`   — MIDI 2.0 per-note pressure on a held note.
 
-Shared fields (override per-fugue): `duration_beats`, `quantize` (`"immediate"|"beat"|"bar"|"bars:N"`), `loop_mode` (`"once"|"forever"|"N"`).
+Shared fields (override per-fugue): `duration_beats`, `quantize` (`"immediate"|"beat"|"bar"|"bars:N"`), `loop_mode` (`"once"|"forever"|"N"` — default `"forever"`).
 
-Curves (on CC interpolation, and per-segment on per-note point tuples):
+### Points — unified shape for all continuous signals
+
+CC, per-note pitch bend, and per-note pressure all use the same point tuple form: `[beat, value]` or `[beat, value, curve]`.
+
+Curves:
 - `linear` (default)  smooth straight line
 - `exp`               ease-in, accelerating (t²)
 - `log`               ease-out, decelerating (1-(1-t)²)
 - `none`              stepped/discrete
+
+**Per-segment curves** work on `per_note_pitch_bend` and `per_note_pressure` — each point's curve drives the segment arriving at it, so you can combine shapes in one fugue (e.g. `[[0,0],[2,1,"exp"],[4,0,"log"]]` is a crescendo-then-release).
+
+**CC has one curve per fugue** for now (per-segment CC ramps are post-demo work). Set `interpolation` on the fugue, or put a curve on any point and it becomes the fugue-level curve. If both are set, `interpolation` wins.
 
 See the `queue_fugue` tool description for a full worked example.
 
@@ -59,9 +69,9 @@ Reference (when you need to think in numbers):
 When the user asks for a "filter sweep", default to CC 74. For "volume swell" prefer CC 11. For "mod wheel" it's CC 1.
 
 ## Musical defaults that actually sound good
+- **Default to looping** (`loop_mode: "forever"`). Write short (2–8 bar) fugues and replace them via tag swap as the piece evolves. One-shot fugues are for stings and fills, not song structure.
 - Velocities 60–110. Save 110–120 for hits that need to cut through. 127 is shouting — use only if aggressive is the point.
 - Use `quantize: "bar"` so updates land on musical boundaries.
-- Short fugues (2–8 bars) + `loop_mode: "forever"`; replace via tag swap.
 - Separate notes and automation into different fugues — update independently.
 - Per-note bend/pressure REQUIRE a concurrent notes fugue holding the target note on the same channel; otherwise the expression has nothing to modulate.
 
