@@ -32,10 +32,10 @@ You compose in musical terms (beats, notes, curves) and Droplets turns that into
         "cancel_mode": "tag:melody",
         "type": "notes",
         "notes": [
-          {"beat": 0.0, "note": 60, "duration": 0.5},
-          {"beat": 1.0, "note": 64, "duration": 0.5},
-          {"beat": 2.0, "note": 67, "duration": 0.5},
-          {"beat": 3.0, "note": 72, "duration": 0.5}
+          {"beat": 0.0, "note": "C4", "duration": 0.5},
+          {"beat": 1.0, "note": "E4", "duration": 0.5},
+          {"beat": 2.0, "note": "G4", "duration": 0.5},
+          {"beat": 3.0, "note": "C5", "duration": 0.5}
         ]
       }
     ]
@@ -73,8 +73,8 @@ Re-queue with the same tag and `cancel_mode: "tag:melody"`:
         "cancel_mode": "tag:melody",
         "type": "notes",
         "notes": [
-          {"beat": 0.0, "note": 62, "duration": 1.0},
-          {"beat": 2.0, "note": 65, "duration": 1.0}
+          {"beat": 0.0, "note": "D4", "duration": 1.0},
+          {"beat": 2.0, "note": "F4", "duration": 1.0}
         ]
       }
     ]
@@ -137,14 +137,16 @@ Return the current transport state for an instance: `{beat, tempo, playing, time
 
 Every fugue carries a `type` discriminator. **Keep different musical concerns in different fugues** so they can be updated (tag-swapped) independently.
 
+> **Note values in all examples.** Every `note` field accepts either a scientific-pitch-notation name (`"C4"` = middle C, `"F#3"`, `"Bb5"`, `"C-1"`) or an integer `0`–`127`. Examples below use names for clarity; numbers work identically. Letter case doesn't matter, `#` = sharp, `b`/`B` = flat.
+
 ### `notes` — MIDI notes with auto note-off
 
 ```json
 {
   "type": "notes",
   "notes": [
-    {"beat": 0.0, "note": 60, "duration": 0.5, "velocity": 100},
-    {"beat": 1.0, "note": 64, "duration": 0.5}
+    {"beat": 0.0, "note": "C4", "duration": 0.5, "velocity": 100},
+    {"beat": 1.0, "note": "E4", "duration": 0.5}
   ]
 }
 ```
@@ -152,7 +154,7 @@ Every fugue carries a `type` discriminator. **Keep different musical concerns in
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `beat` | number | required | Beat offset from fugue start. |
-| `note` | number | required | MIDI note (0–127, 60 = C4). |
+| `note` | string or number | required | MIDI note. Name like `"C4"`, `"F#3"`, `"Bb5"` (preferred) or integer 0–127 (60 = C4). |
 | `duration` | number | required | Length in beats — a note-off is generated at `beat + duration`. |
 | `velocity` | number | `100` | 1–127. |
 | `channel` | number | fugue's channel | Override channel (1–16). |
@@ -183,14 +185,14 @@ Bends one specific held note over time. **Requires a concurrent `notes` fugue ho
 ```json
 {
   "type": "per_note_pitch_bend",
-  "note": 60,
+  "note": "C4",
   "points": [[0, 0], [2, 2, "exp"], [4, 0, "log"]]
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `note` | number | MIDI note being bent (0–127). Must match a note held by a concurrent `notes` fugue on the same channel. |
+| `note` | string or number | MIDI note being bent. Name or integer 0–127. Must match a note held by a concurrent `notes` fugue on the same channel. |
 | `points` | array | Each point is `[beat, semitones]` or `[beat, semitones, curve]`. Semitones: `-64.0` to `+64.0` (0 = no bend). |
 
 ### `per_note_pressure` — MIDI 2.0 per-note pressure
@@ -200,14 +202,14 @@ Modulates pressure on one specific held note.
 ```json
 {
   "type": "per_note_pressure",
-  "note": 60,
+  "note": "C4",
   "points": [[0, 0.0], [2, 1.0, "exp"], [4, 0.0, "log"]]
 }
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `note` | number | MIDI note receiving pressure (0–127). Same held-note requirement. |
+| `note` | string or number | MIDI note receiving pressure. Name or integer 0–127. Same held-note requirement. |
 | `points` | array | Each point is `[beat, pressure]` or `[beat, pressure, curve]`. Pressure range `0.0`–`1.0`. |
 
 ## Curves
@@ -228,7 +230,7 @@ Valid on the `cc` fugue's `interpolation` field and on each per-note point's opt
 
 ```json
 // Crescendo-then-release on a held note — exp rise, log fall:
-{"type":"per_note_pressure","note":60,
+{"type":"per_note_pressure","note":"C4",
  "points":[[0,0],[2,1,"exp"],[4,0,"log"]]}
 ```
 
@@ -278,17 +280,17 @@ Tags are the primary mechanism for updating one part without disturbing others. 
     "loop_mode": "forever",
     "fugues": [
       {"tag":"bass","cancel_mode":"tag:bass","type":"notes","notes":[
-        {"beat":0,"note":36,"duration":0.5},
-        {"beat":1,"note":36,"duration":0.5},
-        {"beat":2,"note":43,"duration":0.5},
-        {"beat":3,"note":36,"duration":0.5}
+        {"beat":0,"note":"C2","duration":0.5},
+        {"beat":1,"note":"C2","duration":0.5},
+        {"beat":2,"note":"G2","duration":0.5},
+        {"beat":3,"note":"C2","duration":0.5}
       ]},
       {"tag":"melody","cancel_mode":"tag:melody","type":"notes","notes":[
-        {"beat":0,"note":60,"duration":4,"velocity":90}
+        {"beat":0,"note":"C4","duration":4,"velocity":90}
       ]},
       {"tag":"filter","cancel_mode":"tag:filter","type":"cc","cc":74,
        "points":[[0,30],[2,110],[4,30]],"interpolation":"exp"},
-      {"tag":"bend","cancel_mode":"tag:bend","type":"per_note_pitch_bend","note":60,
+      {"tag":"bend","cancel_mode":"tag:bend","type":"per_note_pitch_bend","note":"C4",
        "points":[[0,0],[2,2,"exp"],[4,0,"log"]]}
     ]
   }
@@ -349,14 +351,14 @@ The scheduler tracks which notes are active per fugue. When a fugue is cancelled
         "tag": "arp", "cancel_mode": "tag:arp",
         "type": "notes",
         "notes": [
-          {"beat": 0.0,  "note": 48, "duration": 0.25, "velocity": 100},
-          {"beat": 0.25, "note": 52, "duration": 0.25, "velocity": 90},
-          {"beat": 0.5,  "note": 55, "duration": 0.25, "velocity": 80},
-          {"beat": 0.75, "note": 60, "duration": 0.25, "velocity": 70},
-          {"beat": 1.0,  "note": 55, "duration": 0.25, "velocity": 80},
-          {"beat": 1.25, "note": 52, "duration": 0.25, "velocity": 90},
-          {"beat": 1.5,  "note": 48, "duration": 0.25, "velocity": 100},
-          {"beat": 1.75, "note": 52, "duration": 0.25, "velocity": 90}
+          {"beat": 0.0,  "note": "C3", "duration": 0.25, "velocity": 100},
+          {"beat": 0.25, "note": "E3", "duration": 0.25, "velocity": 90},
+          {"beat": 0.5,  "note": "G3", "duration": 0.25, "velocity": 80},
+          {"beat": 0.75, "note": "C4", "duration": 0.25, "velocity": 70},
+          {"beat": 1.0,  "note": "G3", "duration": 0.25, "velocity": 80},
+          {"beat": 1.25, "note": "E3", "duration": 0.25, "velocity": 90},
+          {"beat": 1.5,  "note": "C3", "duration": 0.25, "velocity": 100},
+          {"beat": 1.75, "note": "E3", "duration": 0.25, "velocity": 90}
         ]
       },
       {
@@ -385,18 +387,18 @@ The scheduler tracks which notes are active per fugue. When a fugue is cancelled
         "tag": "chords", "cancel_mode": "tag:chords",
         "type": "notes", "channel": 1,
         "notes": [
-          {"beat":  0, "note": 48, "duration": 3.9, "velocity": 80},
-          {"beat":  0, "note": 52, "duration": 3.9, "velocity": 80},
-          {"beat":  0, "note": 55, "duration": 3.9, "velocity": 80},
-          {"beat":  4, "note": 53, "duration": 3.9, "velocity": 80},
-          {"beat":  4, "note": 57, "duration": 3.9, "velocity": 80},
-          {"beat":  4, "note": 60, "duration": 3.9, "velocity": 80},
-          {"beat":  8, "note": 55, "duration": 3.9, "velocity": 80},
-          {"beat":  8, "note": 59, "duration": 3.9, "velocity": 80},
-          {"beat":  8, "note": 62, "duration": 3.9, "velocity": 80},
-          {"beat": 12, "note": 53, "duration": 3.9, "velocity": 80},
-          {"beat": 12, "note": 57, "duration": 3.9, "velocity": 80},
-          {"beat": 12, "note": 60, "duration": 3.9, "velocity": 80}
+          {"beat":  0, "note": "C3", "duration": 3.9, "velocity": 80},
+          {"beat":  0, "note": "E3", "duration": 3.9, "velocity": 80},
+          {"beat":  0, "note": "G3", "duration": 3.9, "velocity": 80},
+          {"beat":  4, "note": "F3", "duration": 3.9, "velocity": 80},
+          {"beat":  4, "note": "A3", "duration": 3.9, "velocity": 80},
+          {"beat":  4, "note": "C4", "duration": 3.9, "velocity": 80},
+          {"beat":  8, "note": "G3", "duration": 3.9, "velocity": 80},
+          {"beat":  8, "note": "B3", "duration": 3.9, "velocity": 80},
+          {"beat":  8, "note": "D4", "duration": 3.9, "velocity": 80},
+          {"beat": 12, "note": "F3", "duration": 3.9, "velocity": 80},
+          {"beat": 12, "note": "A3", "duration": 3.9, "velocity": 80},
+          {"beat": 12, "note": "C4", "duration": 3.9, "velocity": 80}
         ]
       }
     ]
@@ -416,9 +418,9 @@ The scheduler tracks which notes are active per fugue. When a fugue is cancelled
     "loop_mode": "forever",
     "fugues": [
       {"tag":"hold","cancel_mode":"tag:hold","type":"notes","notes":[
-        {"beat": 0, "note": 64, "duration": 4, "velocity": 70}
+        {"beat": 0, "note": "E4", "duration": 4, "velocity": 70}
       ]},
-      {"tag":"swell","cancel_mode":"tag:swell","type":"per_note_pressure","note":64,
+      {"tag":"swell","cancel_mode":"tag:swell","type":"per_note_pressure","note":"E4",
        "points":[[0, 0.0], [2, 1.0, "exp"], [4, 0.0, "log"]]}
     ]
   }
