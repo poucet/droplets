@@ -568,6 +568,17 @@ impl DropletsMcp {
         };
         Ok(CallToolResult::success(vec![Content::text(result)]))
     }
+
+    /// Get the current DAW transport state for an instance.
+    #[tool(description = "Get the current DAW transport state for an instance: {beat, tempo, playing, time_sig_numerator, is_looping, loop_start_beat, loop_end_beat}. Use this to reason about where we are in the song before scheduling — e.g. 'queue starting at bar 8, we're on bar 6 now'. In standalone mode, reports the simulated 120 BPM always-playing transport.")]
+    fn get_transport(&self, Parameters(req): Parameters<GetSlotsRequest>) -> Result<CallToolResult, McpError> {
+        let result = match FugueBridge::get_transport(&req.instance) {
+            Ok(state) => serde_json::to_string_pretty(&state)
+                .unwrap_or_else(|_| format!("{:?}", state)),
+            Err(e) => format!("Error: {}", e),
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
+    }
 }
 
 impl ServerHandler for DropletsMcp {
@@ -613,6 +624,7 @@ impl ServerHandler for DropletsMcp {
                  - Per-note bend/pressure REQUIRE a concurrent notes fugue holding the target note on the same channel; otherwise the expression has nothing to modulate.\n\
                  \n\
                  ## Other tools\n\
+                 - get_transport — current {beat, tempo, playing, time_sig, loop bounds}; use before scheduling if you need to know where the playhead is.\n\
                  - list_fugues / cancel_fugue / cancel_fugues_by_tag / clear_fugues\n\
                  - send_note_on / send_note_off / send_cc — ONE-SHOT only, not for composition\n\
                  - send_per_note_pitch_bend / send_per_note_pressure — MIDI 2.0 expression (one-shot)\n\
@@ -620,10 +632,9 @@ impl ServerHandler for DropletsMcp {
                  - get_activity — recent MIDI event log (debugging)\n\
                  \n\
                  ## Gotchas\n\
-                 - Fugues do not play while transport is stopped.\n\
+                 - Fugues do not play while transport is stopped (check with get_transport).\n\
                  - Tempo changes mid-fugue drift the timing.\n\
-                 - MIDI 2.0 per-note expressions require a MIDI 2.0-capable host/instrument.\n\
-                 - There is no get_transport tool yet — ask the user what bar they're on if you need to reason about current position."
+                 - MIDI 2.0 per-note expressions require a MIDI 2.0-capable host/instrument."
                     .to_string(),
             ),
         }

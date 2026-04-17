@@ -124,6 +124,10 @@ Cancel every fugue whose `tag` matches. Sends note-offs. Use this to stop all in
 
 Emergency stop: cancel all fugues on an instance and send note-offs for anything held.
 
+### `get_transport`
+
+Return the current transport state for an instance: `{beat, tempo, playing, time_sig_numerator, is_looping, loop_start_beat, loop_end_beat}`. Useful for reasoning about where the playhead is before scheduling (e.g. "queue at the next 4-bar boundary — we're on bar 6 now, so schedule at bar 8"). In standalone mode, reports the simulated 120 BPM transport.
+
 ### Instance tools
 
 - `list_instances` — see connected plugin instances (returns IDs like `droplets-a1b2c3d4`).
