@@ -332,7 +332,8 @@ impl<'a> DropletMidiProcessor<'a> {
         }
     }
 
-    /// Output a CC ramp with interpolation
+    /// Output a CC ramp with interpolation. Curve shape comes from
+    /// [`InterpolationMode::apply_curve`] — all non-stepped curves share the same loop.
     fn output_cc_ramp(
         &self,
         channel: u8,
@@ -344,51 +345,33 @@ impl<'a> DropletMidiProcessor<'a> {
         interpolation: InterpolationMode,
         events: &mut Events,
     ) {
-        match interpolation {
-            InterpolationMode::None => {
-                // Stepped: just output the end value at the end sample
-                let cc_msg = CcMessage {
-                    channel,
-                    cc,
-                    value: end_value,
-                    value_14bit: None,
-                };
-                self.output_cc_at(&cc_msg, end_sample, events);
-            }
-            InterpolationMode::Linear => {
-                // Linear interpolation: output CC at regular intervals
-                let duration = end_sample.saturating_sub(start_sample);
-                if duration == 0 {
-                    // Instant change
-                    let cc_msg = CcMessage {
-                        channel,
-                        cc,
-                        value: end_value,
-                        value_14bit: None,
-                    };
-                    self.output_cc_at(&cc_msg, end_sample, events);
-                    return;
-                }
+        // Stepped: single value at end. None-mode ramps are normally emitted as
+        // Instant events upstream; this is the defensive path.
+        if interpolation == InterpolationMode::None {
+            let cc_msg = CcMessage { channel, cc, value: end_value, value_14bit: None };
+            self.output_cc_at(&cc_msg, end_sample, events);
+            return;
+        }
 
-                // Calculate number of steps based on interpolation resolution
-                let num_steps = (duration / CC_INTERPOLATION_SAMPLES).max(1);
-                let step_size = duration / num_steps;
+        let duration = end_sample.saturating_sub(start_sample);
+        if duration == 0 {
+            let cc_msg = CcMessage { channel, cc, value: end_value, value_14bit: None };
+            self.output_cc_at(&cc_msg, end_sample, events);
+            return;
+        }
 
-                for i in 0..=num_steps {
-                    let sample = start_sample + (i * step_size).min(duration);
-                    let t = i as f32 / num_steps as f32;
-                    let value = (start_value as f32 + t * (end_value as f32 - start_value as f32))
-                        .round() as u8;
+        let num_steps = (duration / CC_INTERPOLATION_SAMPLES).max(1);
+        let step_size = duration / num_steps;
 
-                    let cc_msg = CcMessage {
-                        channel,
-                        cc,
-                        value,
-                        value_14bit: None,
-                    };
-                    self.output_cc_at(&cc_msg, sample, events);
-                }
-            }
+        for i in 0..=num_steps {
+            let sample = start_sample + (i * step_size).min(duration);
+            let t = i as f64 / num_steps as f64;
+            let tc = interpolation.apply_curve(t);
+            let value = (start_value as f64 + tc * (end_value as f64 - start_value as f64))
+                .round() as u8;
+
+            let cc_msg = CcMessage { channel, cc, value, value_14bit: None };
+            self.output_cc_at(&cc_msg, sample, events);
         }
     }
 

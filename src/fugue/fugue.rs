@@ -438,20 +438,13 @@ impl Fugue {
     }
 }
 
-/// Interpolate between two values
+/// Interpolate between two values. The curve shape comes from
+/// [`InterpolationMode::apply_curve`] — all curves are handled uniformly here.
 fn interpolate_value(start: u8, end: u8, t: f64, mode: InterpolationMode) -> u8 {
-    let t = t.clamp(0.0, 1.0);
-    match mode {
-        InterpolationMode::None => {
-            // Stepped: return start until we reach the end
-            if t >= 1.0 { end } else { start }
-        }
-        InterpolationMode::Linear => {
-            let start_f = start as f64;
-            let end_f = end as f64;
-            (start_f + (end_f - start_f) * t).round() as u8
-        }
-    }
+    let tc = mode.apply_curve(t);
+    let start_f = start as f64;
+    let end_f = end as f64;
+    (start_f + (end_f - start_f) * tc).round() as u8
 }
 
 #[cfg(test)]

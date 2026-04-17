@@ -124,17 +124,40 @@ impl Default for CancelMode {
     }
 }
 
-/// Interpolation mode for CC automation
+/// Interpolation mode for continuous-signal ramps (CC, per-note expression).
+///
+/// New curves extend this enum and add one line to [`InterpolationMode::apply_curve`];
+/// every interpolator site routes through that function so new variants propagate
+/// automatically to CC audio-thread ramps and per-note server-side expansion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum InterpolationMode {
-    /// No interpolation - stepped/discrete values
+    /// No interpolation - stepped/discrete values (hold start until t=1)
     None,
     /// Linear interpolation between points
     #[default]
     Linear,
-    // Future: Exponential, SCurve
+    /// Quadratic ease-in (t²). Starts slow, ends fast. Musical feel: accelerating.
+    Exp,
+    /// Quadratic ease-out (1-(1-t)²). Starts fast, ends slow. Musical feel: decelerating.
+    Log,
+    // Future: SCurve, Exp3 (t^3), parameterized curves.
+}
+
+impl InterpolationMode {
+    /// Remap a normalized t ∈ [0,1] through this curve. This is the single extension
+    /// point for new curve shapes — add an enum variant above and one arm here, and
+    /// both CC ramps and per-note expansion pick up the new curve automatically.
+    pub fn apply_curve(&self, t: f64) -> f64 {
+        let t = t.clamp(0.0, 1.0);
+        match self {
+            Self::None => if t >= 1.0 { 1.0 } else { 0.0 },
+            Self::Linear => t,
+            Self::Exp => t * t,
+            Self::Log => 1.0 - (1.0 - t) * (1.0 - t),
+        }
+    }
 }
 
 /// A single musical event in a fugue
