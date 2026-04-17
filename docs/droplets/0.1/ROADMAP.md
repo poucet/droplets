@@ -21,6 +21,8 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [x] | P1 | 5 | Add `get_transport` MCP tool | S | Medium-High — lets LLM reason about timing |
 | [ ] | P0 | 6 | Multi-instance end-to-end validation | M | Critical — central demo claim |
 | [ ] | P0 | 7 | macOS UI verification on demo machine | S | Critical — risk mitigation |
+| [ ] | P0 | 11 | `composite` fugue type (notes + cc + bends + pressures in one fugue) | M | High — LLMs currently emit 10 fugues for one instrument; this is the biggest LLM-ergonomics fix left |
+| [ ] | P1 | 12 | UI lanes for per-note bend/pressure | M | Medium — composite fugues aren't useful if the UI can't render half their content |
 
 ### Phase 02: Post-Demo Polish
 
@@ -118,6 +120,51 @@ Audio-thread ramps for per-note remain tracked as Phase 02 Feature 10 — sample
 
 ---
 
+#### Feature 11: `composite` fugue type
+
+**Problem:** Today a musically-coherent moment on one instrument (e.g. a pad with held chord tones, a filter sweep, an expression curve, and pressure swells) requires the LLM to emit one fugue PER concern. Observed on 2026-04-17: asked for "a meaningful fugue," the LLM produced 10 separate fugues for a single pad part (drone / mid / upper notes + 4 pressure swells + 3 CC lanes). Each gets its own row in the UI, its own id, its own cancel. Editing the "pad moment" means juggling 10 tagged cancels. The one-fugue-per-concern pattern is right when parts are *independently editable* (bass + melody), but wrong when they're one atomic musical idea.
+
+The audio-thread already treats a fugue as a single flat `events: Vec<TimedFugueEvent>` list — the per-concern split exists only in the MCP surface. So bundling is a parser-layer change.
+
+**Solution:** Add a new `FugueContent::Composite` variant that carries all four continuous-signal types in one object:
+
+```json
+{
+  "tag": "pad-moment",
+  "cancel_mode": "tag:pad-moment",
+  "type": "composite",
+  "notes":       [{"beat":0,"note":"C2","duration":16}, {"beat":0,"note":"G3","duration":8}, ...],
+  "cc":          [{"cc":74,"points":[[0,30],[8,100,"exp"],[16,40,"log"]]}, {"cc":11,"points":[...]}],
+  "pitch_bends": [{"note":"C4","points":[[0,0],[2,2,"exp"],[4,0,"log"]]}],
+  "pressures":   [{"note":"C2","points":[[0,0],[8,0.8,"exp"],[16,0,"log"]]}, ...]
+}
+```
+
+All fields except `notes` are optional. One fugue, one tag, one id, one UI row, one cancel. Keep the single-concern variants (`notes`, `cc`, `per_note_pitch_bend`, `per_note_pressure`) for when parts legitimately belong to different musical concerns that should be cancellable independently (bass vs melody).
+
+**Parser:** each sub-array expands using the same helpers as the single-concern variants (CompactNote → note_on/note_off pairs; `cc` entries → per-event CC with curve; `pressures`/`pitch_bends` entries → expanded per-note events via `expand_per_note_points`). No audio-thread changes.
+
+**System prompt:** steer the LLM toward composite by default for single-instrument moments, with a one-line rule: *"use `composite` when the parts belong to one musical moment on one instrument; use single-concern fugues only when parts need independent replacement (e.g. bass swap while melody keeps playing)"*.
+
+**Files:** [src/mcp/requests.rs](../../../src/mcp/requests.rs) (new variant + sub-type structs `CompactCc`, `CompactPitchBend`, `CompactPressure`), [src/mcp/server.rs](../../../src/mcp/server.rs) (parser match arm), [src/mcp/instructions.md](../../../src/mcp/instructions.md), [docs/FUGUE.md](../../FUGUE.md), `queue_fugue` tool description.
+
+---
+
+#### Feature 12: UI lanes for per-note bend and pressure
+
+**Problem:** `FugueGrid` currently renders two lane types: a piano-roll grid for `notes` and line graphs for `cc`. Per-note pitch bend and per-note pressure have neither representation — they silently don't show. Feature 11 makes this worse: a composite fugue may carry 4 pressure swells and 2 bends that the UI can't visualize, so the user sees a fugue panel that looks empty below the notes.
+
+**Solution:** Two new lane types in `FugueGrid`:
+
+- **Pressure lane** (one per `(note, channel)` tuple that has pressure data): line graph in its own horizontal lane below the CC lanes, labelled with the target note name. Same rendering as CC lanes structurally, but y-axis is 0.0–1.0.
+- **Pitch-bend overlay** on the piano-roll note cells: color-tint the cell along its duration based on the bend trajectory (semitones), with a small numeric label at peaks. Unlike pressure, bends belong spatially *on* the held note, so an overlay is more intuitive than a separate lane.
+
+Composite fugues from Feature 11 render as a vertical stack: piano-roll (with bend overlays) on top → N CC lanes → N pressure lanes. Single-concern fugues still render as today.
+
+**Files:** [frontend/src/components/FugueGrid.tsx](../../../frontend/src/components/FugueGrid.tsx), new sub-components for PressureLane and BendOverlay, possibly adjust FugueViewer layout for the taller composite panel.
+
+---
+
 ### Phase 02: Post-Demo Polish
 
 #### Feature 8: Migrate UI to egui (in-process)
@@ -154,15 +201,22 @@ Audio-thread ramps for per-note remain tracked as Phase 02 Feature 10 — sample
 
 ```
 Phase 01:
-  1 (per-note in fugues)                       ← reshapes schema, do first
+  1 (per-note in fugues)                       ← reshapes schema, do first  [done]
   ↓
-  2 (system prompt) + 3 (queue_fugue example)  ← describe full vocabulary in one pass
+  2 (system prompt) + 3 (queue_fugue example)  ← describe full vocabulary in one pass  [done]
   ↓
-  4 (FUGUE.md rewrite)                         ← mirrors the new prompt
+  4 (FUGUE.md rewrite)                         ← mirrors the new prompt  [done]
   ↓
-  5 (get_transport)
+  5 (get_transport)                                                       [done]
   ↓
-  6 (multi-instance validation) + 7 (UI verify) ← both on demo machine
+  11 (composite fugue type)                    ← biggest remaining LLM-ergonomics fix;
+                                                 touches prompt + FUGUE.md + tool desc,
+                                                 so do BEFORE 12 which depends on it
+  ↓
+  12 (UI lanes for bend/pressure)              ← depends on 11: composite fugues aren't
+                                                 useful if the UI can't render them
+  ↓
+  6 (multi-instance validation) + 7 (UI verify) ← both on demo machine; final
   ↓
   2026-04-21: DEMO
   ↓
