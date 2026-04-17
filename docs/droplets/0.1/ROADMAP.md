@@ -14,7 +14,7 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 
 | Done | Pri | # | Feature | Complexity | Impact |
 |------|-----|---|---------|------------|--------|
-| [ ] | P0 | 1 | Per-note expressivity inside fugues | M | High — reshapes schema; must land before docs/prompt |
+| [🔄] | P0 | 1 | Per-note expressivity inside fugues | M | High — reshapes schema; must land before docs/prompt |
 | [ ] | P0 | 2 | Rewrite `ServerInfo::instructions` system prompt | S | Very High — shapes every LLM call |
 | [ ] | P0 | 3 | Add a worked example to `queue_fugue` tool description | S | Very High — LLMs imitate examples |
 | [ ] | P0 | 4 | Rewrite FUGUE.md to match the shipping compact schema | S | High — live demo reference |
