@@ -21,8 +21,8 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [x] | P1 | 5 | Add `get_transport` MCP tool | S | Medium-High — lets LLM reason about timing |
 | [ ] | P0 | 6 | Multi-instance end-to-end validation | M | Critical — central demo claim |
 | [ ] | P0 | 7 | macOS UI verification on demo machine | S | Critical — risk mitigation |
-| [ ] | P0 | 11 | `composite` fugue type (notes + cc + bends + pressures in one fugue) | M | High — LLMs currently emit 10 fugues for one instrument; this is the biggest LLM-ergonomics fix left |
-| [ ] | P1 | 12 | UI lanes for per-note bend/pressure | M | Medium — composite fugues aren't useful if the UI can't render half their content |
+| [x] | P0 | 11 | `composite` fugue type (notes + cc + bends + pressures in one fugue) | M | High — LLMs currently emit 10 fugues for one instrument; this is the biggest LLM-ergonomics fix left |
+| [x] | P1 | 12 | UI lanes for per-note bend/pressure | M | Medium — composite fugues aren't useful if the UI can't render half their content |
 
 ### Phase 02: Post-Demo Polish
 
