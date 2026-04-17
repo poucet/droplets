@@ -246,7 +246,7 @@ pub struct PerNoteManagementData {
 // Fugue sequencing types - compact format for LLM efficiency
 // =============================================================================
 
-/// Content type for a fugue - either notes or CC automation
+/// Content type for a fugue - notes, CC automation, or per-note MIDI 2.0 expression
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FugueContent {
@@ -268,6 +268,28 @@ pub enum FugueContent {
         #[serde(default)]
         #[schemars(description = "Interpolation: 'linear' (default, smooth ramps between points) or 'none' (stepped, values change instantly at each point)")]
         interpolation: Option<String>,
+    },
+    /// Per-note pitch bend over time (MIDI 2.0). Bends a single held note.
+    /// Requires a concurrent Notes fugue holding the target note.
+    /// Points are discrete - for smooth bends, add more points (e.g., 16 per beat).
+    PerNotePitchBend {
+        /// MIDI note number being bent. Must match a note currently held by a concurrent Notes fugue (0-127).
+        #[schemars(description = "MIDI note number to bend. Must be held by a concurrent notes fugue on the same channel (0-127, 60 = C4).")]
+        note: u8,
+        /// Array of [beat, semitones] pairs. Semitones range -64.0 to +64.0 (0 = no bend).
+        #[schemars(description = "Array of [beat, semitones] pairs. Semitones range -64.0 to +64.0 (0 = no bend). Points are discrete - for smooth bends, add dense points (e.g., 16 per beat).")]
+        points: Vec<[f64; 2]>,
+    },
+    /// Per-note pressure/aftertouch over time (MIDI 2.0). Modulates a single held note.
+    /// Requires a concurrent Notes fugue holding the target note.
+    /// Points are discrete - for smooth swells, add more points.
+    PerNotePressure {
+        /// MIDI note number receiving pressure. Must match a note currently held by a concurrent Notes fugue (0-127).
+        #[schemars(description = "MIDI note number for pressure. Must be held by a concurrent notes fugue on the same channel (0-127, 60 = C4).")]
+        note: u8,
+        /// Array of [beat, pressure] pairs. Pressure range 0.0 to 1.0.
+        #[schemars(description = "Array of [beat, pressure] pairs. Pressure range 0.0 to 1.0. Points are discrete - for smooth swells, add dense points.")]
+        points: Vec<[f64; 2]>,
     },
 }
 
@@ -765,7 +787,7 @@ impl DropletsMcp {
     // =========================================================================
 
     /// Queue one or more fugues for transport-synchronized playback.
-    #[tool(description = "Queue one or more fugues for transport-synchronized playback. Each fugue is atomic - use separate fugues for notes vs CC automation so they can be updated independently.\n\nFugue types:\n- 'notes': MIDI notes with auto note-off. Each note has beat, note (0-127), duration (beats).\n- 'cc': CC automation as discrete keyframes. Points are [beat, value] pairs where value is 0-127. CC messages sent exactly at each beat (no interpolation). For smooth sweeps, use more points (8-16 per bar).\n\nUse tags + cancel_mode for layering: tag:'melody' with cancel_mode:'tag:melody' replaces the previous melody while leaving other fugues untouched.")]
+    #[tool(description = "Queue one or more fugues for transport-synchronized playback. Each fugue is atomic - use separate fugues for notes, CC automation, and per-note expression so they can be updated independently.\n\nFugue types:\n- 'notes': MIDI notes with auto note-off. Each note has beat, note (0-127), duration (beats).\n- 'cc': CC automation with automatic linear interpolation between [beat, value] keyframes (values 0-127).\n- 'per_note_pitch_bend': MIDI 2.0 per-note pitch bend over time. Bends a single held note; points are [beat, semitones] pairs (-64.0 to +64.0). Requires a concurrent 'notes' fugue holding the target note on the same channel. Points are discrete - add dense points for smooth bends.\n- 'per_note_pressure': MIDI 2.0 per-note pressure/aftertouch over time. Modulates a single held note; points are [beat, pressure] pairs (0.0-1.0). Same 'held note' requirement as per_note_pitch_bend.\n\nUse tags + cancel_mode for layering: tag:'melody' with cancel_mode:'tag:melody' replaces the previous melody while leaving other fugues untouched.")]
     fn queue_fugue(&self, Parameters(req): Parameters<QueueFugueRequest>) -> Result<CallToolResult, McpError> {
         // Get shared defaults
         let default_quantize_str = req.data.quantize.as_deref().unwrap_or("bar");
@@ -868,6 +890,36 @@ impl DropletsMcp {
                         Some("none") => InterpolationMode::None,
                         _ => InterpolationMode::Linear, // Default to linear
                     };
+                }
+                FugueContent::PerNotePitchBend { note, points } => {
+                    let n = (*note).min(127);
+                    for point in points {
+                        let beat = point[0];
+                        let semitones = (point[1] as f32).clamp(-64.0, 64.0);
+                        events.push(TimedFugueEvent::new(
+                            beat,
+                            FugueEvent::PerNotePitchBend {
+                                channel: fugue_channel,
+                                note: n,
+                                semitones,
+                            },
+                        ));
+                    }
+                }
+                FugueContent::PerNotePressure { note, points } => {
+                    let n = (*note).min(127);
+                    for point in points {
+                        let beat = point[0];
+                        let pressure = (point[1] as f32).clamp(0.0, 1.0);
+                        events.push(TimedFugueEvent::new(
+                            beat,
+                            FugueEvent::PerNotePressure {
+                                channel: fugue_channel,
+                                note: n,
+                                pressure,
+                            },
+                        ));
+                    }
                 }
             }
 
