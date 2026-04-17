@@ -34,6 +34,31 @@ fn send_standalone_midi(conn: &Arc<Mutex<Option<MidiOutputConnection>>>, msg: &M
     }
 }
 
+/// Clean shutdown path for the standalone MIDI output. Called both when
+/// the window closes normally and when we receive Ctrl+C / SIGINT.
+///
+/// Two-step:
+/// 1. `clear_all` on the fugue sequencer emits proper note-offs for every
+///    note currently held by an active fugue. 80ms gives the 5ms sim loop
+///    plenty of buffers to drain.
+/// 2. A MIDI panic (CC 123 = All Notes Off, CC 120 = All Sound Off) on
+///    every channel — covers notes not tracked by fugues, e.g. piano-
+///    keyboard presses from the UI or MCP `send_note_on` one-shots.
+fn shutdown_midi(conn: &Arc<Mutex<Option<MidiOutputConnection>>>, instance_id: &str) {
+    let _ = simply_droplets::fugue::FugueBridge::clear_all(instance_id);
+    thread::sleep(Duration::from_millis(80));
+
+    if let Ok(mut guard) = conn.lock() {
+        if let Some(c) = guard.as_mut() {
+            for ch in 0u8..16 {
+                let status = 0xB0 | ch;
+                let _ = c.send(&[status, 123, 0]);
+                let _ = c.send(&[status, 120, 0]);
+            }
+        }
+    }
+}
+
 fn main() {
     // Initialize logging
     env_logger::Builder::from_default_env()
@@ -294,6 +319,28 @@ fn main() {
         }
     };
 
+    // Keep handles for the two shutdown paths (window close, signal).
+    let conn_out_shutdown = Arc::clone(&conn_out);
+    let conn_out_signal = Arc::clone(&conn_out);
+
+    // Signal-handler thread: Ctrl+C / SIGINT runs the same cleanup as the
+    // window close, then exits the process. Uses a dedicated tokio runtime
+    // so tokio::signal::ctrl_c() works without hijacking the main thread
+    // (which belongs to the GUI event loop).
+    thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("signal-handler runtime");
+        runtime.block_on(async {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                eprintln!("\nCtrl+C received, cleaning up MIDI state...");
+                shutdown_midi(&conn_out_signal, instance_id);
+                std::process::exit(0);
+            }
+        });
+    });
+
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
 
@@ -302,7 +349,8 @@ fn main() {
                 event: WindowEvent::CloseRequested,
                 ..
             } => {
-                println!("Window closed, exiting...");
+                println!("Window closed, cleaning up MIDI state...");
+                shutdown_midi(&conn_out_shutdown, instance_id);
                 *control_flow = ControlFlow::Exit;
             }
             _ => (),

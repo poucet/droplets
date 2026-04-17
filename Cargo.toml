@@ -47,7 +47,7 @@ fastrand = "2.0"
 # MCP server for AI control
 rmcp = { version = "0.9.1", features = ["server", "transport-streamable-http-server"] }
 axum = { version = "0.7", features = ["ws"] }
-tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "signal"] }
 tokio-util = "0.7"
 tower = "0.5"
 http-body-util = "0.1"
