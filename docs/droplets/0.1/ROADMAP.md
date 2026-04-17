@@ -27,6 +27,8 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | Done | Pri | # | Feature | Complexity | Impact |
 |------|-----|---|---------|------------|--------|
 | [ ] | P2 | 8 | Migrate UI from React/HTTP to egui (in-process) | XL | Correctness — removes transport skew |
+| [ ] | P3 | 9 | Evaluate stateful MCP mode for server→client push | S | Medium — unlocks event notifications (fugue-finished, instance-changed) |
+| [ ] | P2 | 10 | Audio-thread ramps for per-note expression (pitch bend, pressure) | M | Quality — sample-accurate per-note curves instead of server-side discrete-event expansion |
 
 ---
 
@@ -42,7 +44,12 @@ Everything here is about the **LLM's view of the system** and **demo-day reliabi
 
 **Solution:** Add two `FugueContent` variants: `PerNotePitchBend { note, points: [[beat, semitones]] }` and `PerNotePressure { note, points: [[beat, value_0_1]] }`. The fugue scheduler already handles per-note events via the one-shot dispatch path, so the audio-thread side is mostly reuse. This must land **before** features 2-4 so the system prompt, worked example, and FUGUE.md can describe the final schema in one pass.
 
-**Files:** [src/mcp/server.rs](../../../src/mcp/server.rs) (FugueContent enum + parsing), [src/fugue/types.rs](../../../src/fugue/types.rs) (if event types need expansion), [src/fugue/](../../../src/fugue/) (scheduler dispatch).
+**Status (2026-04-17):**
+- ✅ Per-note variants added to `FugueContent` + parsing + tool-description stub (discrete events, no interpolation yet).
+- ✅ `InterpolationMode` extended with `Exp` / `Log` via unified `apply_curve` — both CC interpolator sites (`interpolate_value`, `output_cc_ramp`) route through it; any new curve added to `apply_curve` propagates automatically. Today this benefits CC ramps only.
+- 🔄 **Pending**: `interpolation` field on per-note variants + server-side discrete-event expansion at ~32 events/beat so LLMs can write two-point curves with `"linear"` / `"exp"` / `"log"`. Audio-thread ramps for per-note are tracked as Phase 02 Feature 10.
+
+**Files:** [src/mcp/server.rs](../../../src/mcp/server.rs) (FugueContent enum + parsing), [src/fugue/types.rs](../../../src/fugue/types.rs) (InterpolationMode + apply_curve), [src/fugue/fugue.rs](../../../src/fugue/fugue.rs) + [src/midi/mod.rs](../../../src/midi/mod.rs) (interpolator sites).
 
 ---
 
@@ -118,6 +125,26 @@ Everything here is about the **LLM's view of the system** and **demo-day reliabi
 
 ---
 
+#### Feature 9: Evaluate stateful MCP mode
+
+**Problem:** MCP server currently runs in stateless mode ([src/mcp/mod.rs:75](../../../src/mcp/mod.rs#L75)). Every request is independent — no sessions, no SSE, no server-initiated messages. The LLM cannot be told "fugue X just finished" or "instance 'lead' disconnected" without polling. GET `/mcp` returns 405 because streamable HTTP reserves GET for session-scoped SSE streams.
+
+**Solution:** Switch `stateful_mode: true` and add session cleanup. Emit notifications from the fugue scheduler (on completion/cancellation) and bridge registry (on instance add/remove) through the rmcp server handle. Decide whether stateless fallback is kept for health probes.
+
+**Files:** [src/mcp/mod.rs](../../../src/mcp/mod.rs), [src/mcp/server.rs](../../../src/mcp/server.rs), [src/fugue/bridge.rs](../../../src/fugue/bridge.rs).
+
+---
+
+#### Feature 10: Audio-thread ramps for per-note expression
+
+**Problem:** Per-note pitch bend and pressure inside fugues currently use server-side expansion: the MCP handler materializes N discrete events per beat at parse time, and the audio thread dispatches them as `Instant` events. This is ergonomically identical for the LLM ("two points + curve") but limits resolution to the expansion density (typically 32/beat ≈ 64 Hz at 120 BPM). CC already has proper sample-accurate ramps via `ProcessedEvent::CcRamp` and cross-buffer state in `ActiveCcRamp`. Per-note should too, for MPE-style smoothness during slow sweeps.
+
+**Solution:** Generalize `ProcessedEvent::CcRamp` to carry a `RampTarget` enum (`Cc { channel, cc }` | `PerNotePitchBend { channel, note }` | `PerNotePressure { channel, note }`). Unify `ActiveCcRamp` into an `ActiveRamp` with per-target state. Teach the MIDI processor ([src/midi/mod.rs](../../../src/midi/mod.rs)) to emit MIDI 2.0 per-note expression messages at interpolated values per sample block. Curve remapping continues to flow through `InterpolationMode::apply_curve`, so Exp/Log already work the moment the plumbing lands.
+
+**Files:** [src/fugue/types.rs](../../../src/fugue/types.rs) (ProcessedEvent + RampTarget), [src/fugue/fugue.rs](../../../src/fugue/fugue.rs) (active ramp state), [src/midi/mod.rs](../../../src/midi/mod.rs) (per-sample per-note output), [src/mcp/server.rs](../../../src/mcp/server.rs) (stop doing server-side expansion for per-note).
+
+---
+
 ## Implementation Order
 
 ```
@@ -134,7 +161,7 @@ Phase 01:
   ↓
   2026-04-21: DEMO
   ↓
-Phase 02: 8 (egui migration)
+Phase 02: 8 (egui migration) + 9 (stateful MCP) + 10 (audio-thread per-note ramps)
 ```
 
 ---
