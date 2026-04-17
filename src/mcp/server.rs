@@ -589,54 +589,10 @@ impl ServerHandler for DropletsMcp {
                 .enable_tools()
                 .build(),
             server_info: Implementation::from_build_env(),
-            instructions: Some(
-                "Simply Droplets — AI-controlled MIDI 1.0/2.0 out of a DAW plugin.\n\
-                 \n\
-                 ## Multi-instance setup (do first when >1 plugin is loaded)\n\
-                 1. `list_instances` — shows connected IDs like 'droplets-a1b2c3d4'.\n\
-                 2. `set_instance_name` on each to give musical names: 'lead', 'bass', 'pad'. All subsequent calls target these names via the `instance` field.\n\
-                 3. The DAW transport MUST be PLAYING for fugues to produce sound.\n\
-                 \n\
-                 ## queue_fugue — primary composition tool\n\
-                 Batches multiple fugues into one call. Each fugue is atomic; swap one musical part by queueing a new fugue with the same tag + cancel_mode:'tag:<name>'. The other parts keep playing untouched.\n\
-                 \n\
-                 Fugue content types (each in its own fugue for independent control):\n\
-                 - 'notes'               — MIDI notes with auto note-off at beat+duration.\n\
-                 - 'cc'                  — CC automation with smooth per-fugue interpolation.\n\
-                 - 'per_note_pitch_bend' — MIDI 2.0 per-note bend on a held note.\n\
-                 - 'per_note_pressure'   — MIDI 2.0 per-note pressure on a held note.\n\
-                 \n\
-                 Shared fields (override per-fugue): duration_beats, quantize ('immediate'|'beat'|'bar'|'bars:N'), loop_mode ('once'|'forever'|N).\n\
-                 \n\
-                 Curves (on CC interpolation, and per-segment on per-note point tuples):\n\
-                 - 'linear' (default)  smooth straight line\n\
-                 - 'exp'               ease-in, accelerating (t²)\n\
-                 - 'log'               ease-out, decelerating (1-(1-t)²)\n\
-                 - 'none'              stepped/discrete\n\
-                 \n\
-                 See the queue_fugue tool description for a full worked example.\n\
-                 \n\
-                 ## Musical defaults that actually sound good\n\
-                 - Velocities 60-110 — save 110-120 for hits that need to cut through. Avoid 127 unless aggressive is the point.\n\
-                 - Use `quantize: 'bar'` so updates land on musical boundaries.\n\
-                 - Short fugues (2-8 bars) + loop_mode: 'forever'; replace via tag swap.\n\
-                 - Separate notes and automation into different fugues — update independently.\n\
-                 - Per-note bend/pressure REQUIRE a concurrent notes fugue holding the target note on the same channel; otherwise the expression has nothing to modulate.\n\
-                 \n\
-                 ## Other tools\n\
-                 - get_transport — current {beat, tempo, playing, time_sig, loop bounds}; use before scheduling if you need to know where the playhead is.\n\
-                 - list_fugues / cancel_fugue / cancel_fugues_by_tag / clear_fugues\n\
-                 - send_note_on / send_note_off / send_cc — ONE-SHOT only, not for composition\n\
-                 - send_per_note_pitch_bend / send_per_note_pressure — MIDI 2.0 expression (one-shot)\n\
-                 - set_param / rename_slot / list_slots — parameter-slot automation\n\
-                 - get_activity — recent MIDI event log (debugging)\n\
-                 \n\
-                 ## Gotchas\n\
-                 - Fugues do not play while transport is stopped (check with get_transport).\n\
-                 - Tempo changes mid-fugue drift the timing.\n\
-                 - MIDI 2.0 per-note expressions require a MIDI 2.0-capable host/instrument."
-                    .to_string(),
-            ),
+            // The MCP system prompt lives in instructions.md next to this file —
+            // edit there, not here. include_str! pulls it in at compile time so
+            // there's no runtime filesystem dependency.
+            instructions: Some(include_str!("instructions.md").to_string()),
         }
     }
 
