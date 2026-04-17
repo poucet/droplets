@@ -1,6 +1,9 @@
-//! MCP Server tool definitions for Simply Droplets
+//! MCP Server tool definitions for Simply Droplets.
 //!
-//! Exposes tools for AI to send MIDI CC and notes through plugin instances.
+//! This file owns the [`DropletsMcp`] service and the [`tool_router`] that
+//! maps MCP tool calls to handler methods. Request data types, custom
+//! deserializers, and parsing helpers live in [`super::requests`] — this
+//! module only wires the tools to the bridges.
 
 use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
@@ -8,15 +11,21 @@ use rmcp::{
     handler::server::tool::ToolCallContext,
     handler::server::wrapper::Parameters,
     model::*,
-    schemars, tool, tool_router,
+    tool, tool_router,
     service::RequestContext,
 };
-use serde::Deserialize;
 
 use super::bridge::{CcBridge, CcMessage, NoteMessage, PerNoteExpressionMessage};
+use super::requests::{
+    CancelFugueRequest, CancelFuguesByTagRequest, FugueContent, GetSlotsRequest,
+    PerNoteControllerRequest, PerNoteManagementRequest, PerNotePitchBendRequest,
+    PerNotePressureRequest, QueueFugueRequest, RenameInstanceRequest, RenameSlotRequest,
+    SendCcRequest, SendNoteOffRequest, SendNoteOnHiresRequest, SendNoteOnRequest, SetParamRequest,
+    expand_per_note_points, parse_interpolation_mode,
+};
 use crate::fugue::{
-    CancelMode, FugueBridge, FugueDefinition, FugueEvent, InterpolationMode, LoopMode, QuantizeMode,
-    TimedFugueEvent,
+    CancelMode, FugueBridge, FugueDefinition, FugueEvent, InterpolationMode, LoopMode,
+    QuantizeMode, TimedFugueEvent,
 };
 
 /// MCP Server for Simply Droplets
@@ -37,441 +46,6 @@ impl Default for DropletsMcp {
     fn default() -> Self {
         Self::new()
     }
-}
-
-// =============================================================================
-// Wrapper type for instance-targeted requests
-// =============================================================================
-
-/// Wrapper for requests that target a specific plugin instance.
-/// This enables future batching of multiple operations for the same instance.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct InstanceRequest<T> {
-    /// Target plugin instance name or "default" for first available
-    #[serde(default = "default_instance")]
-    #[schemars(description = "Target plugin instance name or 'default' for first available")]
-    pub instance: String,
-
-    /// The actual request data
-    #[serde(flatten)]
-    pub data: T,
-}
-
-// =============================================================================
-// MIDI message types (can be used standalone or in batches)
-// =============================================================================
-
-/// MIDI CC data
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct CcData {
-    /// MIDI channel (1-16, default: 1)
-    #[serde(default = "default_channel")]
-    #[schemars(description = "MIDI channel (1-16, default: 1)")]
-    pub channel: u8,
-
-    /// CC number (0-127)
-    #[schemars(description = "CC number (0-127)")]
-    pub cc: u8,
-
-    /// CC value (0-127)
-    #[schemars(description = "CC value (0-127)")]
-    pub value: u8,
-}
-
-/// MIDI Note On data (7-bit velocity)
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct NoteOnData {
-    /// MIDI channel (1-16, default: 1)
-    #[serde(default = "default_channel")]
-    #[schemars(description = "MIDI channel (1-16, default: 1)")]
-    pub channel: u8,
-
-    /// MIDI note number (0-127, where 60 = C4/middle C)
-    #[schemars(description = "MIDI note number (0-127, where 60 = C4/middle C)")]
-    pub note: u8,
-
-    /// Note velocity (1-127, default: 100)
-    #[serde(default = "default_velocity")]
-    #[schemars(description = "Note velocity (1-127, default: 100)")]
-    pub velocity: u8,
-}
-
-/// MIDI 2.0 Note On data with 16-bit velocity
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct NoteOnHiresData {
-    /// MIDI channel (1-16, default: 1)
-    #[serde(default = "default_channel")]
-    #[schemars(description = "MIDI channel (1-16, default: 1)")]
-    pub channel: u8,
-
-    /// MIDI note number (0-127, where 60 = C4/middle C)
-    #[schemars(description = "MIDI note number (0-127, where 60 = C4/middle C)")]
-    pub note: u8,
-
-    /// 16-bit velocity (1-65535, default: 32768). MIDI 2.0 high-resolution.
-    #[serde(default = "default_velocity_16bit")]
-    #[schemars(description = "16-bit velocity (1-65535, default: 32768). MIDI 2.0 high-resolution.")]
-    pub velocity: u16,
-}
-
-/// MIDI Note Off data
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct NoteOffData {
-    /// MIDI channel (1-16, default: 1)
-    #[serde(default = "default_channel")]
-    #[schemars(description = "MIDI channel (1-16, default: 1)")]
-    pub channel: u8,
-
-    /// MIDI note number (0-127, where 60 = C4/middle C)
-    #[schemars(description = "MIDI note number (0-127, where 60 = C4/middle C)")]
-    pub note: u8,
-
-    /// Release velocity (0-127, default: 0)
-    #[serde(default)]
-    #[schemars(description = "Release velocity (0-127, default: 0)")]
-    pub velocity: u8,
-}
-
-// =============================================================================
-// Slot/parameter types
-// =============================================================================
-
-/// Set parameter slot value data
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SetParamData {
-    /// Slot index (0-15)
-    #[schemars(description = "Parameter slot index (0-15)")]
-    pub slot: usize,
-
-    /// Value (0.0-1.0 normalized)
-    #[schemars(description = "Parameter value (0.0-1.0 normalized)")]
-    pub value: f64,
-}
-
-/// Rename parameter slot data
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct RenameSlotData {
-    /// Slot index (0-15)
-    #[schemars(description = "Parameter slot index (0-15)")]
-    pub slot: usize,
-
-    /// New name for the slot (e.g., "Vital Filter Cutoff")
-    #[schemars(description = "New name for the slot (e.g., 'Vital Filter Cutoff')")]
-    pub name: String,
-}
-
-// =============================================================================
-// Per-note expression types (MIDI 2.0 only)
-// =============================================================================
-
-/// Per-note pitch bend data (MIDI 2.0)
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct PerNotePitchBendData {
-    /// MIDI channel (1-16, default: 1)
-    #[serde(default = "default_channel")]
-    #[schemars(description = "MIDI channel (1-16, default: 1)")]
-    pub channel: u8,
-
-    /// MIDI note number to bend (0-127, where 60 = C4/middle C)
-    #[schemars(description = "MIDI note number to bend (0-127, where 60 = C4/middle C)")]
-    pub note: u8,
-
-    /// Pitch bend in semitones (-64.0 to +64.0, 0 = no bend)
-    #[schemars(description = "Pitch bend in semitones (-64.0 to +64.0, 0 = no bend)")]
-    pub semitones: f32,
-}
-
-/// Per-note pressure/aftertouch data (MIDI 2.0)
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct PerNotePressureData {
-    /// MIDI channel (1-16, default: 1)
-    #[serde(default = "default_channel")]
-    #[schemars(description = "MIDI channel (1-16, default: 1)")]
-    pub channel: u8,
-
-    /// MIDI note number (0-127, where 60 = C4/middle C)
-    #[schemars(description = "MIDI note number (0-127, where 60 = C4/middle C)")]
-    pub note: u8,
-
-    /// Pressure value (0.0-1.0 normalized)
-    #[schemars(description = "Pressure value (0.0-1.0 normalized)")]
-    pub pressure: f32,
-}
-
-/// Per-note controller data (MIDI 2.0)
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct PerNoteControllerData {
-    /// MIDI channel (1-16, default: 1)
-    #[serde(default = "default_channel")]
-    #[schemars(description = "MIDI channel (1-16, default: 1)")]
-    pub channel: u8,
-
-    /// MIDI note number (0-127, where 60 = C4/middle C)
-    #[schemars(description = "MIDI note number (0-127, where 60 = C4/middle C)")]
-    pub note: u8,
-
-    /// Controller index (0-255)
-    #[schemars(description = "Controller index (0-255)")]
-    pub index: u8,
-
-    /// Controller value (0.0-1.0 normalized)
-    #[schemars(description = "Controller value (0.0-1.0 normalized)")]
-    pub value: f32,
-}
-
-/// Per-note management data (MIDI 2.0)
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct PerNoteManagementData {
-    /// MIDI channel (1-16, default: 1)
-    #[serde(default = "default_channel")]
-    #[schemars(description = "MIDI channel (1-16, default: 1)")]
-    pub channel: u8,
-
-    /// MIDI note number (0-127, where 60 = C4/middle C)
-    #[schemars(description = "MIDI note number (0-127, where 60 = C4/middle C)")]
-    pub note: u8,
-
-    /// Detach this note from prior note-on (default: false)
-    #[serde(default)]
-    #[schemars(description = "Detach this note from prior note-on")]
-    pub detach: bool,
-
-    /// Reset all controllers on this note (default: false)
-    #[serde(default)]
-    #[schemars(description = "Reset all controllers on this note")]
-    pub reset: bool,
-}
-
-// =============================================================================
-// Fugue sequencing types - compact format for LLM efficiency
-// =============================================================================
-
-/// Content type for a fugue - notes, CC automation, or per-note MIDI 2.0 expression
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum FugueContent {
-    /// MIDI notes with automatic note-off generation
-    Notes {
-        /// Array of notes to play
-        #[schemars(description = "Array of notes. Each note auto-generates a note_off at beat + duration.")]
-        notes: Vec<CompactNote>,
-    },
-    /// CC automation with automatic linear interpolation between points
-    Cc {
-        /// CC number (0-127)
-        #[schemars(description = "CC number (0-127)")]
-        cc: u8,
-        /// Array of [beat, value] pairs. Linear interpolation is automatic between consecutive points.
-        #[schemars(description = "Array of [beat, value] pairs. Values 0-127. Linear interpolation happens automatically between points - just specify keyframes (e.g., [[0,0],[4,127]] ramps smoothly over 4 beats).")]
-        points: Vec<[f64; 2]>,
-        /// Interpolation mode: "linear" (default, smooth ramps) or "none" (stepped/discrete)
-        #[serde(default)]
-        #[schemars(description = "Interpolation: 'linear' (default, smooth ramps between points) or 'none' (stepped, values change instantly at each point)")]
-        interpolation: Option<String>,
-    },
-    /// Per-note pitch bend over time (MIDI 2.0). Bends a single held note.
-    /// Requires a concurrent Notes fugue holding the target note.
-    /// Points are discrete - for smooth bends, add more points (e.g., 16 per beat).
-    PerNotePitchBend {
-        /// MIDI note number being bent. Must match a note currently held by a concurrent Notes fugue (0-127).
-        #[schemars(description = "MIDI note number to bend. Must be held by a concurrent notes fugue on the same channel (0-127, 60 = C4).")]
-        note: u8,
-        /// Array of [beat, semitones] pairs. Semitones range -64.0 to +64.0 (0 = no bend).
-        #[schemars(description = "Array of [beat, semitones] pairs. Semitones range -64.0 to +64.0 (0 = no bend). Points are discrete - for smooth bends, add dense points (e.g., 16 per beat).")]
-        points: Vec<[f64; 2]>,
-    },
-    /// Per-note pressure/aftertouch over time (MIDI 2.0). Modulates a single held note.
-    /// Requires a concurrent Notes fugue holding the target note.
-    /// Points are discrete - for smooth swells, add more points.
-    PerNotePressure {
-        /// MIDI note number receiving pressure. Must match a note currently held by a concurrent Notes fugue (0-127).
-        #[schemars(description = "MIDI note number for pressure. Must be held by a concurrent notes fugue on the same channel (0-127, 60 = C4).")]
-        note: u8,
-        /// Array of [beat, pressure] pairs. Pressure range 0.0 to 1.0.
-        #[schemars(description = "Array of [beat, pressure] pairs. Pressure range 0.0 to 1.0. Points are discrete - for smooth swells, add dense points.")]
-        points: Vec<[f64; 2]>,
-    },
-}
-
-/// A single note in a compact fugue
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct CompactNote {
-    /// Beat offset from fugue start
-    #[schemars(description = "Beat offset from fugue start (0.0 = start)")]
-    pub beat: f64,
-    /// MIDI note number (0-127)
-    #[schemars(description = "MIDI note number (0-127)")]
-    pub note: u8,
-    /// Duration in beats (note_off auto-generated at beat + duration)
-    #[schemars(description = "Duration in beats. Note-off is automatically sent at beat + duration.")]
-    pub duration: f64,
-    /// Velocity (1-127, defaults to 100)
-    #[serde(default = "default_note_velocity")]
-    #[schemars(description = "Velocity (1-127, defaults to 100)")]
-    pub velocity: Option<u8>,
-    /// Channel override (1-16, defaults to fugue channel)
-    #[schemars(description = "Channel override (1-16). If not set, uses fugue's channel.")]
-    pub channel: Option<u8>,
-}
-
-fn default_note_velocity() -> Option<u8> {
-    Some(100)
-}
-
-/// A single fugue definition within a batch
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct CompactFugue {
-    /// Tag for grouping/cancellation (e.g., "melody", "filter")
-    #[schemars(description = "Tag for grouping/cancellation. Use with cancel_mode:'tag:NAME' to replace specific fugues.")]
-    pub tag: Option<String>,
-    /// What to cancel when this fugue starts: "none", "tag:NAME", or "all"
-    #[serde(default = "default_cancel_mode")]
-    #[schemars(description = "What to cancel when starting: 'none', 'tag:NAME' (cancels matching tag), or 'all'")]
-    pub cancel_mode: Option<String>,
-    /// Default MIDI channel for this fugue (1-16, defaults to 1)
-    #[serde(default = "default_fugue_channel")]
-    #[schemars(description = "Default MIDI channel (1-16, defaults to 1)")]
-    pub channel: Option<u8>,
-
-    // Per-fugue overrides for shared settings
-    /// Override quantize mode for this fugue
-    #[schemars(description = "Override quantize: 'immediate', 'beat', 'bar', or 'bars:N'")]
-    pub quantize: Option<String>,
-    /// Override duration for this fugue
-    #[schemars(description = "Override duration in beats")]
-    pub duration_beats: Option<f64>,
-    /// Override loop mode for this fugue
-    #[schemars(description = "Override loop mode: 'once', 'forever', or a number")]
-    pub loop_mode: Option<String>,
-
-    /// The fugue content (notes or CC automation)
-    #[serde(flatten)]
-    pub content: FugueContent,
-}
-
-fn default_fugue_channel() -> Option<u8> {
-    Some(1)
-}
-
-/// Queue one or more fugues for transport-synchronized playback
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct QueueFugueData {
-    /// Array of fugues to queue. Each fugue is atomic - use separate fugues for notes vs CC.
-    #[schemars(description = "Array of fugues. Each is atomic - use separate fugues for notes vs CC automation so they can be updated independently.")]
-    pub fugues: Vec<CompactFugue>,
-
-    // Shared defaults (can be overridden per-fugue)
-    /// Default quantize mode: "immediate", "beat", "bar", or "bars:N"
-    #[serde(default = "default_quantize")]
-    #[schemars(description = "Default quantize: 'immediate', 'beat', 'bar', or 'bars:N' (default: 'bar')")]
-    pub quantize: Option<String>,
-    /// Default duration in beats
-    #[serde(default = "default_duration")]
-    #[schemars(description = "Default duration in beats (default: 4.0)")]
-    pub duration_beats: Option<f64>,
-    /// Default loop mode: "once", "forever", or a number
-    #[serde(default = "default_loop_mode_opt")]
-    #[schemars(description = "Default loop mode: 'once', 'forever', or a number (default: 'forever')")]
-    pub loop_mode: Option<String>,
-}
-
-fn default_duration() -> Option<f64> {
-    Some(4.0)
-}
-
-fn default_loop_mode_opt() -> Option<String> {
-    Some("forever".to_string())
-}
-
-/// Cancel a specific fugue by ID
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct CancelFugueData {
-    /// Fugue ID to cancel (returned by queue_fugue)
-    #[schemars(description = "Fugue ID to cancel (returned by queue_fugue)")]
-    pub id: u64,
-}
-
-/// Cancel fugues by tag
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct CancelFuguesByTagData {
-    /// Tag to match for cancellation
-    #[schemars(description = "Tag to match for cancellation (e.g., 'melody')")]
-    pub tag: String,
-}
-
-fn default_quantize() -> Option<String> {
-    Some("bar".to_string())
-}
-
-fn default_cancel_mode() -> Option<String> {
-    Some("none".to_string())
-}
-
-// Fugue request types
-pub type QueueFugueRequest = InstanceRequest<QueueFugueData>;
-pub type CancelFugueRequest = InstanceRequest<CancelFugueData>;
-pub type CancelFuguesByTagRequest = InstanceRequest<CancelFuguesByTagData>;
-
-// =============================================================================
-// Instance management types (these don't use the wrapper since instance is the subject)
-// =============================================================================
-
-/// Request to rename an instance
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct RenameInstanceRequest {
-    /// Current instance name or ID
-    #[schemars(description = "Current instance name or ID")]
-    pub instance: String,
-
-    /// New display name for the instance
-    #[schemars(description = "New display name for the instance")]
-    pub name: String,
-}
-
-// =============================================================================
-// Type aliases for the MCP tool interface
-// =============================================================================
-
-pub type SendCcRequest = InstanceRequest<CcData>;
-pub type SendNoteOnRequest = InstanceRequest<NoteOnData>;
-pub type SendNoteOnHiresRequest = InstanceRequest<NoteOnHiresData>;
-pub type SendNoteOffRequest = InstanceRequest<NoteOffData>;
-pub type SetParamRequest = InstanceRequest<SetParamData>;
-pub type RenameSlotRequest = InstanceRequest<RenameSlotData>;
-
-// Per-note expression request types (MIDI 2.0)
-pub type PerNotePitchBendRequest = InstanceRequest<PerNotePitchBendData>;
-pub type PerNotePressureRequest = InstanceRequest<PerNotePressureData>;
-pub type PerNoteControllerRequest = InstanceRequest<PerNoteControllerData>;
-pub type PerNoteManagementRequest = InstanceRequest<PerNoteManagementData>;
-
-/// Request to get slots for an instance (no additional data needed)
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct GetSlotsRequest {
-    /// Target plugin instance name or "default" for first available
-    #[serde(default = "default_instance")]
-    #[schemars(description = "Target plugin instance name or 'default' for first available")]
-    pub instance: String,
-}
-
-// =============================================================================
-// Default value functions
-// =============================================================================
-
-fn default_instance() -> String {
-    "default".to_string()
-}
-
-fn default_channel() -> u8 {
-    1
-}
-
-fn default_velocity() -> u8 {
-    100
-}
-
-fn default_velocity_16bit() -> u16 {
-    32768 // Mid-point of 16-bit range
 }
 
 #[tool_router]
@@ -787,7 +361,7 @@ impl DropletsMcp {
     // =========================================================================
 
     /// Queue one or more fugues for transport-synchronized playback.
-    #[tool(description = "Queue one or more fugues for transport-synchronized playback. Each fugue is atomic - use separate fugues for notes, CC automation, and per-note expression so they can be updated independently.\n\nFugue types:\n- 'notes': MIDI notes with auto note-off. Each note has beat, note (0-127), duration (beats).\n- 'cc': CC automation with automatic linear interpolation between [beat, value] keyframes (values 0-127).\n- 'per_note_pitch_bend': MIDI 2.0 per-note pitch bend over time. Bends a single held note; points are [beat, semitones] pairs (-64.0 to +64.0). Requires a concurrent 'notes' fugue holding the target note on the same channel. Points are discrete - add dense points for smooth bends.\n- 'per_note_pressure': MIDI 2.0 per-note pressure/aftertouch over time. Modulates a single held note; points are [beat, pressure] pairs (0.0-1.0). Same 'held note' requirement as per_note_pitch_bend.\n\nUse tags + cancel_mode for layering: tag:'melody' with cancel_mode:'tag:melody' replaces the previous melody while leaving other fugues untouched.")]
+    #[tool(description = "Queue one or more fugues for transport-synchronized playback. Each fugue is atomic - use separate fugues for notes, CC automation, and per-note expression so they can be updated independently.\n\nFugue types:\n- 'notes': MIDI notes with auto note-off. Each note has beat, note (0-127), duration (beats).\n- 'cc': CC automation. Points are [beat, value] pairs (values 0-127). Interpolation: 'linear' (default), 'exp', 'log', or 'none'.\n- 'per_note_pitch_bend': MIDI 2.0 per-note pitch bend over time. Bends a single held note; points are [beat, semitones] or [beat, semitones, curve] tuples (-64.0 to +64.0). Requires a concurrent 'notes' fugue holding the target note on the same channel.\n- 'per_note_pressure': MIDI 2.0 per-note pressure/aftertouch over time. Points are [beat, pressure] or [beat, pressure, curve] tuples (0.0-1.0).\n\nPer-note trajectories support per-segment curves — each point's optional curve controls interpolation for the segment arriving at it (ignored on first point). Example crescendo-then-release: [[0,0],[2,1,\"exp\"],[4,0,\"log\"]].\n\nUse tags + cancel_mode for layering: tag:'melody' with cancel_mode:'tag:melody' replaces the previous melody while leaving other fugues untouched.")]
     fn queue_fugue(&self, Parameters(req): Parameters<QueueFugueRequest>) -> Result<CallToolResult, McpError> {
         // Get shared defaults
         let default_quantize_str = req.data.quantize.as_deref().unwrap_or("bar");
@@ -872,54 +446,45 @@ impl DropletsMcp {
                     }
                 }
                 FugueContent::Cc { cc, points, interpolation } => {
+                    // CC has audio-thread ramps, so the mode is stored on the
+                    // fugue definition and interpolation happens per-sample.
                     let cc_num = (*cc).min(127);
                     for point in points {
                         let beat = point[0];
                         let value = (point[1] as u8).min(127);
                         events.push(TimedFugueEvent::new(
                             beat,
-                            FugueEvent::Cc {
-                                channel: fugue_channel,
-                                cc: cc_num,
-                                value,
-                            },
+                            FugueEvent::Cc { channel: fugue_channel, cc: cc_num, value },
                         ));
                     }
-                    // Parse interpolation mode (applies to this CC fugue)
-                    cc_interpolation = match interpolation.as_deref() {
-                        Some("none") => InterpolationMode::None,
-                        _ => InterpolationMode::Linear, // Default to linear
-                    };
+                    cc_interpolation = parse_interpolation_mode(interpolation.as_deref());
                 }
                 FugueContent::PerNotePitchBend { note, points } => {
+                    // Per-note has no audio-thread ramp path yet, so expand
+                    // per-segment curves into dense discrete events at parse
+                    // time. The scheduler dispatches each as an Instant event.
                     let n = (*note).min(127);
-                    for point in points {
-                        let beat = point[0];
-                        let semitones = (point[1] as f32).clamp(-64.0, 64.0);
+                    expand_per_note_points(points, |beat, value| {
+                        let semitones = (value as f32).clamp(-64.0, 64.0);
                         events.push(TimedFugueEvent::new(
                             beat,
                             FugueEvent::PerNotePitchBend {
-                                channel: fugue_channel,
-                                note: n,
-                                semitones,
+                                channel: fugue_channel, note: n, semitones,
                             },
                         ));
-                    }
+                    });
                 }
                 FugueContent::PerNotePressure { note, points } => {
                     let n = (*note).min(127);
-                    for point in points {
-                        let beat = point[0];
-                        let pressure = (point[1] as f32).clamp(0.0, 1.0);
+                    expand_per_note_points(points, |beat, value| {
+                        let pressure = (value as f32).clamp(0.0, 1.0);
                         events.push(TimedFugueEvent::new(
                             beat,
                             FugueEvent::PerNotePressure {
-                                channel: fugue_channel,
-                                note: n,
-                                pressure,
+                                channel: fugue_channel, note: n, pressure,
                             },
                         ));
-                    }
+                    });
                 }
             }
 

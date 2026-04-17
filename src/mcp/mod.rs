@@ -19,6 +19,7 @@
 //! DAW routes to target plugin
 
 mod bridge;
+mod requests;
 mod server;
 
 pub use bridge::{ActivityEvent, CcBridge, CcMessage, MidiMessage, NoteMessage, PerNoteExpressionMessage, PerNoteExpressionType};
