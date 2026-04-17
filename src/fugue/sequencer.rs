@@ -103,8 +103,22 @@ impl FugueSequencer {
         // 6. Process active fugues
         self.process_active_fugues(current_beat, end_beat, beats_per_sample);
 
-        // 7. Remove finished fugues
-        self.fugues.retain(|f| !f.is_finished() || !f.get_active_notes().is_empty());
+        // 7. Drop finished fugues. If a finished fugue still has active notes
+        //    (held note whose auto-off fell past duration_beats — common at
+        //    loop boundaries), emit note-offs for them before dropping so the
+        //    synth doesn't get stuck. Previously the retain kept these around
+        //    forever because the predicate never became false, so cancelled or
+        //    finite-loop fugues lingered in the UI list.
+        let output_buffer = &mut self.output_buffer;
+        self.fugues.retain_mut(|f| {
+            if !f.is_finished() {
+                return true;
+            }
+            if !f.get_active_notes().is_empty() {
+                send_note_offs_for_fugue(f, output_buffer);
+            }
+            false
+        });
 
         self.last_beat = end_beat;
         self.output_buffer.drain(..)
@@ -179,13 +193,19 @@ impl FugueSequencer {
         }
     }
 
-    /// Start pending fugues whose quantization point has arrived
+    /// Start pending fugues whose quantization point has arrived.
     ///
     /// Uses the interval-based quantization model: fugues start when the transport
     /// reaches a grid line (where current_beat % interval == 0). Beat 0 is always
     /// a valid grid line for all intervals.
     ///
     /// Cancel modes are applied here (not when queued) to ensure seamless transitions.
+    ///
+    /// **Tag-swap alignment:** when a new fugue has `cancel_mode: CancelByTag(X)`
+    /// and a fugue with tag X is currently playing, the new fugue starts at that
+    /// old fugue's next loop boundary — not its own independent quantize grid. This
+    /// gives musically-expected "replace on the loop" behavior by default; without
+    /// it, a 3-beat loop replaced by a bar-quantized fugue creates a gap.
     fn start_pending_fugues(
         &mut self,
         current_beat: f64,
@@ -193,8 +213,12 @@ impl FugueSequencer {
         time_sig_numerator: u32,
         beats_per_sample: f64,
     ) {
-        // Collect indices of fugues that are ready to start, along with their cancel modes
-        // We need to collect first to avoid borrow issues when applying cancel modes
+        // Pre-compute each live tag's next loop boundary. Used below when a
+        // waiting fugue has cancel_mode:tag:X to align to the fugue being
+        // replaced instead of the new fugue's own quantize grid. When multiple
+        // playing fugues share a tag (unusual but possible), use the earliest.
+        let tag_loop_boundaries = self.tag_loop_boundaries(current_beat);
+
         let mut starting_fugues: Vec<(usize, CancelMode)> = Vec::new();
 
         for (idx, fugue) in self.fugues.iter_mut().enumerate() {
@@ -202,12 +226,22 @@ impl FugueSequencer {
                 continue;
             }
 
-            let quantize = &fugue.definition.quantize;
+            // Default: use the fugue's own quantize grid.
+            let quantize_target = fugue
+                .definition
+                .quantize
+                .next_grid_line(current_beat, time_sig_numerator);
 
-            // Calculate the next grid line from the current position
-            let target = quantize.next_grid_line(current_beat, time_sig_numerator);
+            // Tag-swap override: align to the cancelled tag's next loop
+            // boundary if one is playing. Falls through to quantize otherwise.
+            let tag_target = if let CancelMode::CancelByTag(tag) = &fugue.definition.cancel_mode {
+                tag_loop_boundaries.get(tag).copied()
+            } else {
+                None
+            };
 
-            // Update target (may change if transport jumped)
+            let target = tag_target.unwrap_or(quantize_target);
+
             fugue.target_start_beat = Some(target);
 
             // Check if the target falls within this buffer's beat range
@@ -231,6 +265,36 @@ impl FugueSequencer {
             fugue.waiting_for_start = false;
             fugue.start_beat = target;
         }
+    }
+
+    /// Map each currently-playing tagged fugue's tag to its NEXT loop boundary.
+    /// The boundary is the beat at which that fugue's current loop iteration
+    /// completes — i.e., the earliest moment a seamless replacement can start.
+    /// Returns the earliest boundary when multiple playing fugues share a tag.
+    fn tag_loop_boundaries(&self, current_beat: f64) -> std::collections::HashMap<String, f64> {
+        use std::collections::HashMap;
+        let mut out: HashMap<String, f64> = HashMap::new();
+        for fugue in &self.fugues {
+            if fugue.waiting_for_start || fugue.is_finished() {
+                continue;
+            }
+            let tag = match &fugue.definition.tag {
+                Some(t) => t.clone(),
+                None => continue,
+            };
+            // Where the current loop iteration ends in absolute beats.
+            let loop_len = fugue.definition.duration_beats;
+            if loop_len <= 0.0 {
+                continue;
+            }
+            let elapsed = (current_beat - fugue.start_beat).max(0.0);
+            let completed_loops = (elapsed / loop_len).floor();
+            let next_boundary = fugue.start_beat + (completed_loops + 1.0) * loop_len;
+            out.entry(tag)
+                .and_modify(|prev| { if next_boundary < *prev { *prev = next_boundary; } })
+                .or_insert(next_boundary);
+        }
+        out
     }
 
     /// Apply a cancel mode with note-offs at a specific sample offset
