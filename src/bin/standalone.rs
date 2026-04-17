@@ -7,10 +7,32 @@ use midir::{MidiOutput, MidiOutputConnection};
 #[cfg(unix)]
 use midir::os::unix::VirtualOutput;
 use simply_droplets::gui::{configure_webview, WebViewConfig, DEFAULT_GUI_SIZE};
-use std::sync::Arc;
+use simply_droplets::mcp::MidiMessage;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use wry::WebViewBuilder;
+
+/// Send a MidiMessage over a shared virtual-MIDI connection. MIDI 2.0 per-note
+/// expressions don't map to 3-byte MIDI 1.0 and are skipped here; test per-note
+/// features via the plugin path in a DAW instead.
+fn send_standalone_midi(conn: &Arc<Mutex<Option<MidiOutputConnection>>>, msg: &MidiMessage) {
+    let Ok(mut guard) = conn.lock() else { return };
+    let Some(c) = guard.as_mut() else { return };
+    match msg {
+        MidiMessage::Note(note) => {
+            let status = (if note.is_note_on { 0x90 } else { 0x80 }) | (note.channel & 0x0F);
+            let _ = c.send(&[status, note.note, note.velocity]);
+        }
+        MidiMessage::Cc(cc) => {
+            let status = 0xB0 | (cc.channel & 0x0F);
+            let _ = c.send(&[status, cc.cc, cc.value]);
+        }
+        MidiMessage::PerNoteExpression(_) => {
+            // Not representable as MIDI 1.0 three-byte messages.
+        }
+    }
+}
 
 fn main() {
     // Initialize logging
@@ -27,8 +49,13 @@ fn main() {
     let mut midi_consumer =
         simply_droplets::mcp::CcBridge::register(instance_id, Arc::clone(&params_inst));
 
-    // Register with FugueBridge for fugue sequencing
-    let (_fugue_consumer, _fugue_info_handle) =
+    // Register with FugueBridge for fugue sequencing. Unlike the plugin path
+    // (where the DAW's audio thread drives FugueSequencer::process), standalone
+    // has no audio thread — so we spawn one below that simulates a fixed-tempo
+    // always-playing transport and drains the fugue command buffer. Without
+    // this, queued fugues sit in the ring buffer forever and never appear in
+    // the fugue info cache, which is the "queue fugue disappears" UI bug.
+    let (fugue_consumer, fugue_info_handle) =
         simply_droplets::fugue::FugueBridge::register(instance_id, instance_id);
 
     // Start MCP server (shared singleton) - use standalone port to avoid conflict with plugin
@@ -98,9 +125,10 @@ fn main() {
     );
     println!("\nClose the window to quit\n");
 
-    // Wrap MIDI connection in Arc<Mutex> to share with MIDI thread
+    // Wrap MIDI connection in Arc<Mutex> to share with MIDI thread and fugue thread
     let conn_out = Arc::new(std::sync::Mutex::new(conn_out));
     let conn_out_clone = Arc::clone(&conn_out);
+    let conn_out_fugue = Arc::clone(&conn_out);
 
     // Spawn MIDI output thread
     thread::spawn(move || loop {
@@ -152,6 +180,62 @@ fn main() {
         }
 
         thread::sleep(Duration::from_millis(10));
+    });
+
+    // Spawn fugue simulation thread. In plugin mode this work is done by the DAW's
+    // audio thread calling FugueSequencer::process each buffer. Standalone has no
+    // audio thread, so we fake one: a fixed-tempo always-playing transport that
+    // drains the fugue command ring buffer and dispatches events to MIDI. Without
+    // this, queued fugues never appear in the info cache and seem to "disappear."
+    thread::spawn(move || {
+        use simply_droplets::fugue::{FugueSequencer, ProcessedEvent, TransportState};
+        use simply_droplets::mcp::{CcMessage, MidiMessage};
+
+        let sample_rate: f64 = 48_000.0;
+        let bpm: f64 = 120.0;
+        let step_ms: u64 = 5;
+        let time_sig_num: u32 = 4;
+        let beats_per_step: f64 = bpm / 60.0 * step_ms as f64 / 1000.0;
+        let frames_per_step: u32 = (sample_rate * step_ms as f64 / 1000.0) as u32;
+
+        let mut sequencer = FugueSequencer::new(fugue_consumer, sample_rate);
+        let mut current_beat: f64 = 0.0;
+
+        loop {
+            let events: Vec<ProcessedEvent> = sequencer
+                .process(true, current_beat, bpm, frames_per_step, time_sig_num)
+                .collect();
+
+            for event in events {
+                match event {
+                    ProcessedEvent::Instant { message, .. } => {
+                        send_standalone_midi(&conn_out_fugue, &message);
+                    }
+                    ProcessedEvent::CcRamp { channel, cc, end_value, .. } => {
+                        // Each 5ms step emits the interpolated value at the end
+                        // of this buffer — ~200 Hz update rate, plenty smooth.
+                        let msg = MidiMessage::Cc(CcMessage::new(channel, cc, end_value));
+                        send_standalone_midi(&conn_out_fugue, &msg);
+                    }
+                }
+            }
+
+            // Update UI caches so /api/transport and /api/fugues reflect live state.
+            fugue_info_handle.update_transport(TransportState {
+                beat: current_beat,
+                tempo: bpm,
+                playing: true,
+                time_sig_numerator: time_sig_num,
+                is_looping: false,
+                loop_start_beat: 0.0,
+                loop_end_beat: 0.0,
+            });
+            fugue_info_handle.update(sequencer.list_fugues(current_beat, time_sig_num));
+            fugue_info_handle.update_definitions(sequencer.get_definitions());
+
+            current_beat += beats_per_step;
+            thread::sleep(Duration::from_millis(step_ms));
+        }
     });
 
     // Create IPC channel for receiving messages from the webview

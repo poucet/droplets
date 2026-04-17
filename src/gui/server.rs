@@ -248,7 +248,14 @@ async fn api_queue_fugue(
     Query(query): Query<InstanceQuery>,
     Json(body): Json<api::QueueFugueRequest>,
 ) -> impl IntoResponse {
+    log::info!(
+        "GUI queue_fugue: instance='{}' tag={:?} events={} duration={} quantize={:?}",
+        query.instance, body.tag, body.events.len(), body.duration_beats, body.quantize
+    );
     let response = api::queue_fugue(&query.instance, body);
+    if !response.ok {
+        log::warn!("GUI queue_fugue failed: {:?}", response.error);
+    }
     json_response(response)
 }
 
