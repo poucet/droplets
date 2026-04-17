@@ -261,8 +261,8 @@ impl Fugue {
                 let msg = MidiMessage::Note(NoteMessage::new(*channel, *note, 0, false));
                 events.push(ProcessedEvent::Instant { sample_offset, message: msg });
             }
-            FugueEvent::Cc { channel, cc, value } => {
-                self.process_cc_event(*channel, *cc, *value, beat_offset, sample_offset, events);
+            FugueEvent::Cc { channel, cc, value, curve } => {
+                self.process_cc_event(*channel, *cc, *value, *curve, beat_offset, sample_offset, events);
             }
             FugueEvent::PerNotePitchBend { channel, note, semitones } => {
                 let msg = MidiMessage::PerNoteExpression(
@@ -279,12 +279,18 @@ impl Fugue {
         }
     }
 
-    /// Process a CC event - either emit instant or start a ramp
+    /// Process a CC event — either emit instant or start a ramp.
+    ///
+    /// `event_curve` is the per-segment curve from the incoming event (the
+    /// "curve to this point" convention). When `None`, the fugue-level
+    /// `cc_interpolation` is used. This lets a single fugue combine curves
+    /// across segments — e.g. exp up then log down for a filter pump.
     fn process_cc_event(
         &mut self,
         channel: u8,
         cc: u8,
         value: u8,
+        event_curve: Option<InterpolationMode>,
         beat_offset: f64,
         sample_offset: u32,
         events: &mut Vec<ProcessedEvent>,
@@ -298,8 +304,11 @@ impl Fugue {
         // Update CC state
         self.cc_state[ch][cc_idx] = Some(value);
 
-        // If no previous value or stepped mode, emit instant CC
-        if prev_value.is_none() || self.definition.cc_interpolation == InterpolationMode::None {
+        // Resolve the curve for the segment arriving at this event.
+        let segment_curve = event_curve.unwrap_or(self.definition.cc_interpolation);
+
+        // If no previous value or stepped mode, emit instant CC.
+        if prev_value.is_none() || segment_curve == InterpolationMode::None {
             let msg = MidiMessage::Cc(CcMessage::new(channel, cc, value));
             events.push(ProcessedEvent::Instant { sample_offset, message: msg });
             return;
@@ -318,8 +327,9 @@ impl Fugue {
         // Look backwards in events to find the previous CC on this channel/cc
         let ramp_start_beat = self.find_previous_cc_beat(channel, cc, beat_offset);
 
-        // Create ramp from previous value to new value
-        // The ramp starts from the previous CC beat and ends at the current beat
+        // Create ramp from previous value to new value using this segment's
+        // curve. Cross-segment combinations (e.g. exp→log) "just work" because
+        // each ramp carries its own interpolation mode on the audio thread.
         let absolute_start_beat = self.start_beat + ramp_start_beat;
         let absolute_end_beat = self.start_beat + beat_offset;
 
@@ -334,7 +344,7 @@ impl Fugue {
             end_value: value,
             start_beat: absolute_start_beat,
             end_beat: absolute_end_beat,
-            interpolation: self.definition.cc_interpolation,
+            interpolation: segment_curve,
         });
     }
 

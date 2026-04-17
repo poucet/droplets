@@ -20,7 +20,7 @@ Shared fields (override per-fugue): `duration_beats`, `quantize` (`"immediate"|"
 
 ### Points — unified shape for all continuous signals
 
-CC, per-note pitch bend, and per-note pressure all use the same point tuple form: `[beat, value]` or `[beat, value, curve]`.
+CC, per-note pitch bend, and per-note pressure all use the same point tuple form and the same per-segment curve rules. Write `[beat, value]` or `[beat, value, curve]`. The third element is the curve for the segment arriving at this point (ignored on the first point).
 
 Curves:
 - `linear` (default)  smooth straight line
@@ -28,9 +28,7 @@ Curves:
 - `log`               ease-out, decelerating (1-(1-t)²)
 - `none`              stepped/discrete
 
-**Per-segment curves** work on `per_note_pitch_bend` and `per_note_pressure` — each point's curve drives the segment arriving at it, so you can combine shapes in one fugue (e.g. `[[0,0],[2,1,"exp"],[4,0,"log"]]` is a crescendo-then-release).
-
-**CC has one curve per fugue** for now (per-segment CC ramps are post-demo work). Set `interpolation` on the fugue, or put a curve on any point and it becomes the fugue-level curve. If both are set, `interpolation` wins.
+Per-segment works on ALL three types — one fugue can combine shapes, e.g. `[[0,0],[2,1,"exp"],[4,0,"log"]]` is a crescendo-then-release. Each type also accepts a fugue-level `interpolation` field that acts as the **default curve** for any segment whose point doesn't specify its own. Per-point curves always override the fugue-level default.
 
 See the `queue_fugue` tool description for a full worked example.
 

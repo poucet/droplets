@@ -178,11 +178,7 @@ Every fugue carries a `type` discriminator. **Keep different musical concerns in
 
 The audio thread interpolates per-sample between keyframes — you write sparse points and get smooth CC output.
 
-CC uses **one curve per fugue** for now (per-segment ramps are Feature 10, post-demo). Curve resolution:
-
-1. If `interpolation` is set on the fugue, that wins.
-2. Otherwise, the first per-point `curve` becomes the fugue curve — so `[[0,0],[4,127,"exp"]]` without an explicit `interpolation` field uses `"exp"`.
-3. Otherwise, default to `"linear"`.
+**Per-segment curves** work for CC too: each point's optional `curve` drives the segment arriving at it (ignored on the first point). One fugue can combine shapes, e.g. `[[0,30],[2,110,"exp"],[4,30,"log"]]` pumps the filter up with exp then back with log. The fugue-level `interpolation` field is the default used when a point has no curve. Per-point curves always override the fugue-level default.
 
 ### `per_note_pitch_bend` — MIDI 2.0 per-note bend
 

@@ -176,11 +176,16 @@ pub enum FugueEvent {
         channel: u8,
         note: u8,
     },
-    /// MIDI Control Change
+    /// MIDI Control Change.
+    /// `curve` (optional) controls interpolation for the ramp ARRIVING at this
+    /// event — the "curve to this point" convention. When `None`, the fugue-level
+    /// `cc_interpolation` is used instead.
     Cc {
         channel: u8,
         cc: u8,
         value: u8,
+        #[serde(default)]
+        curve: Option<InterpolationMode>,
     },
     /// Per-note pitch bend (MIDI 2.0)
     PerNotePitchBend {
@@ -209,9 +214,9 @@ impl FugueEvent {
         Self::NoteOff { channel, note }
     }
 
-    /// Create a CC event
+    /// Create a CC event (no per-segment curve — uses fugue-level interpolation)
     pub fn cc(channel: u8, cc: u8, value: u8) -> Self {
-        Self::Cc { channel, cc, value }
+        Self::Cc { channel, cc, value, curve: None }
     }
 
     /// Create a per-note pitch bend event

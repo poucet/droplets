@@ -407,27 +407,35 @@ pub enum FugueContent {
     },
     /// Per-note pitch bend over time (MIDI 2.0). Bends a single held note.
     /// Requires a concurrent Notes fugue holding the target note.
-    /// Each point carries its own curve for the segment arriving at it, so
-    /// a single fugue can combine different shapes (e.g. exp on a crescendo
-    /// followed by log on a release). Server-side expansion at ~32 events/beat.
+    /// Same per-segment curve shape as CC and per-note pressure — each point's
+    /// curve drives the segment arriving at it, so one fugue can combine
+    /// shapes (e.g. exp up, log down). Server-side expansion at ~32 events/beat.
     PerNotePitchBend {
         /// MIDI note being bent. Must match a note currently held by a concurrent Notes fugue. Accepts name ('C4') or number (60).
         #[schemars(description = "MIDI note to bend. Must be held by a concurrent notes fugue on the same channel. Accepts name like 'C4' or 'F#3', or number 0-127.")]
         note: Note,
         /// Points forming the bend trajectory. Tuple form [beat, semitones] or [beat, semitones, curve].
-        #[schemars(description = "Array of trajectory points. Each point is [beat, semitones] or [beat, semitones, curve]. Semitones -64.0 to +64.0 (0 = no bend). curve on each point controls interpolation for the segment arriving at it (ignored on first point); one of 'linear' (default), 'exp', 'log', 'none'. Example vibrato: [[0,0],[0.5,1,\"linear\"],[1,-1,\"linear\"],[1.5,0,\"linear\"]].")]
+        #[schemars(description = "Array of trajectory points. Each point is [beat, semitones] or [beat, semitones, curve]. Semitones -64.0 to +64.0 (0 = no bend). Per-point curve controls the segment arriving at it (ignored on first point). Example vibrato: [[0,0],[0.5,1],[1,-1],[1.5,0]].")]
         points: Vec<Point>,
+        /// Fugue-level default curve for segments without a per-point curve.
+        #[serde(default)]
+        #[schemars(description = "Fugue-level default interpolation for segments whose points don't specify a curve. 'linear' (default), 'exp', 'log', or 'none'.")]
+        interpolation: Option<String>,
     },
     /// Per-note pressure/aftertouch over time (MIDI 2.0). Modulates a single held note.
     /// Requires a concurrent Notes fugue holding the target note.
-    /// Same per-segment curve shape as PerNotePitchBend.
+    /// Same per-segment curve shape as CC and per-note pitch bend.
     PerNotePressure {
         /// MIDI note receiving pressure. Must match a note currently held by a concurrent Notes fugue. Accepts name ('C4') or number (60).
         #[schemars(description = "MIDI note for pressure. Must be held by a concurrent notes fugue on the same channel. Accepts name like 'C4' or 'F#3', or number 0-127.")]
         note: Note,
         /// Points forming the pressure trajectory. Tuple form [beat, pressure] or [beat, pressure, curve].
-        #[schemars(description = "Array of trajectory points. Each point is [beat, pressure] or [beat, pressure, curve]. Pressure 0.0-1.0. Example crescendo-then-release: [[0,0],[2,1,\"exp\"],[4,0,\"log\"]]. Valid curves: 'linear' (default), 'exp' (accelerating), 'log' (decelerating), 'none' (step, ignored on first point).")]
+        #[schemars(description = "Array of trajectory points. Each point is [beat, pressure] or [beat, pressure, curve]. Pressure 0.0-1.0. Per-point curve controls the segment arriving at it (ignored on first point). Example crescendo-then-release: [[0,0],[2,1,\"exp\"],[4,0,\"log\"]].")]
         points: Vec<Point>,
+        /// Fugue-level default curve for segments without a per-point curve.
+        #[serde(default)]
+        #[schemars(description = "Fugue-level default interpolation for segments whose points don't specify a curve. 'linear' (default), 'exp', 'log', or 'none'.")]
+        interpolation: Option<String>,
     },
 }
 
@@ -721,13 +729,18 @@ pub const PER_NOTE_EXPANSION_DENSITY: f64 = 32.0;
 ///
 /// The first point is emitted as-is. For each subsequent point, the curve
 /// stored on *that* point drives interpolation from the previous point's
-/// value to this point's value — the "curve to this point" convention.
-/// Non-monotonic or zero-length segments emit the endpoint only.
+/// value to this point's value — the "curve to this point" convention. If a
+/// point doesn't specify its own curve, `default_mode` applies. Non-monotonic
+/// or zero-length segments emit the endpoint only.
 ///
 /// Intermediate values are generated at [`PER_NOTE_EXPANSION_DENSITY`]
 /// events/beat and routed through [`InterpolationMode::apply_curve`] so new
 /// curves added to that function pick up automatically.
-pub fn expand_per_note_points(points: &[Point], mut emit: impl FnMut(f64, f64)) {
+pub fn expand_per_note_points(
+    points: &[Point],
+    default_mode: InterpolationMode,
+    mut emit: impl FnMut(f64, f64),
+) {
     if points.is_empty() {
         return;
     }
@@ -735,7 +748,9 @@ pub fn expand_per_note_points(points: &[Point], mut emit: impl FnMut(f64, f64)) 
     for i in 1..points.len() {
         let p0 = &points[i - 1];
         let p1 = &points[i];
-        let mode = parse_interpolation_mode(p1.curve.as_deref());
+        let mode = p1.curve.as_deref()
+            .map(|c| parse_interpolation_mode(Some(c)))
+            .unwrap_or(default_mode);
         let segment_beats = p1.beat - p0.beat;
         if segment_beats <= 0.0 || mode == InterpolationMode::None {
             emit(p1.beat, p1.value);
@@ -1240,8 +1255,12 @@ mod tests {
     // ------------------------------------------------------------------
 
     fn collect_expansion(pts: &[Point]) -> Vec<(f64, f64)> {
+        collect_expansion_with(pts, InterpolationMode::Linear)
+    }
+
+    fn collect_expansion_with(pts: &[Point], default_mode: InterpolationMode) -> Vec<(f64, f64)> {
         let mut out = Vec::new();
-        expand_per_note_points(pts, |b, v| out.push((b, v)));
+        expand_per_note_points(pts, default_mode, |b, v| out.push((b, v)));
         out
     }
 
@@ -1403,7 +1422,7 @@ mod tests {
         }"#;
         let content: FugueContent = serde_json::from_str(json).unwrap();
         match content {
-            FugueContent::PerNotePitchBend { note, points } => {
+            FugueContent::PerNotePitchBend { note, points, .. } => {
                 assert_eq!(note.0, 60);
                 assert_eq!(points.len(), 3);
                 assert_eq!(points[1].curve.as_deref(), Some("exp"));
@@ -1421,7 +1440,7 @@ mod tests {
         }"#;
         let content: FugueContent = serde_json::from_str(json).unwrap();
         match content {
-            FugueContent::PerNotePressure { note, points } => {
+            FugueContent::PerNotePressure { note, points, .. } => {
                 assert_eq!(note.0, 72);
                 assert_eq!(points.len(), 3);
             }
@@ -1502,6 +1521,65 @@ mod tests {
                 assert_eq!(points[2].curve, None);
             }
             _ => panic!("expected Cc variant"),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Per-note interpolation field (fugue-level default)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn expand_uses_default_mode_when_point_has_no_curve() {
+        // Default mode is applied to segments whose points lack an explicit curve.
+        let pts = [pt(0.0, 0.0, None), pt(1.0, 1.0, None)];
+        let with_default_linear = collect_expansion_with(&pts, InterpolationMode::Linear);
+        let with_default_exp = collect_expansion_with(&pts, InterpolationMode::Exp);
+        // Midpoint differs because the curve differs.
+        assert!((with_default_linear[16].1 - 0.5).abs() < 1e-9);
+        assert!((with_default_exp[16].1 - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn expand_per_point_curve_overrides_default() {
+        // Per-point curve wins over the fugue-level default.
+        let pts = [pt(0.0, 0.0, None), pt(1.0, 1.0, Some("exp"))];
+        let out = collect_expansion_with(&pts, InterpolationMode::Log);
+        // Should be exp (quadratic ease-in), midpoint 0.25.
+        assert!((out[16].1 - 0.25).abs() < 1e-9);
+    }
+
+    #[test]
+    fn fugue_content_per_note_interpolation_field_parses() {
+        // interpolation is now a field on the per-note variants.
+        let json = r#"{
+            "type": "per_note_pitch_bend",
+            "note": "C4",
+            "points": [[0, 0], [2, 2], [4, 0]],
+            "interpolation": "exp"
+        }"#;
+        let content: FugueContent = serde_json::from_str(json).unwrap();
+        match content {
+            FugueContent::PerNotePitchBend { interpolation, .. } => {
+                assert_eq!(interpolation.as_deref(), Some("exp"));
+            }
+            _ => panic!("expected PerNotePitchBend"),
+        }
+    }
+
+    #[test]
+    fn fugue_content_per_note_interpolation_optional() {
+        // Omitting the field still parses (backward compat).
+        let json = r#"{
+            "type": "per_note_pressure",
+            "note": "C4",
+            "points": [[0, 0], [2, 1]]
+        }"#;
+        let content: FugueContent = serde_json::from_str(json).unwrap();
+        match content {
+            FugueContent::PerNotePressure { interpolation, .. } => {
+                assert!(interpolation.is_none());
+            }
+            _ => panic!("expected PerNotePressure"),
         }
     }
 }

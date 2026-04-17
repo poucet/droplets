@@ -109,7 +109,7 @@ fn fugue_event_to_midi(event: &FugueEvent) -> Option<TrackEventKind<'static>> {
                 },
             })
         }
-        FugueEvent::Cc { channel, cc, value } => {
+        FugueEvent::Cc { channel, cc, value, .. } => {
             Some(TrackEventKind::Midi {
                 channel: u4::new(*channel & 0x0F),
                 message: MidiMessage::Controller {
@@ -156,7 +156,7 @@ fn interpolate_cc_events(events: &[TimedFugueEvent], _duration_beats: f64) -> Ve
 
     for event in events {
         match &event.event {
-            FugueEvent::Cc { channel, cc, value } => {
+            FugueEvent::Cc { channel, cc, value, .. } => {
                 cc_events
                     .entry((*channel, *cc))
                     .or_default()
