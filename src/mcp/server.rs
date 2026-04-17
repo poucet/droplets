@@ -21,11 +21,12 @@ use super::requests::{
     PerNoteControllerRequest, PerNoteManagementRequest, PerNotePitchBendRequest,
     PerNotePressureRequest, QueueFugueRequest, RenameInstanceRequest, RenameSlotRequest,
     SendCcRequest, SendNoteOffRequest, SendNoteOnHiresRequest, SendNoteOnRequest, SetParamRequest,
-    expand_per_note_points, parse_interpolation_mode,
+    emit_cc_lane, emit_notes, emit_per_note_pitch_bend, emit_per_note_pressure,
+    parse_interpolation_mode,
 };
 use crate::fugue::{
-    CancelMode, FugueBridge, FugueDefinition, FugueEvent, InterpolationMode, LoopMode,
-    QuantizeMode, TimedFugueEvent,
+    CancelMode, FugueBridge, FugueDefinition, InterpolationMode, LoopMode, QuantizeMode,
+    TimedFugueEvent,
 };
 
 /// MCP Server for Simply Droplets
@@ -361,7 +362,7 @@ impl DropletsMcp {
     // =========================================================================
 
     /// Queue one or more fugues for transport-synchronized playback.
-    #[tool(description = "Queue one or more fugues for transport-synchronized playback. Each fugue is atomic — use separate fugues for notes, CC automation, and per-note expression so they can be updated independently.\n\nFugue types (use the 'type' field):\n- 'notes': MIDI notes with auto note-off at beat+duration. Each note has {beat, note (0-127), duration, velocity? (1-127, default 100), channel?}.\n- 'cc': CC automation. Fields: cc (0-127), points (tuple form [beat, value] or [beat, value, curve], values 0-127), interpolation? ('linear' default, 'exp', 'log', 'none'). Per-point curves drive per-segment ramps on the audio thread; interpolation is the fugue-level default used when a point has no curve.\n- 'per_note_pitch_bend': MIDI 2.0 per-note bend on a SINGLE held note. Fields: note (0-127), points ([beat, semitones] or [beat, semitones, curve] tuples, semitones -64.0 to +64.0). Requires a concurrent 'notes' fugue holding the target note on the same channel.\n- 'per_note_pressure': MIDI 2.0 per-note pressure on a SINGLE held note. Fields: note (0-127), points ([beat, pressure] or [beat, pressure, curve] tuples, pressure 0.0-1.0). Same 'held note' requirement.\n\nPer-segment curves (per-note only): each point's optional third element is the curve used on the segment ARRIVING at that point (ignored on the first point). Valid: 'linear' (default), 'exp' (ease-in, accelerating), 'log' (ease-out, decelerating), 'none' (step).\n\nShared top-level fields (defaults across all fugues in the batch, per-fugue can override): duration_beats, quantize ('immediate'|'beat'|'bar'|'bars:N'), loop_mode ('once'|'forever'|N).\n\nTag + cancel_mode is how you update one part without disturbing others:\n  tag:'melody' + cancel_mode:'tag:melody' → replaces only the previous 'melody' fugue.\n\nNote fields accept names (preferred) or numbers: 'C4' (middle C, 60), 'F#3', 'Bb5', 'C-1' (lowest MIDI), or 0-127.\n\nWorked example — 4-bar phrase with bass, held melody note, filter sweep, and expressive bend:\n```json\n{\n  \"instance\": \"lead\",\n  \"duration_beats\": 4,\n  \"quantize\": \"bar\",\n  \"loop_mode\": \"forever\",\n  \"fugues\": [\n    {\"tag\":\"bass\",\"cancel_mode\":\"tag:bass\",\"type\":\"notes\",\"notes\":[\n      {\"beat\":0,\"note\":\"C2\",\"duration\":0.5},\n      {\"beat\":1,\"note\":\"C2\",\"duration\":0.5},\n      {\"beat\":2,\"note\":\"G2\",\"duration\":0.5},\n      {\"beat\":3,\"note\":\"C2\",\"duration\":0.5}\n    ]},\n    {\"tag\":\"melody\",\"cancel_mode\":\"tag:melody\",\"type\":\"notes\",\"notes\":[\n      {\"beat\":0,\"note\":\"C4\",\"duration\":4,\"velocity\":90}\n    ]},\n    {\"tag\":\"filter\",\"cancel_mode\":\"tag:filter\",\"type\":\"cc\",\"cc\":74,\n     \"points\":[[0,30],[2,110],[4,30]],\"interpolation\":\"exp\"},\n    {\"tag\":\"bend\",\"cancel_mode\":\"tag:bend\",\"type\":\"per_note_pitch_bend\",\"note\":\"C4\",\n     \"points\":[[0,0],[2,2,\"exp\"],[4,0,\"log\"]]}\n  ]\n}\n```\nTo swap just the melody later, queue a fugue with tag:'melody' and cancel_mode:'tag:melody'. Bass, filter, and bend keep playing.")]
+    #[tool(description = "Queue fugues for transport-synced playback. See tool description for the full spec (content types, points shape, curves, worked examples).")]
     fn queue_fugue(&self, Parameters(req): Parameters<QueueFugueRequest>) -> Result<CallToolResult, McpError> {
         // Get shared defaults
         let default_quantize_str = req.data.quantize.as_deref().unwrap_or("bar");
@@ -421,82 +422,39 @@ impl DropletsMcp {
 
             match &compact.content {
                 FugueContent::Notes { notes } => {
-                    for note in notes {
-                        let channel = note.channel.map(|c| c.saturating_sub(1).min(15)).unwrap_or(fugue_channel);
-                        let velocity = note.velocity.unwrap_or(100).clamp(1, 127);
-
-                        // Note on
-                        events.push(TimedFugueEvent::new(
-                            note.beat,
-                            FugueEvent::NoteOn {
-                                channel,
-                                note: note.note.0.min(127),
-                                velocity,
-                            },
-                        ));
-
-                        // Auto-generated note off
-                        events.push(TimedFugueEvent::new(
-                            note.beat + note.duration,
-                            FugueEvent::NoteOff {
-                                channel,
-                                note: note.note.0.min(127),
-                            },
-                        ));
-                    }
+                    emit_notes(notes, fugue_channel, &mut events);
                 }
                 FugueContent::Cc { cc, points, interpolation } => {
-                    // CC supports true per-segment curves in the audio thread:
-                    // each FugueEvent::Cc carries the curve for the segment
-                    // arriving at it ("curve to this point"). The fugue-level
-                    // `interpolation` field is the fallback used when a point
-                    // doesn't carry its own curve.
-                    let cc_num = (*cc).min(127);
-                    for point in points {
-                        let value = (point.value as u8).min(127);
-                        let event_curve = point.curve.as_deref()
-                            .map(|c| parse_interpolation_mode(Some(c)));
-                        events.push(TimedFugueEvent::new(
-                            point.beat,
-                            FugueEvent::Cc {
-                                channel: fugue_channel,
-                                cc: cc_num,
-                                value,
-                                curve: event_curve,
-                            },
-                        ));
-                    }
-                    cc_interpolation = parse_interpolation_mode(interpolation.as_deref());
+                    let lane_mode = parse_interpolation_mode(interpolation.as_deref());
+                    cc_interpolation = lane_mode;
+                    emit_cc_lane(*cc, points, lane_mode, fugue_channel, &mut events);
                 }
                 FugueContent::PerNotePitchBend { note, points, interpolation } => {
-                    // Per-note has no audio-thread ramp path yet, so expand
-                    // per-segment curves into dense discrete events at parse
-                    // time. Fugue-level `interpolation` is the default for
-                    // segments whose points don't specify a curve.
-                    let n = note.0.min(127);
                     let default_mode = parse_interpolation_mode(interpolation.as_deref());
-                    expand_per_note_points(points, default_mode, |beat, value| {
-                        let semitones = (value as f32).clamp(-64.0, 64.0);
-                        events.push(TimedFugueEvent::new(
-                            beat,
-                            FugueEvent::PerNotePitchBend {
-                                channel: fugue_channel, note: n, semitones,
-                            },
-                        ));
-                    });
+                    emit_per_note_pitch_bend(note.0, points, default_mode, fugue_channel, &mut events);
                 }
                 FugueContent::PerNotePressure { note, points, interpolation } => {
-                    let n = note.0.min(127);
                     let default_mode = parse_interpolation_mode(interpolation.as_deref());
-                    expand_per_note_points(points, default_mode, |beat, value| {
-                        let pressure = (value as f32).clamp(0.0, 1.0);
-                        events.push(TimedFugueEvent::new(
-                            beat,
-                            FugueEvent::PerNotePressure {
-                                channel: fugue_channel, note: n, pressure,
-                            },
-                        ));
-                    });
+                    emit_per_note_pressure(note.0, points, default_mode, fugue_channel, &mut events);
+                }
+                FugueContent::Composite { notes, cc, pitch_bends, pressures } => {
+                    // One fugue, multiple concerns. Each lane carries its own
+                    // interpolation mode; events get curves set explicitly
+                    // per-lane so different CC lanes can use different curves
+                    // without fighting over the single cc_interpolation slot.
+                    emit_notes(notes, fugue_channel, &mut events);
+                    for lane in cc {
+                        let lane_mode = parse_interpolation_mode(lane.interpolation.as_deref());
+                        emit_cc_lane(lane.cc, &lane.points, lane_mode, fugue_channel, &mut events);
+                    }
+                    for lane in pitch_bends {
+                        let lane_mode = parse_interpolation_mode(lane.interpolation.as_deref());
+                        emit_per_note_pitch_bend(lane.note.0, &lane.points, lane_mode, fugue_channel, &mut events);
+                    }
+                    for lane in pressures {
+                        let lane_mode = parse_interpolation_mode(lane.interpolation.as_deref());
+                        emit_per_note_pressure(lane.note.0, &lane.points, lane_mode, fugue_channel, &mut events);
+                    }
                 }
             }
 
@@ -634,7 +592,25 @@ impl ServerHandler for DropletsMcp {
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
         log::debug!("MCP: list_tools called");
-        let tools = self.tool_router.list_all();
+        let mut tools = self.tool_router.list_all();
+
+        // Tool descriptions that outgrow a one-liner live as markdown files
+        // under src/mcp/tools/ and are pulled in at compile time. rmcp's
+        // #[tool(description = ...)] attribute only accepts string literals,
+        // so we stamp the real markdown content over the stub description
+        // here. Add a row to the table below when you promote a tool to a
+        // markdown file.
+        const TOOL_DESCRIPTIONS: &[(&str, &str)] = &[
+            ("queue_fugue", include_str!("tools/queue_fugue.md")),
+        ];
+        for tool in &mut tools {
+            if let Some(&(_, desc)) =
+                TOOL_DESCRIPTIONS.iter().find(|(name, _)| *name == tool.name.as_ref())
+            {
+                tool.description = Some(desc.into());
+            }
+        }
+
         log::info!("MCP: Returning {} tools", tools.len());
         Ok(ListToolsResult {
             tools,

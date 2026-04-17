@@ -10,11 +10,14 @@ Batches multiple fugues into one call. Each fugue is atomic; swap one musical pa
 
 **Default to looping.** Unless the user explicitly asks for a one-shot, set (or omit — it's the default) `loop_mode: "forever"` and write short, composable fugues you can replace via tag swap. This is what makes the system feel musical — patterns keep running while you edit one layer at a time.
 
-Fugue content types (each in its own fugue for independent control):
-- `notes`               — MIDI notes with auto note-off at beat+duration.
-- `cc`                  — CC automation with smooth audio-thread interpolation.
-- `per_note_pitch_bend` — MIDI 2.0 per-note bend on a held note.
-- `per_note_pressure`   — MIDI 2.0 per-note pressure on a held note.
+Fugue content types:
+- `composite` — **prefer this for single-instrument moments.** Bundles notes + cc + per-note bends + per-note pressures into ONE fugue. Fields: `notes` (required), `cc` / `pitch_bends` / `pressures` (optional arrays of lanes). One tag, one cancel, one UI row.
+- `notes`               — just MIDI notes. Use when a concern is independently replaceable.
+- `cc`                  — just one CC lane. Use when a CC sweep is its own cancellable unit.
+- `per_note_pitch_bend` — just one per-note bend on one held note.
+- `per_note_pressure`   — just one per-note pressure on one held note.
+
+**Which to pick**: if all parts belong to one musical moment on one instrument (a pad with held chords, filter sweep, and pressure swells), use `composite`. If parts need independent replacement (bass swap while melody keeps playing), keep them as separate single-concern fugues with distinct tags.
 
 Shared fields (override per-fugue): `duration_beats`, `quantize` (`"immediate"|"beat"|"bar"|"bars:N"`), `loop_mode` (`"once"|"forever"|"N"` — default `"forever"`).
 

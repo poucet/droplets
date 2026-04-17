@@ -11,7 +11,7 @@
 use rmcp::schemars;
 use serde::Deserialize;
 
-use crate::fugue::InterpolationMode;
+use crate::fugue::{FugueEvent, InterpolationMode, TimedFugueEvent};
 
 // =============================================================================
 // Note — MIDI note accepting number (0-127) or name ("C4", "F#3", "Bb5")
@@ -437,6 +437,77 @@ pub enum FugueContent {
         #[schemars(description = "Fugue-level default interpolation for segments whose points don't specify a curve. 'linear' (default), 'exp', 'log', or 'none'.")]
         interpolation: Option<String>,
     },
+    /// Composite fugue — bundle notes + cc + per-note bends + per-note pressures
+    /// into a single atomic musical moment. Use this when all the parts belong
+    /// to one instrument / one musical idea (e.g. a pad with held chord tones,
+    /// a filter sweep, expression curves, and pressure swells). One tag, one
+    /// cancel, one UI row. Prefer over multiple single-concern fugues unless
+    /// the parts need independent replacement (bass swap while melody keeps
+    /// playing → keep those separate).
+    Composite {
+        /// Notes to play. Required — at least provide an empty array if
+        /// there are no notes, though a composite with zero notes is unusual.
+        #[schemars(description = "Array of notes. Each auto-generates a note_off at beat + duration.")]
+        notes: Vec<CompactNote>,
+        /// CC lanes. One entry per CC number you want to automate.
+        #[serde(default)]
+        #[schemars(description = "Array of CC automation lanes. Each lane has its own cc number, points, and optional interpolation. Omit or empty if no CC automation.")]
+        cc: Vec<CompactCc>,
+        /// Per-note pitch-bend lanes. One entry per target note.
+        #[serde(default)]
+        #[schemars(description = "Array of per-note pitch-bend lanes. Each targets one held note. Omit or empty if no bends.")]
+        pitch_bends: Vec<CompactPitchBend>,
+        /// Per-note pressure lanes. One entry per target note.
+        #[serde(default)]
+        #[schemars(description = "Array of per-note pressure lanes. Each targets one held note. Omit or empty if no pressure.")]
+        pressures: Vec<CompactPressure>,
+    },
+}
+
+/// One CC automation lane inside a [`FugueContent::Composite`].
+/// Mirrors the fields of the single-concern `Cc` variant minus the `type` tag.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CompactCc {
+    /// CC number (0-127).
+    #[schemars(description = "CC number (0-127). Common: 1=mod, 7=volume, 11=expression, 71=resonance, 74=filter cutoff, 91=reverb.")]
+    pub cc: u8,
+    /// Array of [beat, value] or [beat, value, curve] points. Values 0-127.
+    #[schemars(description = "Array of [beat, value] or [beat, value, curve] points. Values 0-127.")]
+    pub points: Vec<Point>,
+    /// Default curve for segments without a per-point curve.
+    #[serde(default)]
+    #[schemars(description = "Lane-level default interpolation: 'linear' (default), 'exp', 'log', or 'none'. Per-point curves override.")]
+    pub interpolation: Option<String>,
+}
+
+/// One per-note pitch-bend lane inside a [`FugueContent::Composite`].
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CompactPitchBend {
+    /// Target note. Must match a note held in the composite's `notes` array on the same channel.
+    #[schemars(description = "Target note (name like 'C4' or number 0-127). Must match a note held in the composite's notes array on the same channel.")]
+    pub note: Note,
+    /// Array of [beat, semitones] or [beat, semitones, curve] points. Semitones -64.0 to +64.0.
+    #[schemars(description = "Array of [beat, semitones] or [beat, semitones, curve] points. Semitones -64.0 to +64.0.")]
+    pub points: Vec<Point>,
+    /// Lane-level default curve.
+    #[serde(default)]
+    #[schemars(description = "Lane-level default interpolation: 'linear' (default), 'exp', 'log', or 'none'. Per-point curves override.")]
+    pub interpolation: Option<String>,
+}
+
+/// One per-note pressure lane inside a [`FugueContent::Composite`].
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CompactPressure {
+    /// Target note. Must match a note held in the composite's `notes` array on the same channel.
+    #[schemars(description = "Target note (name like 'C4' or number 0-127). Must match a note held in the composite's notes array on the same channel.")]
+    pub note: Note,
+    /// Array of [beat, pressure] or [beat, pressure, curve] points. Pressure 0.0-1.0.
+    #[schemars(description = "Array of [beat, pressure] or [beat, pressure, curve] points. Pressure 0.0-1.0.")]
+    pub points: Vec<Point>,
+    /// Lane-level default curve.
+    #[serde(default)]
+    #[schemars(description = "Lane-level default interpolation: 'linear' (default), 'exp', 'log', or 'none'. Per-point curves override.")]
+    pub interpolation: Option<String>,
 }
 
 /// A single point in a per-note continuous-signal trajectory.
@@ -765,6 +836,108 @@ pub fn expand_per_note_points(
             emit(beat, value);
         }
     }
+}
+
+// =============================================================================
+// Event emitters (MCP request type → TimedFugueEvent stream)
+//
+// Each helper takes a `&mut Vec<TimedFugueEvent>` and pushes into it. Kept as
+// pure functions (no `self`) so they compose freely: the single-concern
+// FugueContent variants and the Composite variant both use the same code paths,
+// and a Composite's four lanes can emit independently without borrow-checker
+// gymnastics.
+//
+// `fugue_channel` is the fugue's default channel, already 0-indexed (0-15).
+// =============================================================================
+
+/// Expand a Notes array into `NoteOn` + auto-generated `NoteOff` events.
+pub fn emit_notes(
+    notes: &[CompactNote],
+    fugue_channel: u8,
+    events: &mut Vec<TimedFugueEvent>,
+) {
+    for note in notes {
+        let channel = note.channel
+            .map(|c| c.saturating_sub(1).min(15))
+            .unwrap_or(fugue_channel);
+        let velocity = note.velocity.unwrap_or(100).clamp(1, 127);
+        let note_num = note.note.0.min(127);
+        events.push(TimedFugueEvent::new(
+            note.beat,
+            FugueEvent::NoteOn { channel, note: note_num, velocity },
+        ));
+        events.push(TimedFugueEvent::new(
+            note.beat + note.duration,
+            FugueEvent::NoteOff { channel, note: note_num },
+        ));
+    }
+}
+
+/// Emit CC events for one lane, attaching each point's curve to the event.
+///
+/// `lane_default_mode` fills in when a point has no per-point curve. CC events
+/// always carry an explicit `Some(curve)` so multi-lane composites can run
+/// different curves per lane — the single `FugueDefinition::cc_interpolation`
+/// slot only holds one mode, so we bypass it and stamp each event directly.
+pub fn emit_cc_lane(
+    cc_num: u8,
+    points: &[Point],
+    lane_default_mode: InterpolationMode,
+    fugue_channel: u8,
+    events: &mut Vec<TimedFugueEvent>,
+) {
+    let cc_num = cc_num.min(127);
+    for point in points {
+        let value = (point.value as u8).min(127);
+        let resolved = point.curve.as_deref()
+            .map(|c| parse_interpolation_mode(Some(c)))
+            .unwrap_or(lane_default_mode);
+        events.push(TimedFugueEvent::new(
+            point.beat,
+            FugueEvent::Cc {
+                channel: fugue_channel,
+                cc: cc_num,
+                value,
+                curve: Some(resolved),
+            },
+        ));
+    }
+}
+
+/// Expand a per-note pitch-bend trajectory into dense discrete events.
+pub fn emit_per_note_pitch_bend(
+    note: u8,
+    points: &[Point],
+    default_mode: InterpolationMode,
+    fugue_channel: u8,
+    events: &mut Vec<TimedFugueEvent>,
+) {
+    let n = note.min(127);
+    expand_per_note_points(points, default_mode, |beat, value| {
+        let semitones = (value as f32).clamp(-64.0, 64.0);
+        events.push(TimedFugueEvent::new(
+            beat,
+            FugueEvent::PerNotePitchBend { channel: fugue_channel, note: n, semitones },
+        ));
+    });
+}
+
+/// Expand a per-note pressure trajectory into dense discrete events.
+pub fn emit_per_note_pressure(
+    note: u8,
+    points: &[Point],
+    default_mode: InterpolationMode,
+    fugue_channel: u8,
+    events: &mut Vec<TimedFugueEvent>,
+) {
+    let n = note.min(127);
+    expand_per_note_points(points, default_mode, |beat, value| {
+        let pressure = (value as f32).clamp(0.0, 1.0);
+        events.push(TimedFugueEvent::new(
+            beat,
+            FugueEvent::PerNotePressure { channel: fugue_channel, note: n, pressure },
+        ));
+    });
 }
 
 // =============================================================================
@@ -1580,6 +1753,222 @@ mod tests {
                 assert!(interpolation.is_none());
             }
             _ => panic!("expected PerNotePressure"),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Composite fugue (notes + cc + bends + pressures in one fugue)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn fugue_content_composite_full() {
+        // The motivating case: one instrument, many concerns in one fugue.
+        let json = r#"{
+            "type": "composite",
+            "notes": [
+                {"beat": 0, "note": "C2", "duration": 16},
+                {"beat": 0, "note": "G3", "duration": 8},
+                {"beat": 8, "note": "F3", "duration": 8}
+            ],
+            "cc": [
+                {"cc": 74, "points": [[0,30],[8,100,"exp"],[16,40,"log"]]},
+                {"cc": 11, "points": [[0,50],[16,115]], "interpolation": "exp"}
+            ],
+            "pitch_bends": [
+                {"note": "G3", "points": [[0,0],[4,2,"exp"],[8,0,"log"]]}
+            ],
+            "pressures": [
+                {"note": "C2", "points": [[0,0],[8,0.8,"exp"],[16,0,"log"]]},
+                {"note": "G3", "points": [[0,0],[4,0.6],[8,0]]}
+            ]
+        }"#;
+        let content: FugueContent = serde_json::from_str(json).unwrap();
+        match content {
+            FugueContent::Composite { notes, cc, pitch_bends, pressures } => {
+                assert_eq!(notes.len(), 3);
+                assert_eq!(notes[0].note.0, 36);  // C2
+                assert_eq!(cc.len(), 2);
+                assert_eq!(cc[0].cc, 74);
+                assert_eq!(cc[1].interpolation.as_deref(), Some("exp"));
+                assert_eq!(pitch_bends.len(), 1);
+                assert_eq!(pitch_bends[0].note.0, 55);  // G3
+                assert_eq!(pressures.len(), 2);
+            }
+            _ => panic!("expected Composite variant"),
+        }
+    }
+
+    #[test]
+    fn fugue_content_composite_optional_fields_default_empty() {
+        // Only `notes` is required — the other lanes default to empty vecs.
+        let json = r#"{
+            "type": "composite",
+            "notes": [{"beat": 0, "note": "C4", "duration": 1}]
+        }"#;
+        let content: FugueContent = serde_json::from_str(json).unwrap();
+        match content {
+            FugueContent::Composite { notes, cc, pitch_bends, pressures } => {
+                assert_eq!(notes.len(), 1);
+                assert!(cc.is_empty());
+                assert!(pitch_bends.is_empty());
+                assert!(pressures.is_empty());
+            }
+            _ => panic!("expected Composite variant"),
+        }
+    }
+
+    #[test]
+    fn fugue_content_composite_empty_notes_still_parses() {
+        // Pure-automation fugue (no notes, just CC). Unusual but not invalid.
+        let json = r#"{
+            "type": "composite",
+            "notes": [],
+            "cc": [{"cc": 1, "points": [[0,0],[4,64]]}]
+        }"#;
+        let content: FugueContent = serde_json::from_str(json).unwrap();
+        match content {
+            FugueContent::Composite { notes, cc, .. } => {
+                assert!(notes.is_empty());
+                assert_eq!(cc.len(), 1);
+            }
+            _ => panic!("expected Composite variant"),
+        }
+    }
+
+    #[test]
+    fn fugue_content_single_concern_still_works() {
+        // Regression guard: adding Composite didn't break the single-concern
+        // variants. They must still parse exactly as before.
+        let json = r#"{
+            "type": "notes",
+            "notes": [{"beat": 0, "note": "C4", "duration": 1}]
+        }"#;
+        assert!(matches!(
+            serde_json::from_str::<FugueContent>(json).unwrap(),
+            FugueContent::Notes { .. }
+        ));
+    }
+
+    // ------------------------------------------------------------------
+    // Emit helpers (MCP request → TimedFugueEvent)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn emit_notes_generates_paired_on_off_events() {
+        let notes = vec![
+            CompactNote {
+                beat: 0.0,
+                note: Note(60),
+                duration: 1.0,
+                velocity: Some(100),
+                channel: None,
+            },
+        ];
+        let mut events = Vec::new();
+        emit_notes(&notes, 0, &mut events);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].beat_offset, 0.0);
+        assert_eq!(events[1].beat_offset, 1.0);
+        assert!(matches!(events[0].event, FugueEvent::NoteOn { note: 60, .. }));
+        assert!(matches!(events[1].event, FugueEvent::NoteOff { note: 60, .. }));
+    }
+
+    #[test]
+    fn emit_notes_respects_channel_override() {
+        // Note-level channel override wins over fugue-level channel.
+        let notes = vec![
+            CompactNote {
+                beat: 0.0,
+                note: Note(60),
+                duration: 1.0,
+                velocity: Some(100),
+                channel: Some(5),  // 1-indexed → channel 4 internally
+            },
+        ];
+        let mut events = Vec::new();
+        emit_notes(&notes, 0, &mut events);
+        match events[0].event {
+            FugueEvent::NoteOn { channel, .. } => assert_eq!(channel, 4),
+            _ => panic!("expected NoteOn"),
+        }
+    }
+
+    #[test]
+    fn emit_cc_lane_stamps_curve_on_every_event() {
+        // Even bare points (no per-point curve) get Some(lane_default_mode)
+        // on the event, so multi-lane composites can't collide.
+        let points = vec![
+            Point { beat: 0.0, value: 0.0, curve: None },
+            Point { beat: 4.0, value: 127.0, curve: Some("exp".into()) },
+        ];
+        let mut events = Vec::new();
+        emit_cc_lane(74, &points, InterpolationMode::Log, 0, &mut events);
+        assert_eq!(events.len(), 2);
+        match events[0].event {
+            FugueEvent::Cc { curve, .. } => {
+                assert_eq!(curve, Some(InterpolationMode::Log), "bare point uses lane default");
+            }
+            _ => panic!("expected Cc"),
+        }
+        match events[1].event {
+            FugueEvent::Cc { curve, .. } => {
+                assert_eq!(curve, Some(InterpolationMode::Exp), "per-point curve wins");
+            }
+            _ => panic!("expected Cc"),
+        }
+    }
+
+    #[test]
+    fn emit_cc_lane_clamps_value_and_cc_number() {
+        let points = vec![
+            Point { beat: 0.0, value: 200.0, curve: None },   // clamp to 127
+            Point { beat: 1.0, value: -5.0, curve: None },    // clamp to 0 via as u8 wraparound wraps high; see below
+        ];
+        let mut events = Vec::new();
+        emit_cc_lane(200, &points, InterpolationMode::Linear, 0, &mut events);
+        match events[0].event {
+            FugueEvent::Cc { cc, value, .. } => {
+                assert_eq!(cc, 127, "cc number clamped");
+                assert_eq!(value, 127, "value clamped");
+            }
+            _ => panic!("expected Cc"),
+        }
+    }
+
+    #[test]
+    fn emit_per_note_pitch_bend_expands_segments() {
+        let points = vec![
+            Point { beat: 0.0, value: 0.0, curve: None },
+            Point { beat: 1.0, value: 2.0, curve: None },
+        ];
+        let mut events = Vec::new();
+        emit_per_note_pitch_bend(60, &points, InterpolationMode::Linear, 0, &mut events);
+        // Anchor + 32 steps at default density.
+        assert_eq!(events.len(), 33);
+        let last = events.last().unwrap();
+        match last.event {
+            FugueEvent::PerNotePitchBend { note, semitones, .. } => {
+                assert_eq!(note, 60);
+                assert!((semitones - 2.0).abs() < 1e-5);
+            }
+            _ => panic!("expected PerNotePitchBend"),
+        }
+    }
+
+    #[test]
+    fn emit_per_note_pressure_clamps_to_unit_range() {
+        // Out-of-range pressure values get clamped to [0.0, 1.0].
+        let points = vec![
+            Point { beat: 0.0, value: -0.5, curve: None },
+            Point { beat: 1.0, value: 1.5, curve: None },
+        ];
+        let mut events = Vec::new();
+        emit_per_note_pressure(60, &points, InterpolationMode::Linear, 0, &mut events);
+        for e in &events {
+            if let FugueEvent::PerNotePressure { pressure, .. } = e.event {
+                assert!((0.0..=1.0).contains(&pressure),
+                    "pressure {} out of range", pressure);
+            }
         }
     }
 }

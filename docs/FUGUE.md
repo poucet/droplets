@@ -135,9 +135,50 @@ Return the current transport state for an instance: `{beat, tempo, playing, time
 
 ## Fugue Content Types
 
-Every fugue carries a `type` discriminator. **Keep different musical concerns in different fugues** so they can be updated (tag-swapped) independently.
+Every fugue carries a `type` discriminator. The five types are **`composite`** (the preferred shape for single-instrument moments) and four single-concern types (**`notes`**, **`cc`**, **`per_note_pitch_bend`**, **`per_note_pressure`**) which are still useful when a part needs to be replaceable independently.
+
+Rule of thumb:
+
+- Parts belong to one musical moment on one instrument (e.g. a pad with held chord tones, a filter sweep, and pressure swells)? → **one composite fugue**.
+- Parts need independent replacement (e.g. bass swap while melody keeps playing)? → **separate single-concern fugues with distinct tags**.
 
 > **Note values in all examples.** Every `note` field accepts either a scientific-pitch-notation name (`"C4"` = middle C, `"F#3"`, `"Bb5"`, `"C-1"`) or an integer `0`–`127`. Examples below use names for clarity; numbers work identically. Letter case doesn't matter, `#` = sharp, `b`/`B` = flat.
+
+### `composite` — one fugue, multiple concerns
+
+The go-to type for an atomic musical moment. One tag, one id, one UI row, one cancel. Audio-thread behavior is identical to emitting each concern as a separate fugue — the difference is purely organizational (fewer rows in the UI, fewer things to track when updating).
+
+```json
+{
+  "type": "composite",
+  "notes": [
+    {"beat": 0, "note": "C2", "duration": 16},
+    {"beat": 0, "note": "G3", "duration": 8},
+    {"beat": 8, "note": "F3", "duration": 8}
+  ],
+  "cc": [
+    {"cc": 74, "points": [[0, 30], [8, 100, "exp"], [16, 40, "log"]]},
+    {"cc": 11, "points": [[0, 50], [16, 115]], "interpolation": "exp"}
+  ],
+  "pitch_bends": [
+    {"note": "G3", "points": [[0, 0], [4, 2, "exp"], [8, 0, "log"]]}
+  ],
+  "pressures": [
+    {"note": "C2", "points": [[0, 0], [8, 0.8, "exp"], [16, 0, "log"]]}
+  ]
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `notes` | array | required | Same shape as the `notes` single-concern type (below). |
+| `cc` | array | `[]` | CC lanes. Each entry: `{cc, points, interpolation?}` — same semantics as the standalone `cc` fugue. |
+| `pitch_bends` | array | `[]` | Per-note pitch-bend lanes. Each entry: `{note, points, interpolation?}` — same semantics as the standalone `per_note_pitch_bend` fugue. |
+| `pressures` | array | `[]` | Per-note pressure lanes. Same shape, values `0.0`–`1.0`. |
+
+Any of `cc` / `pitch_bends` / `pressures` can be omitted. A composite with only `notes` is valid (just a notes fugue in disguise); so is a composite with empty `notes` and only CC automation.
+
+---
 
 ### `notes` — MIDI notes with auto note-off
 
