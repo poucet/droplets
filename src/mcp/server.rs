@@ -520,6 +520,15 @@ impl DropletsMcp {
             }
         }
 
+        // Wait for the LAST queued fugue to appear in the audio thread's
+        // info cache so the UI and `list_fugues` see the new state by the
+        // time this tool call returns. Commands are processed in order, so
+        // waiting on the last covers the whole batch — much better than
+        // paying the wait per-fugue on large batches.
+        if let Some(&last_id) = fugue_ids.last() {
+            FugueBridge::wait_for_fugue_visible(&req.instance, last_id, 100);
+        }
+
         let result = if errors.is_empty() {
             let json = serde_json::json!({
                 "fugue_ids": fugue_ids,

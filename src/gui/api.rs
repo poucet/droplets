@@ -335,11 +335,18 @@ pub fn queue_fugue(instance: &str, req: QueueFugueRequest) -> QueueFugueResponse
     };
 
     match FugueBridge::queue(instance, definition) {
-        Ok(fugue_id) => QueueFugueResponse {
-            ok: true,
-            fugue_id: Some(fugue_id),
-            error: None,
-        },
+        Ok(fugue_id) => {
+            // Wait briefly for the audio thread to pick up the command so
+            // the UI's immediate re-fetch shows the new fugue. Caps at
+            // 100ms; the audio thread's info-cache tick is ~5ms in plugin
+            // and standalone modes.
+            FugueBridge::wait_for_fugue_visible(instance, fugue_id, 100);
+            QueueFugueResponse {
+                ok: true,
+                fugue_id: Some(fugue_id),
+                error: None,
+            }
+        }
         Err(e) => QueueFugueResponse {
             ok: false,
             fugue_id: None,

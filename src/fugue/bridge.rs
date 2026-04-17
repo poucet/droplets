@@ -232,4 +232,27 @@ impl FugueBridge {
         let defs = Self::get_definitions(instance)?;
         Ok(defs.into_iter().find(|d| d.id == id))
     }
+
+    /// Block until `id` appears in the info cache on `instance`, or until
+    /// `timeout_ms` elapses. Returns `true` if the fugue became visible.
+    ///
+    /// Call this after `queue` from an HTTP/MCP handler that wants its
+    /// follow-up read (or the caller's immediate refresh) to see the newly
+    /// queued fugue. The ring buffer → audio thread → info cache path has
+    /// a natural ~one-audio-block delay; without the wait, the caller sees
+    /// stale data and has to re-poll.
+    ///
+    /// **Never call from the audio thread** — this sleeps.
+    pub fn wait_for_fugue_visible(instance: &str, id: u64, timeout_ms: u64) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+        while std::time::Instant::now() < deadline {
+            if let Ok(infos) = Self::get_fugue_info(instance) {
+                if infos.iter().any(|i| i.id == id) {
+                    return true;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        false
+    }
 }
