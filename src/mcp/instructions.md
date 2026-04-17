@@ -26,10 +26,13 @@ See the `queue_fugue` tool description for a full worked example.
 
 ## MIDI reference
 
-### Note numbers (0–127, middle C = 60)
+### Notes — always accept name OR number
+Every `note` field accepts either scientific pitch notation (`"C4"`, `"F#3"`, `"Bb5"`, `"C-1"` for the lowest MIDI note) or an integer 0–127. **Prefer names** — they're clearer for both you and the user reading the output. Letter case doesn't matter (`c4` = `C4`), `#` = sharp, `b` or `B` after the letter = flat.
+
+Reference (when you need to think in numbers):
 - C0 = 12,  C1 = 24,  C2 = 36,  C3 = 48,  C4 = 60 (middle C),  C5 = 72,  C6 = 84,  C7 = 96
 - Within an octave: C, C#, D, D#, E, F, F#, G, G#, A, A#, B → offsets 0..11
-- So D4 = 60+2 = 62, G4 = 67, A4 = 69 (concert pitch), Bb3 = 58, etc.
+- So D4 = 62, G4 = 67, A4 = 69 (concert pitch), Bb3 = 58, etc.
 
 ### Typical musical ranges
 - Kick / sub-bass:        24–36  (C1–C2)
@@ -72,17 +75,17 @@ When the user asks for a "filter sweep", default to CC 74. For "volume swell" pr
 ## Pattern cookbook (compact)
 
 ### Four-on-the-floor kick
-Fugue `type:"notes"`, channel mapped to a drum: kick on `note: 36` every beat.
+Fugue `type:"notes"`, channel mapped to a drum: kick on C2 every beat.
 ```
-notes: [{beat:0,note:36,duration:0.2},{beat:1,note:36,duration:0.2},
-        {beat:2,note:36,duration:0.2},{beat:3,note:36,duration:0.2}]
+notes: [{beat:0,note:"C2",duration:0.2},{beat:1,note:"C2",duration:0.2},
+        {beat:2,note:"C2",duration:0.2},{beat:3,note:"C2",duration:0.2}]
 ```
 
 ### Held drone + breath-like pressure swell
 Two fugues on the same channel/note. Pressure is per-segment exp/log for a breath shape.
 ```
-{type:"notes", notes:[{beat:0,note:60,duration:4,velocity:70}]}
-{type:"per_note_pressure", note:60,
+{type:"notes", notes:[{beat:0,note:"C4",duration:4,velocity:70}]}
+{type:"per_note_pressure", note:"C4",
  points:[[0,0.0],[2,1.0,"exp"],[4,0.0,"log"]]}
 ```
 
@@ -95,10 +98,10 @@ CC 74 ramping 30→110→30 over a bar, with exp curve.
 ### 16th-note arp, velocity tapering
 Ascending triad with each step softer — classic plucked-arp feel.
 ```
-notes:[{beat:0.00,note:48,duration:0.2,velocity:100},
-       {beat:0.25,note:52,duration:0.2,velocity:90},
-       {beat:0.50,note:55,duration:0.2,velocity:80},
-       {beat:0.75,note:60,duration:0.2,velocity:70}]
+notes:[{beat:0.00,note:"C3",duration:0.2,velocity:100},
+       {beat:0.25,note:"E3",duration:0.2,velocity:90},
+       {beat:0.50,note:"G3",duration:0.2,velocity:80},
+       {beat:0.75,note:"C4",duration:0.2,velocity:70}]
 ```
 
 ## Other tools

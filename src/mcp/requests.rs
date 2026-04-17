@@ -14,6 +14,168 @@ use serde::Deserialize;
 use crate::fugue::InterpolationMode;
 
 // =============================================================================
+// Note — MIDI note accepting number (0-127) or name ("C4", "F#3", "Bb5")
+// =============================================================================
+
+/// A MIDI note. Deserializes from either an integer (0-127) or a note name
+/// in scientific pitch notation (`C4` = middle C = 60, `F#3`, `Bb5`, `C-1`).
+///
+/// Internally a plain `u8` — parse at the MCP boundary, use `.0` everywhere
+/// downstream. The LLM and humans both reason about notes by name far better
+/// than by number; this type lets that ergonomics win happen without touching
+/// any audio-thread code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Note(pub u8);
+
+impl std::fmt::Display for Note {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&midi_to_name(self.0))
+    }
+}
+
+impl From<Note> for u8 {
+    fn from(n: Note) -> u8 { n.0 }
+}
+
+impl<'de> serde::Deserialize<'de> for Note {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct NoteVisitor;
+        impl<'de> serde::de::Visitor<'de> for NoteVisitor {
+            type Value = Note;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("MIDI note: integer 0-127 or name like 'C4', 'F#3', 'Bb5', 'C-1'")
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Note, E> {
+                if v > 127 {
+                    Err(E::custom(format!("MIDI note {} out of range 0-127", v)))
+                } else {
+                    Ok(Note(v as u8))
+                }
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<Note, E> {
+                if !(0..=127).contains(&v) {
+                    Err(E::custom(format!("MIDI note {} out of range 0-127", v)))
+                } else {
+                    Ok(Note(v as u8))
+                }
+            }
+
+            fn visit_f64<E: serde::de::Error>(self, v: f64) -> Result<Note, E> {
+                // Accept integer-valued floats (60.0) but reject fractional notes.
+                let n = v.trunc();
+                if (n - v).abs() > 1e-6 {
+                    Err(E::custom(format!("MIDI note must be an integer, got {}", v)))
+                } else {
+                    self.visit_i64(n as i64)
+                }
+            }
+
+            fn visit_str<E: serde::de::Error>(self, s: &str) -> Result<Note, E> {
+                let t = s.trim();
+                // Be permissive: if the string is a plain number, accept it
+                // as the integer form. This is forgiving for callers who
+                // serialize ints as strings ("60" → Note(60)).
+                if !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit() || b == b'-' || b == b'+') {
+                    if let Ok(n) = t.parse::<i32>() {
+                        return self.visit_i64(n as i64);
+                    }
+                }
+                parse_note_name(t).map(Note).map_err(E::custom)
+            }
+
+            fn visit_string<E: serde::de::Error>(self, s: String) -> Result<Note, E> {
+                self.visit_str(&s)
+            }
+        }
+        deserializer.deserialize_any(NoteVisitor)
+    }
+}
+
+impl schemars::JsonSchema for Note {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Note".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let value = serde_json::json!({
+            "description": "MIDI note. Accepts either an integer 0-127 or a note name in scientific pitch notation: 'C4' (middle C = 60), 'F#3', 'Bb5', 'C-1' (MIDI 0), 'G9' (MIDI 127). Letter is case-insensitive; '#' = sharp, 'b' = flat. Prefer names over numbers — they're clearer for both humans and LLMs.",
+            "oneOf": [
+                { "type": "integer", "minimum": 0, "maximum": 127 },
+                { "type": "string", "pattern": "^[A-Ga-g][#b]?-?[0-9]+$" }
+            ]
+        });
+        let map = match value {
+            serde_json::Value::Object(m) => m,
+            _ => unreachable!("json! literal is an object"),
+        };
+        schemars::Schema::from(map)
+    }
+}
+
+/// Parse a scientific-pitch-notation note name into its MIDI note number.
+///
+/// Accepts `C4`, `F#3`, `Bb5`, `C-1` (lowest MIDI note), `G9` (highest).
+/// Letter is case-insensitive. `#` means sharp, `b` means flat. Octaves
+/// follow the convention where middle C (MIDI 60) is `C4` and MIDI 0 is `C-1`.
+pub fn parse_note_name(s: &str) -> Result<u8, String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return Err("empty note name".into());
+    }
+    let bytes = s.as_bytes();
+
+    let semitone: i32 = match bytes[0].to_ascii_uppercase() {
+        b'C' => 0,
+        b'D' => 2,
+        b'E' => 4,
+        b'F' => 5,
+        b'G' => 7,
+        b'A' => 9,
+        b'B' => 11,
+        _ => return Err(format!("invalid note letter in '{}'", s)),
+    };
+
+    // Accidental: '#' = sharp, 'b'/'B' = flat. Case-insensitive so that
+    // "DB4" works as well as "Db4" and "db4". This creates a slight
+    // ambiguity with the note letter B (e.g. "BB4" parses as B-flat 4,
+    // not B-natural in octave B4), but in practice nobody writes a note
+    // letter and accidental in two uppercase letters unless they mean a
+    // flat, so the case-insensitive reading is the safer bet.
+    let mut pos = 1;
+    let accidental: i32 = match bytes.get(pos).copied() {
+        Some(b'#') => { pos += 1; 1 }
+        Some(b'b') | Some(b'B') => { pos += 1; -1 }
+        _ => 0,
+    };
+
+    let octave_str = &s[pos..];
+    let octave: i32 = octave_str
+        .parse()
+        .map_err(|_| format!("invalid octave in '{}'", s))?;
+
+    // MIDI convention: C-1 = 0, C0 = 12, C4 = 60 (middle C), G9 = 127.
+    let midi = (octave + 1) * 12 + semitone + accidental;
+    if !(0..=127).contains(&midi) {
+        return Err(format!("note '{}' maps to MIDI {} (out of range 0-127)", s, midi));
+    }
+    Ok(midi as u8)
+}
+
+/// Format a MIDI note number as a scientific-pitch-notation name.
+/// Uses sharps for enharmonic names (C# rather than Db) — the common default.
+pub fn midi_to_name(note: u8) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let octave = (note as i32) / 12 - 1;
+    let name = NAMES[(note % 12) as usize];
+    format!("{}{}", name, octave)
+}
+
+// =============================================================================
 // Wrapper type for instance-targeted requests
 // =============================================================================
 
@@ -60,9 +222,9 @@ pub struct NoteOnData {
     #[schemars(description = "MIDI channel (1-16, default: 1)")]
     pub channel: u8,
 
-    /// MIDI note number (0-127, where 60 = C4/middle C)
-    #[schemars(description = "MIDI note number (0-127, where 60 = C4/middle C)")]
-    pub note: u8,
+    /// MIDI note. Accepts name ('C4' = middle C = 60, 'F#3', 'Bb5') or number (0-127).
+    #[schemars(description = "MIDI note. Prefer name ('C4', 'F#3', 'Bb5') — also accepts number 0-127 (60 = middle C).")]
+    pub note: Note,
 
     /// Note velocity (1-127, default: 100)
     #[serde(default = "default_velocity")]
@@ -78,9 +240,9 @@ pub struct NoteOnHiresData {
     #[schemars(description = "MIDI channel (1-16, default: 1)")]
     pub channel: u8,
 
-    /// MIDI note number (0-127, where 60 = C4/middle C)
-    #[schemars(description = "MIDI note number (0-127, where 60 = C4/middle C)")]
-    pub note: u8,
+    /// MIDI note. Accepts name ('C4' = middle C = 60, 'F#3', 'Bb5') or number (0-127).
+    #[schemars(description = "MIDI note. Prefer name ('C4', 'F#3', 'Bb5') — also accepts number 0-127 (60 = middle C).")]
+    pub note: Note,
 
     /// 16-bit velocity (1-65535, default: 32768). MIDI 2.0 high-resolution.
     #[serde(default = "default_velocity_16bit")]
@@ -96,9 +258,9 @@ pub struct NoteOffData {
     #[schemars(description = "MIDI channel (1-16, default: 1)")]
     pub channel: u8,
 
-    /// MIDI note number (0-127, where 60 = C4/middle C)
-    #[schemars(description = "MIDI note number (0-127, where 60 = C4/middle C)")]
-    pub note: u8,
+    /// MIDI note. Accepts name ('C4' = middle C = 60, 'F#3', 'Bb5') or number (0-127).
+    #[schemars(description = "MIDI note. Prefer name ('C4', 'F#3', 'Bb5') — also accepts number 0-127 (60 = middle C).")]
+    pub note: Note,
 
     /// Release velocity (0-127, default: 0)
     #[serde(default)]
@@ -148,7 +310,7 @@ pub struct PerNotePitchBendData {
 
     /// MIDI note number to bend (0-127, where 60 = C4/middle C)
     #[schemars(description = "MIDI note number to bend (0-127, where 60 = C4/middle C)")]
-    pub note: u8,
+    pub note: Note,
 
     /// Pitch bend in semitones (-64.0 to +64.0, 0 = no bend)
     #[schemars(description = "Pitch bend in semitones (-64.0 to +64.0, 0 = no bend)")]
@@ -163,9 +325,9 @@ pub struct PerNotePressureData {
     #[schemars(description = "MIDI channel (1-16, default: 1)")]
     pub channel: u8,
 
-    /// MIDI note number (0-127, where 60 = C4/middle C)
-    #[schemars(description = "MIDI note number (0-127, where 60 = C4/middle C)")]
-    pub note: u8,
+    /// MIDI note. Accepts name ('C4' = middle C = 60, 'F#3', 'Bb5') or number (0-127).
+    #[schemars(description = "MIDI note. Prefer name ('C4', 'F#3', 'Bb5') — also accepts number 0-127 (60 = middle C).")]
+    pub note: Note,
 
     /// Pressure value (0.0-1.0 normalized)
     #[schemars(description = "Pressure value (0.0-1.0 normalized)")]
@@ -180,9 +342,9 @@ pub struct PerNoteControllerData {
     #[schemars(description = "MIDI channel (1-16, default: 1)")]
     pub channel: u8,
 
-    /// MIDI note number (0-127, where 60 = C4/middle C)
-    #[schemars(description = "MIDI note number (0-127, where 60 = C4/middle C)")]
-    pub note: u8,
+    /// MIDI note. Accepts name ('C4' = middle C = 60, 'F#3', 'Bb5') or number (0-127).
+    #[schemars(description = "MIDI note. Prefer name ('C4', 'F#3', 'Bb5') — also accepts number 0-127 (60 = middle C).")]
+    pub note: Note,
 
     /// Controller index (0-255)
     #[schemars(description = "Controller index (0-255)")]
@@ -201,9 +363,9 @@ pub struct PerNoteManagementData {
     #[schemars(description = "MIDI channel (1-16, default: 1)")]
     pub channel: u8,
 
-    /// MIDI note number (0-127, where 60 = C4/middle C)
-    #[schemars(description = "MIDI note number (0-127, where 60 = C4/middle C)")]
-    pub note: u8,
+    /// MIDI note. Accepts name ('C4' = middle C = 60, 'F#3', 'Bb5') or number (0-127).
+    #[schemars(description = "MIDI note. Prefer name ('C4', 'F#3', 'Bb5') — also accepts number 0-127 (60 = middle C).")]
+    pub note: Note,
 
     /// Detach this note from prior note-on (default: false)
     #[serde(default)]
@@ -249,9 +411,9 @@ pub enum FugueContent {
     /// a single fugue can combine different shapes (e.g. exp on a crescendo
     /// followed by log on a release). Server-side expansion at ~32 events/beat.
     PerNotePitchBend {
-        /// MIDI note number being bent. Must match a note currently held by a concurrent Notes fugue (0-127).
-        #[schemars(description = "MIDI note number to bend. Must be held by a concurrent notes fugue on the same channel (0-127, 60 = C4).")]
-        note: u8,
+        /// MIDI note being bent. Must match a note currently held by a concurrent Notes fugue. Accepts name ('C4') or number (60).
+        #[schemars(description = "MIDI note to bend. Must be held by a concurrent notes fugue on the same channel. Accepts name like 'C4' or 'F#3', or number 0-127.")]
+        note: Note,
         /// Points forming the bend trajectory. Tuple form [beat, semitones] or [beat, semitones, curve].
         #[schemars(description = "Array of trajectory points. Each point is [beat, semitones] or [beat, semitones, curve]. Semitones -64.0 to +64.0 (0 = no bend). curve on each point controls interpolation for the segment arriving at it (ignored on first point); one of 'linear' (default), 'exp', 'log', 'none'. Example vibrato: [[0,0],[0.5,1,\"linear\"],[1,-1,\"linear\"],[1.5,0,\"linear\"]].")]
         points: Vec<PerNotePoint>,
@@ -260,9 +422,9 @@ pub enum FugueContent {
     /// Requires a concurrent Notes fugue holding the target note.
     /// Same per-segment curve shape as PerNotePitchBend.
     PerNotePressure {
-        /// MIDI note number receiving pressure. Must match a note currently held by a concurrent Notes fugue (0-127).
-        #[schemars(description = "MIDI note number for pressure. Must be held by a concurrent notes fugue on the same channel (0-127, 60 = C4).")]
-        note: u8,
+        /// MIDI note receiving pressure. Must match a note currently held by a concurrent Notes fugue. Accepts name ('C4') or number (60).
+        #[schemars(description = "MIDI note for pressure. Must be held by a concurrent notes fugue on the same channel. Accepts name like 'C4' or 'F#3', or number 0-127.")]
+        note: Note,
         /// Points forming the pressure trajectory. Tuple form [beat, pressure] or [beat, pressure, curve].
         #[schemars(description = "Array of trajectory points. Each point is [beat, pressure] or [beat, pressure, curve]. Pressure 0.0-1.0. Example crescendo-then-release: [[0,0],[2,1,\"exp\"],[4,0,\"log\"]]. Valid curves: 'linear' (default), 'exp' (accelerating), 'log' (decelerating), 'none' (step, ignored on first point).")]
         points: Vec<PerNotePoint>,
@@ -358,9 +520,9 @@ pub struct CompactNote {
     /// Beat offset from fugue start
     #[schemars(description = "Beat offset from fugue start (0.0 = start)")]
     pub beat: f64,
-    /// MIDI note number (0-127)
-    #[schemars(description = "MIDI note number (0-127)")]
-    pub note: u8,
+    /// MIDI note. Name ('C4', 'F#3') or number (0-127).
+    #[schemars(description = "MIDI note. Name ('C4', 'F#3', 'Bb5') or number 0-127.")]
+    pub note: Note,
     /// Duration in beats (note_off auto-generated at beat + duration)
     #[schemars(description = "Duration in beats. Note-off is automatically sent at beat + duration.")]
     pub duration: f64,
@@ -597,6 +759,357 @@ pub fn expand_per_note_points(points: &[PerNotePoint], mut emit: impl FnMut(f64,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ------------------------------------------------------------------
+    // Note — parse_note_name
+    // ------------------------------------------------------------------
+
+    /// Shorthand for tests: parse and unwrap, or panic with the error.
+    fn note(s: &str) -> u8 {
+        parse_note_name(s).unwrap_or_else(|e| panic!("parse_note_name({:?}) failed: {}", s, e))
+    }
+
+    #[test]
+    fn note_name_naturals_in_octave_4() {
+        assert_eq!(note("C4"), 60, "middle C");
+        assert_eq!(note("D4"), 62);
+        assert_eq!(note("E4"), 64);
+        assert_eq!(note("F4"), 65);
+        assert_eq!(note("G4"), 67);
+        assert_eq!(note("A4"), 69, "concert pitch");
+        assert_eq!(note("B4"), 71);
+    }
+
+    #[test]
+    fn note_name_c_across_octaves() {
+        // C-1 is MIDI 0; each octave adds 12.
+        assert_eq!(note("C-1"), 0);
+        assert_eq!(note("C0"), 12);
+        assert_eq!(note("C1"), 24);
+        assert_eq!(note("C2"), 36);
+        assert_eq!(note("C3"), 48);
+        assert_eq!(note("C4"), 60);
+        assert_eq!(note("C5"), 72);
+        assert_eq!(note("C6"), 84);
+        assert_eq!(note("C7"), 96);
+        assert_eq!(note("C8"), 108);
+        assert_eq!(note("C9"), 120);
+    }
+
+    #[test]
+    fn note_name_extreme_range() {
+        // MIDI 0 = lowest, MIDI 127 = highest.
+        assert_eq!(note("C-1"), 0);
+        assert_eq!(note("G9"), 127);
+    }
+
+    #[test]
+    fn note_name_sharps() {
+        assert_eq!(note("C#4"), 61);
+        assert_eq!(note("D#4"), 63);
+        assert_eq!(note("F#4"), 66);
+        assert_eq!(note("G#4"), 68);
+        assert_eq!(note("A#4"), 70);
+    }
+
+    #[test]
+    fn note_name_flats_lowercase_b() {
+        assert_eq!(note("Db4"), 61);
+        assert_eq!(note("Eb4"), 63);
+        assert_eq!(note("Gb4"), 66);
+        assert_eq!(note("Ab4"), 68);
+        assert_eq!(note("Bb4"), 70);
+    }
+
+    #[test]
+    fn note_name_flats_uppercase_b_case_insensitive() {
+        // Uppercase B after a note letter is also parsed as flat, so
+        // callers who shout "DB4" get the same result as "Db4".
+        assert_eq!(note("DB4"), 61);
+        assert_eq!(note("EB4"), 63);
+        assert_eq!(note("GB4"), 66);
+        assert_eq!(note("AB4"), 68);
+        assert_eq!(note("BB4"), 70);
+    }
+
+    #[test]
+    fn note_name_case_insensitive_letter_every_natural() {
+        // Every letter, lowercase and uppercase, matched against explicit MIDI.
+        let pairs = [
+            ("c4", 60), ("C4", 60),
+            ("d4", 62), ("D4", 62),
+            ("e4", 64), ("E4", 64),
+            ("f4", 65), ("F4", 65),
+            ("g4", 67), ("G4", 67),
+            ("a4", 69), ("A4", 69),
+            ("b4", 71), ("B4", 71),
+        ];
+        for (name, expected) in pairs {
+            assert_eq!(note(name), expected, "{} should be MIDI {}", name, expected);
+        }
+    }
+
+    #[test]
+    fn note_name_case_insensitive_sharps() {
+        // Sharp accidental is always '#', but the letter case varies.
+        let pairs = [
+            ("c#4", 61), ("C#4", 61),
+            ("d#4", 63), ("D#4", 63),
+            ("f#4", 66), ("F#4", 66),
+            ("g#4", 68), ("G#4", 68),
+            ("a#4", 70), ("A#4", 70),
+        ];
+        for (name, expected) in pairs {
+            assert_eq!(note(name), expected, "{} should be MIDI {}", name, expected);
+        }
+    }
+
+    #[test]
+    fn note_name_case_insensitive_flats_full_matrix() {
+        // Every combination of letter case × flat case.
+        // Db4, dB4, DB4, db4 should all parse to 61.
+        let pairs = [
+            ("Db4", 61), ("dB4", 61), ("DB4", 61), ("db4", 61),
+            ("Eb4", 63), ("eB4", 63), ("EB4", 63), ("eb4", 63),
+            ("Gb4", 66), ("gB4", 66), ("GB4", 66), ("gb4", 66),
+            ("Ab4", 68), ("aB4", 68), ("AB4", 68), ("ab4", 68),
+            ("Bb4", 70), ("bB4", 70), ("BB4", 70), ("bb4", 70),
+        ];
+        for (name, expected) in pairs {
+            assert_eq!(note(name), expected, "{} should be MIDI {}", name, expected);
+        }
+    }
+
+    #[test]
+    fn note_name_case_insensitive_across_octaves() {
+        // Case-insensitivity holds regardless of octave.
+        for octave in -1..=8 {
+            let upper = format!("C{}", octave);
+            let lower = format!("c{}", octave);
+            assert_eq!(note(&upper), note(&lower), "C{} vs c{}", octave, octave);
+        }
+        // Same for flats with both cases of the flat symbol.
+        let variants = ["Bb3", "bB3", "BB3", "bb3"];
+        let first = note(variants[0]);
+        for v in &variants[1..] {
+            assert_eq!(note(v), first, "{} should equal {}", v, variants[0]);
+        }
+    }
+
+    #[test]
+    fn note_name_enharmonic_equivalents() {
+        assert_eq!(note("C#4"), note("Db4"));
+        assert_eq!(note("D#4"), note("Eb4"));
+        assert_eq!(note("F#4"), note("Gb4"));
+        assert_eq!(note("G#4"), note("Ab4"));
+        assert_eq!(note("A#4"), note("Bb4"));
+    }
+
+    #[test]
+    fn note_name_handles_surrounding_whitespace() {
+        assert_eq!(note(" C4 "), 60);
+        assert_eq!(note("\tF#3\n"), parse_note_name("F#3").unwrap());
+    }
+
+    #[test]
+    fn note_name_negative_octaves() {
+        // Only C-1 and above are in MIDI range, but the parser should
+        // accept the syntax and reject out-of-range results cleanly.
+        assert_eq!(note("C-1"), 0);
+        assert_eq!(note("C#-1"), 1);
+        assert_eq!(note("B-1"), 11);
+        assert!(parse_note_name("C-2").is_err(), "C-2 is below MIDI range");
+    }
+
+    #[test]
+    fn note_name_out_of_range_high() {
+        // G9 = 127 is valid; G#9 / A9 would exceed 127.
+        assert_eq!(note("G9"), 127);
+        assert!(parse_note_name("G#9").is_err(), "G#9 = 128 should fail");
+        assert!(parse_note_name("A9").is_err(), "A9 = 129 should fail");
+        assert!(parse_note_name("C10").is_err(), "C10 = 132 should fail");
+    }
+
+    #[test]
+    fn note_name_rejects_empty() {
+        assert!(parse_note_name("").is_err());
+        assert!(parse_note_name("   ").is_err(), "whitespace-only after trim");
+    }
+
+    #[test]
+    fn note_name_rejects_invalid_letter() {
+        assert!(parse_note_name("H4").is_err(), "H is not a note letter");
+        assert!(parse_note_name("Z3").is_err());
+        assert!(parse_note_name("04").is_err(), "digit in letter position");
+    }
+
+    #[test]
+    fn note_name_rejects_missing_octave() {
+        assert!(parse_note_name("C").is_err());
+        assert!(parse_note_name("C#").is_err());
+        assert!(parse_note_name("Bb").is_err());
+    }
+
+    #[test]
+    fn note_name_rejects_bad_octave() {
+        assert!(parse_note_name("Cx4").is_err(), "x is not a valid accidental");
+        assert!(parse_note_name("C4x").is_err(), "trailing garbage");
+        assert!(parse_note_name("C4.5").is_err(), "fractional octave");
+        assert!(parse_note_name("Cfoo").is_err());
+    }
+
+    #[test]
+    fn note_name_error_messages_are_helpful() {
+        // Errors should name the input so a user (or LLM reading the
+        // response) can diagnose what went wrong.
+        let err = parse_note_name("H4").unwrap_err();
+        assert!(err.contains("H4") || err.contains("note letter"),
+            "error for 'H4' should mention input or note-letter issue; got: {}", err);
+        let err = parse_note_name("C99").unwrap_err();
+        assert!(err.contains("C99") || err.contains("range"),
+            "range error should mention input or range; got: {}", err);
+    }
+
+    // ------------------------------------------------------------------
+    // Note — Deserialize (accepts number or name via JSON)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn note_deserialize_from_json_integer() {
+        let n: Note = serde_json::from_str("60").unwrap();
+        assert_eq!(n.0, 60);
+        let n: Note = serde_json::from_str("0").unwrap();
+        assert_eq!(n.0, 0);
+        let n: Note = serde_json::from_str("127").unwrap();
+        assert_eq!(n.0, 127);
+    }
+
+    #[test]
+    fn note_deserialize_from_json_string_name() {
+        let n: Note = serde_json::from_str("\"C4\"").unwrap();
+        assert_eq!(n.0, 60);
+        let n: Note = serde_json::from_str("\"F#3\"").unwrap();
+        assert_eq!(n.0, 54);
+        let n: Note = serde_json::from_str("\"Bb5\"").unwrap();
+        assert_eq!(n.0, 82);
+        let n: Note = serde_json::from_str("\"C-1\"").unwrap();
+        assert_eq!(n.0, 0);
+    }
+
+    #[test]
+    fn note_deserialize_from_json_string_number() {
+        // Callers who serialize ints as strings shouldn't get punished.
+        let n: Note = serde_json::from_str("\"60\"").unwrap();
+        assert_eq!(n.0, 60);
+        let n: Note = serde_json::from_str("\"127\"").unwrap();
+        assert_eq!(n.0, 127);
+    }
+
+    #[test]
+    fn note_deserialize_from_integer_float() {
+        // 60.0 is OK — it's integer-valued.
+        let n: Note = serde_json::from_str("60.0").unwrap();
+        assert_eq!(n.0, 60);
+    }
+
+    #[test]
+    fn note_deserialize_rejects_fractional_float() {
+        assert!(serde_json::from_str::<Note>("60.5").is_err());
+    }
+
+    #[test]
+    fn note_deserialize_rejects_out_of_range_integer() {
+        assert!(serde_json::from_str::<Note>("128").is_err());
+        assert!(serde_json::from_str::<Note>("-1").is_err());
+        assert!(serde_json::from_str::<Note>("200").is_err());
+    }
+
+    #[test]
+    fn note_deserialize_rejects_invalid_name() {
+        assert!(serde_json::from_str::<Note>("\"H4\"").is_err());
+        assert!(serde_json::from_str::<Note>("\"hello\"").is_err());
+        assert!(serde_json::from_str::<Note>("\"\"").is_err());
+    }
+
+    #[test]
+    fn note_deserialize_rejects_non_integer_strings_not_names() {
+        assert!(serde_json::from_str::<Note>("\"abc\"").is_err());
+    }
+
+    #[test]
+    fn note_deserialize_in_nested_context() {
+        // Real-world: note lives inside a CompactNote lives inside a FugueContent.
+        let json = r#"{
+            "type": "notes",
+            "notes": [
+                {"beat": 0, "note": "C4",  "duration": 1},
+                {"beat": 1, "note": "E4",  "duration": 1},
+                {"beat": 2, "note": "G4",  "duration": 1},
+                {"beat": 3, "note": 72,    "duration": 1}
+            ]
+        }"#;
+        let content: FugueContent = serde_json::from_str(json).unwrap();
+        match content {
+            FugueContent::Notes { notes } => {
+                assert_eq!(notes[0].note.0, 60);
+                assert_eq!(notes[1].note.0, 64);
+                assert_eq!(notes[2].note.0, 67);
+                assert_eq!(notes[3].note.0, 72, "numeric note still works");
+            }
+            _ => panic!("expected Notes variant"),
+        }
+    }
+
+    #[test]
+    fn note_deserialize_in_per_note_variant() {
+        let json = r#"{
+            "type": "per_note_pitch_bend",
+            "note": "C4",
+            "points": [[0, 0], [1, 2]]
+        }"#;
+        let content: FugueContent = serde_json::from_str(json).unwrap();
+        match content {
+            FugueContent::PerNotePitchBend { note, .. } => assert_eq!(note.0, 60),
+            _ => panic!("expected PerNotePitchBend"),
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Note — Display (round-trip)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn note_display_uses_sharps() {
+        // Display chooses sharps for enharmonics — consistent convention.
+        assert_eq!(Note(60).to_string(), "C4");
+        assert_eq!(Note(61).to_string(), "C#4");
+        assert_eq!(Note(70).to_string(), "A#4", "prefers A# over Bb");
+        assert_eq!(Note(0).to_string(), "C-1");
+        assert_eq!(Note(127).to_string(), "G9");
+    }
+
+    #[test]
+    fn note_roundtrip_name_to_midi_to_name() {
+        // Round-trip via Display: parse a name, format it back, parse again.
+        // Names that don't go through enharmonic flips should survive.
+        for name in ["C4", "C#4", "D4", "D#4", "E4", "F4", "F#4", "G4", "G#4", "A4", "A#4", "B4"] {
+            let midi = parse_note_name(name).unwrap();
+            let back = Note(midi).to_string();
+            assert_eq!(back, name, "roundtrip failed for {}", name);
+        }
+    }
+
+    #[test]
+    fn note_roundtrip_all_midi_values() {
+        // Every MIDI value 0..=127 should format to a valid name that
+        // parses back to the same MIDI value.
+        for midi in 0..=127u8 {
+            let name = Note(midi).to_string();
+            let parsed = parse_note_name(&name)
+                .unwrap_or_else(|e| panic!("roundtrip failed for MIDI {}: name {:?} didn't parse: {}", midi, name, e));
+            assert_eq!(parsed, midi, "MIDI {} → {:?} → MIDI {}", midi, name, parsed);
+        }
+    }
 
     // ------------------------------------------------------------------
     // PerNotePoint custom Deserialize
@@ -891,7 +1404,7 @@ mod tests {
         let content: FugueContent = serde_json::from_str(json).unwrap();
         match content {
             FugueContent::PerNotePitchBend { note, points } => {
-                assert_eq!(note, 60);
+                assert_eq!(note.0, 60);
                 assert_eq!(points.len(), 3);
                 assert_eq!(points[1].curve.as_deref(), Some("exp"));
             }
@@ -909,7 +1422,7 @@ mod tests {
         let content: FugueContent = serde_json::from_str(json).unwrap();
         match content {
             FugueContent::PerNotePressure { note, points } => {
-                assert_eq!(note, 72);
+                assert_eq!(note.0, 72);
                 assert_eq!(points.len(), 3);
             }
             _ => panic!("expected PerNotePressure variant"),

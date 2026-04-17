@@ -190,7 +190,7 @@ impl DropletsMcp {
     fn send_note_on(&self, Parameters(req): Parameters<SendNoteOnRequest>) -> Result<CallToolResult, McpError> {
         let msg = NoteMessage::new(
             req.data.channel.saturating_sub(1).min(15),
-            req.data.note.min(127),
+            req.data.note.0.min(127),
             req.data.velocity.clamp(1, 127),
             true,
         );
@@ -210,7 +210,7 @@ impl DropletsMcp {
     fn send_note_on_hires(&self, Parameters(req): Parameters<SendNoteOnHiresRequest>) -> Result<CallToolResult, McpError> {
         let msg = NoteMessage::new_hires(
             req.data.channel.saturating_sub(1).min(15),
-            req.data.note.min(127),
+            req.data.note.0.min(127),
             req.data.velocity.max(1), // Ensure at least 1 for Note On
             true,
         );
@@ -230,7 +230,7 @@ impl DropletsMcp {
     fn send_note_off(&self, Parameters(req): Parameters<SendNoteOffRequest>) -> Result<CallToolResult, McpError> {
         let msg = NoteMessage::new(
             req.data.channel.saturating_sub(1).min(15),
-            req.data.note.min(127),
+            req.data.note.0.min(127),
             req.data.velocity.min(127),
             false,
         );
@@ -254,7 +254,7 @@ impl DropletsMcp {
     fn send_per_note_pitch_bend(&self, Parameters(req): Parameters<PerNotePitchBendRequest>) -> Result<CallToolResult, McpError> {
         let msg = PerNoteExpressionMessage::pitch_bend_semitones(
             req.data.channel.saturating_sub(1).min(15),
-            req.data.note.min(127),
+            req.data.note.0.min(127),
             req.data.semitones.clamp(-64.0, 64.0),
         );
 
@@ -273,7 +273,7 @@ impl DropletsMcp {
     fn send_per_note_pressure(&self, Parameters(req): Parameters<PerNotePressureRequest>) -> Result<CallToolResult, McpError> {
         let msg = PerNoteExpressionMessage::pressure_normalized(
             req.data.channel.saturating_sub(1).min(15),
-            req.data.note.min(127),
+            req.data.note.0.min(127),
             req.data.pressure.clamp(0.0, 1.0),
         );
 
@@ -293,7 +293,7 @@ impl DropletsMcp {
         let value_32bit = (req.data.value.clamp(0.0, 1.0) * (u32::MAX as f32)) as u32;
         let msg = PerNoteExpressionMessage::registered_controller(
             req.data.channel.saturating_sub(1).min(15),
-            req.data.note.min(127),
+            req.data.note.0.min(127),
             req.data.index,
             value_32bit,
         );
@@ -314,7 +314,7 @@ impl DropletsMcp {
         let value_32bit = (req.data.value.clamp(0.0, 1.0) * (u32::MAX as f32)) as u32;
         let msg = PerNoteExpressionMessage::assignable_controller(
             req.data.channel.saturating_sub(1).min(15),
-            req.data.note.min(127),
+            req.data.note.0.min(127),
             req.data.index,
             value_32bit,
         );
@@ -334,7 +334,7 @@ impl DropletsMcp {
     fn send_per_note_management(&self, Parameters(req): Parameters<PerNoteManagementRequest>) -> Result<CallToolResult, McpError> {
         let msg = PerNoteExpressionMessage::management(
             req.data.channel.saturating_sub(1).min(15),
-            req.data.note.min(127),
+            req.data.note.0.min(127),
             req.data.detach,
             req.data.reset,
         );
@@ -361,7 +361,7 @@ impl DropletsMcp {
     // =========================================================================
 
     /// Queue one or more fugues for transport-synchronized playback.
-    #[tool(description = "Queue one or more fugues for transport-synchronized playback. Each fugue is atomic — use separate fugues for notes, CC automation, and per-note expression so they can be updated independently.\n\nFugue types (use the 'type' field):\n- 'notes': MIDI notes with auto note-off at beat+duration. Each note has {beat, note (0-127), duration, velocity? (1-127, default 100), channel?}.\n- 'cc': CC automation with smooth per-fugue interpolation. Fields: cc (0-127), points ([beat, value] pairs, values 0-127), interpolation? ('linear' default, 'exp', 'log', 'none').\n- 'per_note_pitch_bend': MIDI 2.0 per-note bend on a SINGLE held note. Fields: note (0-127), points ([beat, semitones] or [beat, semitones, curve] tuples, semitones -64.0 to +64.0). Requires a concurrent 'notes' fugue holding the target note on the same channel.\n- 'per_note_pressure': MIDI 2.0 per-note pressure on a SINGLE held note. Fields: note (0-127), points ([beat, pressure] or [beat, pressure, curve] tuples, pressure 0.0-1.0). Same 'held note' requirement.\n\nPer-segment curves (per-note only): each point's optional third element is the curve used on the segment ARRIVING at that point (ignored on the first point). Valid: 'linear' (default), 'exp' (ease-in, accelerating), 'log' (ease-out, decelerating), 'none' (step).\n\nShared top-level fields (defaults across all fugues in the batch, per-fugue can override): duration_beats, quantize ('immediate'|'beat'|'bar'|'bars:N'), loop_mode ('once'|'forever'|N).\n\nTag + cancel_mode is how you update one part without disturbing others:\n  tag:'melody' + cancel_mode:'tag:melody' → replaces only the previous 'melody' fugue.\n\nWorked example — 4-bar phrase with bass, held melody note, filter sweep, and expressive bend:\n```json\n{\n  \"instance\": \"lead\",\n  \"duration_beats\": 4,\n  \"quantize\": \"bar\",\n  \"loop_mode\": \"forever\",\n  \"fugues\": [\n    {\"tag\":\"bass\",\"cancel_mode\":\"tag:bass\",\"type\":\"notes\",\"notes\":[\n      {\"beat\":0,\"note\":36,\"duration\":0.5},\n      {\"beat\":1,\"note\":36,\"duration\":0.5},\n      {\"beat\":2,\"note\":43,\"duration\":0.5},\n      {\"beat\":3,\"note\":36,\"duration\":0.5}\n    ]},\n    {\"tag\":\"melody\",\"cancel_mode\":\"tag:melody\",\"type\":\"notes\",\"notes\":[\n      {\"beat\":0,\"note\":60,\"duration\":4,\"velocity\":90}\n    ]},\n    {\"tag\":\"filter\",\"cancel_mode\":\"tag:filter\",\"type\":\"cc\",\"cc\":74,\n     \"points\":[[0,30],[2,110],[4,30]],\"interpolation\":\"exp\"},\n    {\"tag\":\"bend\",\"cancel_mode\":\"tag:bend\",\"type\":\"per_note_pitch_bend\",\"note\":60,\n     \"points\":[[0,0],[2,2,\"exp\"],[4,0,\"log\"]]}\n  ]\n}\n```\nTo swap just the melody later, queue a fugue with tag:'melody' and cancel_mode:'tag:melody'. Bass, filter, and bend keep playing.")]
+    #[tool(description = "Queue one or more fugues for transport-synchronized playback. Each fugue is atomic — use separate fugues for notes, CC automation, and per-note expression so they can be updated independently.\n\nFugue types (use the 'type' field):\n- 'notes': MIDI notes with auto note-off at beat+duration. Each note has {beat, note (0-127), duration, velocity? (1-127, default 100), channel?}.\n- 'cc': CC automation with smooth per-fugue interpolation. Fields: cc (0-127), points ([beat, value] pairs, values 0-127), interpolation? ('linear' default, 'exp', 'log', 'none').\n- 'per_note_pitch_bend': MIDI 2.0 per-note bend on a SINGLE held note. Fields: note (0-127), points ([beat, semitones] or [beat, semitones, curve] tuples, semitones -64.0 to +64.0). Requires a concurrent 'notes' fugue holding the target note on the same channel.\n- 'per_note_pressure': MIDI 2.0 per-note pressure on a SINGLE held note. Fields: note (0-127), points ([beat, pressure] or [beat, pressure, curve] tuples, pressure 0.0-1.0). Same 'held note' requirement.\n\nPer-segment curves (per-note only): each point's optional third element is the curve used on the segment ARRIVING at that point (ignored on the first point). Valid: 'linear' (default), 'exp' (ease-in, accelerating), 'log' (ease-out, decelerating), 'none' (step).\n\nShared top-level fields (defaults across all fugues in the batch, per-fugue can override): duration_beats, quantize ('immediate'|'beat'|'bar'|'bars:N'), loop_mode ('once'|'forever'|N).\n\nTag + cancel_mode is how you update one part without disturbing others:\n  tag:'melody' + cancel_mode:'tag:melody' → replaces only the previous 'melody' fugue.\n\nNote fields accept names (preferred) or numbers: 'C4' (middle C, 60), 'F#3', 'Bb5', 'C-1' (lowest MIDI), or 0-127.\n\nWorked example — 4-bar phrase with bass, held melody note, filter sweep, and expressive bend:\n```json\n{\n  \"instance\": \"lead\",\n  \"duration_beats\": 4,\n  \"quantize\": \"bar\",\n  \"loop_mode\": \"forever\",\n  \"fugues\": [\n    {\"tag\":\"bass\",\"cancel_mode\":\"tag:bass\",\"type\":\"notes\",\"notes\":[\n      {\"beat\":0,\"note\":\"C2\",\"duration\":0.5},\n      {\"beat\":1,\"note\":\"C2\",\"duration\":0.5},\n      {\"beat\":2,\"note\":\"G2\",\"duration\":0.5},\n      {\"beat\":3,\"note\":\"C2\",\"duration\":0.5}\n    ]},\n    {\"tag\":\"melody\",\"cancel_mode\":\"tag:melody\",\"type\":\"notes\",\"notes\":[\n      {\"beat\":0,\"note\":\"C4\",\"duration\":4,\"velocity\":90}\n    ]},\n    {\"tag\":\"filter\",\"cancel_mode\":\"tag:filter\",\"type\":\"cc\",\"cc\":74,\n     \"points\":[[0,30],[2,110],[4,30]],\"interpolation\":\"exp\"},\n    {\"tag\":\"bend\",\"cancel_mode\":\"tag:bend\",\"type\":\"per_note_pitch_bend\",\"note\":\"C4\",\n     \"points\":[[0,0],[2,2,\"exp\"],[4,0,\"log\"]]}\n  ]\n}\n```\nTo swap just the melody later, queue a fugue with tag:'melody' and cancel_mode:'tag:melody'. Bass, filter, and bend keep playing.")]
     fn queue_fugue(&self, Parameters(req): Parameters<QueueFugueRequest>) -> Result<CallToolResult, McpError> {
         // Get shared defaults
         let default_quantize_str = req.data.quantize.as_deref().unwrap_or("bar");
@@ -430,7 +430,7 @@ impl DropletsMcp {
                             note.beat,
                             FugueEvent::NoteOn {
                                 channel,
-                                note: note.note.min(127),
+                                note: note.note.0.min(127),
                                 velocity,
                             },
                         ));
@@ -440,7 +440,7 @@ impl DropletsMcp {
                             note.beat + note.duration,
                             FugueEvent::NoteOff {
                                 channel,
-                                note: note.note.min(127),
+                                note: note.note.0.min(127),
                             },
                         ));
                     }
@@ -463,7 +463,7 @@ impl DropletsMcp {
                     // Per-note has no audio-thread ramp path yet, so expand
                     // per-segment curves into dense discrete events at parse
                     // time. The scheduler dispatches each as an Instant event.
-                    let n = (*note).min(127);
+                    let n = note.0.min(127);
                     expand_per_note_points(points, |beat, value| {
                         let semitones = (value as f32).clamp(-64.0, 64.0);
                         events.push(TimedFugueEvent::new(
@@ -475,7 +475,7 @@ impl DropletsMcp {
                     });
                 }
                 FugueContent::PerNotePressure { note, points } => {
-                    let n = (*note).min(127);
+                    let n = note.0.min(127);
                     expand_per_note_points(points, |beat, value| {
                         let pressure = (value as f32).clamp(0.0, 1.0);
                         events.push(TimedFugueEvent::new(
