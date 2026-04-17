@@ -14,7 +14,7 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 
 | Done | Pri | # | Feature | Complexity | Impact |
 |------|-----|---|---------|------------|--------|
-| [🔄] | P0 | 1 | Per-note expressivity inside fugues | M | High — reshapes schema; must land before docs/prompt |
+| [x] | P0 | 1 | Per-note expressivity inside fugues | M | High — reshapes schema; must land before docs/prompt |
 | [ ] | P0 | 2 | Rewrite `ServerInfo::instructions` system prompt | S | Very High — shapes every LLM call |
 | [ ] | P0 | 3 | Add a worked example to `queue_fugue` tool description | S | Very High — LLMs imitate examples |
 | [ ] | P0 | 4 | Rewrite FUGUE.md to match the shipping compact schema | S | High — live demo reference |
@@ -44,10 +44,15 @@ Everything here is about the **LLM's view of the system** and **demo-day reliabi
 
 **Solution:** Add two `FugueContent` variants: `PerNotePitchBend { note, points: [[beat, semitones]] }` and `PerNotePressure { note, points: [[beat, value_0_1]] }`. The fugue scheduler already handles per-note events via the one-shot dispatch path, so the audio-thread side is mostly reuse. This must land **before** features 2-4 so the system prompt, worked example, and FUGUE.md can describe the final schema in one pass.
 
-**Status (2026-04-17):**
-- ✅ Per-note variants added to `FugueContent` + parsing + tool-description stub (discrete events, no interpolation yet).
-- ✅ `InterpolationMode` extended with `Exp` / `Log` via unified `apply_curve` — both CC interpolator sites (`interpolate_value`, `output_cc_ramp`) route through it; any new curve added to `apply_curve` propagates automatically. Today this benefits CC ramps only.
-- 🔄 **Pending**: `interpolation` field on per-note variants + server-side discrete-event expansion at ~32 events/beat so LLMs can write two-point curves with `"linear"` / `"exp"` / `"log"`. Audio-thread ramps for per-note are tracked as Phase 02 Feature 10.
+**Status (2026-04-17 — shipped):**
+- ✅ Per-note variants added to `FugueContent` + parsing.
+- ✅ `InterpolationMode` extended with `Exp` / `Log` via unified `apply_curve`. Both CC interpolator sites (`interpolate_value`, `output_cc_ramp`) route through it — adding a new curve to `apply_curve` propagates to every site automatically.
+- ✅ Per-note trajectories use flat `[beat, value]` / `[beat, value, curve]` tuples with per-segment curves (custom `Deserialize` + manual `JsonSchema`), expanded server-side into discrete events at ~32/beat. LLMs write e.g. `[[0,0],[2,1,"exp"],[4,0,"log"]]` for a crescendo-then-release on a single held note.
+- ✅ CC's fugue-level interpolation parser now shares `parse_interpolation_mode` with per-note, which fixes an adjacent bug where CC `"exp"` / `"log"` silently fell through to Linear.
+- ✅ Request types + parsing moved out of `server.rs` into `src/mcp/requests.rs` (server.rs is now ~50% of its former size and focused on MCP tool routing).
+- ✅ Extensive test coverage: 32 tests on the custom deserializer, `parse_interpolation_mode`, and `expand_per_note_points` (including multi-segment curve composition, zero-length segments, unknown-curve fallback, JSON forward-compat with extra tail elements).
+
+Audio-thread ramps for per-note remain tracked as Phase 02 Feature 10 — sample-accurate smoothness replacing the current server-side expansion.
 
 **Files:** [src/mcp/server.rs](../../../src/mcp/server.rs) (FugueContent enum + parsing), [src/fugue/types.rs](../../../src/fugue/types.rs) (InterpolationMode + apply_curve), [src/fugue/fugue.rs](../../../src/fugue/fugue.rs) + [src/midi/mod.rs](../../../src/midi/mod.rs) (interpolator sites).
 
