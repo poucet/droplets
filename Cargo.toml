@@ -2,9 +2,18 @@
 name = "simply_droplets"
 version = "0.2.0"
 edition = "2021"
-authors = ["Simply Chris"]
+authors = ["Christophe Poucet <simply.chris.rl@gmail.com>"]
 description = "An AI powered VST plugin that can control any parameter in your DAW."
+homepage = "https://www.simplychris.ai"
 license = "MIT"
+
+# Display name + bundle identifiers used by xtask when producing CLAP/VST3
+# bundles. Kept here (not in a separate bundler.toml) so name/version live
+# in one place and can be read via CARGO_PKG_* or parsed from Cargo.toml.
+[package.metadata.bundle]
+display_name = "Simply Droplets"
+clap_bundle_id = "com.simply-chris.simply-droplets"
+vst3_bundle_id = "com.simply-chris.simply-droplets.vst3"
 
 # Build dynamic library for VST/CLAP plugin
 # Also includes "rlib" for standalone binary to link against

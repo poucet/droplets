@@ -4,6 +4,8 @@
 
 Simply Droplets is a VST3/CLAP plugin that bridges AI assistants and your DAW. Ask Claude to play a melody, create a drum pattern, or automate your synth — and hear it instantly in your project.
 
+Built by [**Christophe Poucet**](https://www.simplychris.ai) (Simply Chris).
+
 ---
 
 ## ✨ What Can It Do?
@@ -200,21 +202,36 @@ Turn AI compositions into DAW clips:
 ### Prerequisites
 - 🦀 Rust 1.70+
 - 📦 Node.js 18+
+- 🎛️ For VST3: a [VST3 SDK](https://github.com/steinbergmedia/vst3sdk) checkout, with `CLAP_WRAPPER_VST3_SDK` pointing at it
 
-### Build Steps
+### Build + Install (macOS, Linux, Windows)
 
 ```bash
-# Clone
 git clone https://github.com/poucet/simply-droplets.git
 cd simply-droplets
 
-# Build frontend
-cd frontend && npm install && npm run build && cd ..
+# Build bundles for your platform into target/bundle/
+cargo xtask build
 
-# Bundle plugin
-cargo xtask bundle --release
+# …or build AND copy into your DAW's user plugin folders in one step
+cargo xtask install
+```
 
-# Find your plugins in target/bundle/
+`cargo xtask install` detects your OS and copies the CLAP/VST3 bundles to the
+right per-user location:
+
+| Platform | CLAP | VST3 |
+|----------|------|------|
+| 🍎 macOS | `~/Library/Audio/Plug-Ins/CLAP/` | `~/Library/Audio/Plug-Ins/VST3/` |
+| 🐧 Linux | `~/.clap/` | `~/.vst3/` |
+| 🪟 Windows | `%LOCALAPPDATA%\Programs\Common\CLAP\` | `%LOCALAPPDATA%\Programs\Common\VST3\` |
+
+Useful flags:
+
+```bash
+cargo xtask build --format clap            # skip VST3 if you don't have the SDK
+cargo xtask build --profile debug --dev-gui # dev build with WebView devtools
+cargo xtask install --skip-build           # just copy existing bundles
 ```
 
 ---
@@ -299,5 +316,5 @@ Built with love using:
 ---
 
 <p align="center">
-  Made with 🎵 by <a href="http://www.simplychris.ai">Simply Chris</a>
+  Made with 🎵 by <a href="https://www.simplychris.ai">Christophe Poucet</a> (Simply Chris)
 </p>
