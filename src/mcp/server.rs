@@ -15,12 +15,10 @@ use rmcp::{
     service::RequestContext,
 };
 
-use super::bridge::{CcBridge, CcMessage, PerNoteExpressionMessage};
+use super::bridge::CcBridge;
 use super::requests::{
     CancelFugueRequest, CancelFuguesByTagRequest, FugueContent, GetSlotsRequest,
-    PerNoteControllerRequest, PerNoteManagementRequest, PerNotePitchBendRequest,
-    PerNotePressureRequest, QueueFugueRequest, RenameInstanceRequest, RenameSlotRequest,
-    SendCcRequest, SetParamRequest,
+    QueueFugueRequest, RenameInstanceRequest, RenameSlotRequest, SetParamRequest,
     emit_cc_lane, emit_notes, emit_per_note_pitch_bend, emit_per_note_pressure,
     parse_interpolation_mode,
 };
@@ -68,27 +66,8 @@ fn build_instructions() -> String {
 
 #[tool_router]
 impl DropletsMcp {
-    /// Send a MIDI CC message through a plugin instance.
-    #[tool(description = "Send a MIDI CC message through a Simply Droplets plugin instance. The plugin outputs MIDI CC that your DAW can route to control any other plugin's parameters. Use 'default' for instance to target the first available plugin.")]
-    fn send_cc(&self, Parameters(req): Parameters<SendCcRequest>) -> Result<CallToolResult, McpError> {
-        let msg = CcMessage::new(
-            req.data.channel.saturating_sub(1).min(15),
-            req.data.cc.min(127),
-            req.data.value.min(127),
-        );
-
-        let result = match CcBridge::send(&req.instance, msg) {
-            Ok(()) => format!(
-                "Sent CC{} = {} on channel {} via instance '{}'",
-                req.data.cc, req.data.value, req.data.channel, req.instance
-            ),
-            Err(e) => format!("Error: {}", e),
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
-    }
-
     /// List all connected Simply Droplets plugin instances.
-    #[tool(description = "List all connected Simply Droplets plugin instances. Returns the names that can be used with send_cc.")]
+    #[tool(description = "List all connected Simply Droplets plugin instances. Returns the names that can be used to target a specific instance when queueing fugues.")]
     fn list_instances(&self) -> Result<CallToolResult, McpError> {
         let instances = CcBridge::list_instances();
 
@@ -198,117 +177,6 @@ impl DropletsMcp {
                     format!("Parameter slots on '{}':\n{}", req.instance, formatted.join("\n"))
                 }
             }
-            Err(e) => format!("Error: {}", e),
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
-    }
-
-    // =========================================================================
-    // MIDI 2.0 Per-Note Expression Tools
-    // =========================================================================
-
-    /// Send per-note pitch bend (MIDI 2.0 only).
-    #[tool(description = "Send MIDI 2.0 per-note pitch bend. Unlike channel pitch bend, this affects only a specific note that is currently playing. Range is -64 to +64 semitones. Requires MIDI 2.0 compatible host/instrument.")]
-    fn send_per_note_pitch_bend(&self, Parameters(req): Parameters<PerNotePitchBendRequest>) -> Result<CallToolResult, McpError> {
-        let msg = PerNoteExpressionMessage::pitch_bend_semitones(
-            req.data.channel.saturating_sub(1).min(15),
-            req.data.note.0.min(127),
-            req.data.semitones.clamp(-64.0, 64.0),
-        );
-
-        let result = match CcBridge::send_per_note_expression(&req.instance, msg) {
-            Ok(()) => format!(
-                "Sent per-note pitch bend {:.2} semitones on note {} ch{} via '{}'",
-                req.data.semitones, req.data.note, req.data.channel, req.instance
-            ),
-            Err(e) => format!("Error: {}", e),
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
-    }
-
-    /// Send per-note pressure/aftertouch (MIDI 2.0 only).
-    #[tool(description = "Send MIDI 2.0 per-note pressure (polyphonic aftertouch). Unlike channel aftertouch, this affects only a specific note. Use 0.0-1.0 for pressure intensity. Requires MIDI 2.0 compatible host/instrument.")]
-    fn send_per_note_pressure(&self, Parameters(req): Parameters<PerNotePressureRequest>) -> Result<CallToolResult, McpError> {
-        let msg = PerNoteExpressionMessage::pressure_normalized(
-            req.data.channel.saturating_sub(1).min(15),
-            req.data.note.0.min(127),
-            req.data.pressure.clamp(0.0, 1.0),
-        );
-
-        let result = match CcBridge::send_per_note_expression(&req.instance, msg) {
-            Ok(()) => format!(
-                "Sent per-note pressure {:.2} on note {} ch{} via '{}'",
-                req.data.pressure, req.data.note, req.data.channel, req.instance
-            ),
-            Err(e) => format!("Error: {}", e),
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
-    }
-
-    /// Send per-note registered controller (MIDI 2.0 only).
-    #[tool(description = "Send MIDI 2.0 registered per-note controller. These are standardized controllers that apply to individual notes. Index 7 is per-note pressure (use send_per_note_pressure instead). Requires MIDI 2.0 compatible host/instrument.")]
-    fn send_per_note_registered_controller(&self, Parameters(req): Parameters<PerNoteControllerRequest>) -> Result<CallToolResult, McpError> {
-        let value_32bit = (req.data.value.clamp(0.0, 1.0) * (u32::MAX as f32)) as u32;
-        let msg = PerNoteExpressionMessage::registered_controller(
-            req.data.channel.saturating_sub(1).min(15),
-            req.data.note.0.min(127),
-            req.data.index,
-            value_32bit,
-        );
-
-        let result = match CcBridge::send_per_note_expression(&req.instance, msg) {
-            Ok(()) => format!(
-                "Sent per-note registered controller {} = {:.2} on note {} ch{} via '{}'",
-                req.data.index, req.data.value, req.data.note, req.data.channel, req.instance
-            ),
-            Err(e) => format!("Error: {}", e),
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
-    }
-
-    /// Send per-note assignable controller (MIDI 2.0 only).
-    #[tool(description = "Send MIDI 2.0 assignable per-note controller. These are custom controllers that apply to individual notes, similar to registered controllers but vendor/implementation specific. Requires MIDI 2.0 compatible host/instrument.")]
-    fn send_per_note_assignable_controller(&self, Parameters(req): Parameters<PerNoteControllerRequest>) -> Result<CallToolResult, McpError> {
-        let value_32bit = (req.data.value.clamp(0.0, 1.0) * (u32::MAX as f32)) as u32;
-        let msg = PerNoteExpressionMessage::assignable_controller(
-            req.data.channel.saturating_sub(1).min(15),
-            req.data.note.0.min(127),
-            req.data.index,
-            value_32bit,
-        );
-
-        let result = match CcBridge::send_per_note_expression(&req.instance, msg) {
-            Ok(()) => format!(
-                "Sent per-note assignable controller {} = {:.2} on note {} ch{} via '{}'",
-                req.data.index, req.data.value, req.data.note, req.data.channel, req.instance
-            ),
-            Err(e) => format!("Error: {}", e),
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
-    }
-
-    /// Send per-note management message (MIDI 2.0 only).
-    #[tool(description = "Send MIDI 2.0 per-note management message. Use detach=true to separate this note from its Note On (for legato/portamento). Use reset=true to reset all controllers on this note. Requires MIDI 2.0 compatible host/instrument.")]
-    fn send_per_note_management(&self, Parameters(req): Parameters<PerNoteManagementRequest>) -> Result<CallToolResult, McpError> {
-        let msg = PerNoteExpressionMessage::management(
-            req.data.channel.saturating_sub(1).min(15),
-            req.data.note.0.min(127),
-            req.data.detach,
-            req.data.reset,
-        );
-
-        let flags_desc = match (req.data.detach, req.data.reset) {
-            (true, true) => "detach+reset",
-            (true, false) => "detach",
-            (false, true) => "reset",
-            (false, false) => "no-op",
-        };
-
-        let result = match CcBridge::send_per_note_expression(&req.instance, msg) {
-            Ok(()) => format!(
-                "Sent per-note management ({}) on note {} ch{} via '{}'",
-                flags_desc, req.data.note, req.data.channel, req.instance
-            ),
             Err(e) => format!("Error: {}", e),
         };
         Ok(CallToolResult::success(vec![Content::text(result)]))

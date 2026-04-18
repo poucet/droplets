@@ -140,12 +140,9 @@ AI can use these tools to control your music:
 ### 🎛️ Control
 | Tool | Description |
 |------|-------------|
-| `send_cc` | One-shot MIDI CC message |
 | `set_param` | Set automatable parameter slot |
-| `send_per_note_pitch_bend` | Per-note pitch bend (MIDI 2.0) |
-| `send_per_note_pressure` | Polyphonic aftertouch (MIDI 2.0) |
 
-> **Notes are fugue-only by design.** LLM round-trip latency is too high for musically-timed single notes, so composition goes through `queue_fugue` — which schedules events on the audio thread with sample-accurate timing.
+> **MIDI is fugue-only by design.** LLM round-trip latency (~1–10s) is too high for musically-timed one-shot events — notes, CC, and MIDI 2.0 per-note expression all go through `queue_fugue`, which schedules events on the audio thread with sample-accurate timing. Use a composite fugue to bundle notes + CC automation + per-note pitch bend + pressure into one atomic musical moment.
 
 ### 🎼 Fugues
 | Tool | Description |

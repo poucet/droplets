@@ -118,8 +118,6 @@ notes:[{beat:0.00,note:"C3",duration:0.2,velocity:100},
 ## Other tools
 - `get_transport` — current {beat, tempo, playing, time_sig, loop bounds}; use before scheduling if you need to know where the playhead is.
 - `list_fugues` / `cancel_fugue` / `cancel_fugues_by_tag` / `clear_fugues`
-- `send_cc` — ONE-SHOT CC only, not for composition (use a fugue with `type:"cc"` instead)
-- `send_per_note_pitch_bend` / `send_per_note_pressure` — MIDI 2.0 expression (one-shot)
 - `set_param` / `rename_slot` / `list_slots` — parameter-slot automation
 - `get_activity` — recent MIDI event log (debugging)
 

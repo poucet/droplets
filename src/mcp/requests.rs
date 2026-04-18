@@ -194,27 +194,6 @@ pub struct InstanceRequest<T> {
 }
 
 // =============================================================================
-// MIDI message types (can be used standalone or in batches)
-// =============================================================================
-
-/// MIDI CC data
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct CcData {
-    /// MIDI channel (1-16, default: 1)
-    #[serde(default = "default_channel")]
-    #[schemars(description = "MIDI channel (1-16, default: 1)")]
-    pub channel: u8,
-
-    /// CC number (0-127)
-    #[schemars(description = "CC number (0-127)")]
-    pub cc: u8,
-
-    /// CC value (0-127)
-    #[schemars(description = "CC value (0-127)")]
-    pub value: u8,
-}
-
-// =============================================================================
 // Slot/parameter types
 // =============================================================================
 
@@ -240,88 +219,6 @@ pub struct RenameSlotData {
     /// New name for the slot (e.g., "Vital Filter Cutoff")
     #[schemars(description = "New name for the slot (e.g., 'Vital Filter Cutoff')")]
     pub name: String,
-}
-
-// =============================================================================
-// Per-note expression types (MIDI 2.0 only) — immediate (non-fugue) variants
-// =============================================================================
-
-/// Per-note pitch bend data (MIDI 2.0)
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct PerNotePitchBendData {
-    /// MIDI channel (1-16, default: 1)
-    #[serde(default = "default_channel")]
-    #[schemars(description = "MIDI channel (1-16, default: 1)")]
-    pub channel: u8,
-
-    /// MIDI note number to bend (0-127, where 60 = C4/middle C)
-    #[schemars(description = "MIDI note number to bend (0-127, where 60 = C4/middle C)")]
-    pub note: Note,
-
-    /// Pitch bend in semitones (-64.0 to +64.0, 0 = no bend)
-    #[schemars(description = "Pitch bend in semitones (-64.0 to +64.0, 0 = no bend)")]
-    pub semitones: f32,
-}
-
-/// Per-note pressure/aftertouch data (MIDI 2.0)
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct PerNotePressureData {
-    /// MIDI channel (1-16, default: 1)
-    #[serde(default = "default_channel")]
-    #[schemars(description = "MIDI channel (1-16, default: 1)")]
-    pub channel: u8,
-
-    /// MIDI note. Accepts name ('C4' = middle C = 60, 'F#3', 'Bb5') or number (0-127).
-    #[schemars(description = "MIDI note. Prefer name ('C4', 'F#3', 'Bb5') — also accepts number 0-127 (60 = middle C).")]
-    pub note: Note,
-
-    /// Pressure value (0.0-1.0 normalized)
-    #[schemars(description = "Pressure value (0.0-1.0 normalized)")]
-    pub pressure: f32,
-}
-
-/// Per-note controller data (MIDI 2.0)
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct PerNoteControllerData {
-    /// MIDI channel (1-16, default: 1)
-    #[serde(default = "default_channel")]
-    #[schemars(description = "MIDI channel (1-16, default: 1)")]
-    pub channel: u8,
-
-    /// MIDI note. Accepts name ('C4' = middle C = 60, 'F#3', 'Bb5') or number (0-127).
-    #[schemars(description = "MIDI note. Prefer name ('C4', 'F#3', 'Bb5') — also accepts number 0-127 (60 = middle C).")]
-    pub note: Note,
-
-    /// Controller index (0-255)
-    #[schemars(description = "Controller index (0-255)")]
-    pub index: u8,
-
-    /// Controller value (0.0-1.0 normalized)
-    #[schemars(description = "Controller value (0.0-1.0 normalized)")]
-    pub value: f32,
-}
-
-/// Per-note management data (MIDI 2.0)
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct PerNoteManagementData {
-    /// MIDI channel (1-16, default: 1)
-    #[serde(default = "default_channel")]
-    #[schemars(description = "MIDI channel (1-16, default: 1)")]
-    pub channel: u8,
-
-    /// MIDI note. Accepts name ('C4' = middle C = 60, 'F#3', 'Bb5') or number (0-127).
-    #[schemars(description = "MIDI note. Prefer name ('C4', 'F#3', 'Bb5') — also accepts number 0-127 (60 = middle C).")]
-    pub note: Note,
-
-    /// Detach this note from prior note-on (default: false)
-    #[serde(default)]
-    #[schemars(description = "Detach this note from prior note-on")]
-    pub detach: bool,
-
-    /// Reset all controllers on this note (default: false)
-    #[serde(default)]
-    #[schemars(description = "Reset all controllers on this note")]
-    pub reset: bool,
 }
 
 // =============================================================================
@@ -658,15 +555,8 @@ pub struct GetSlotsRequest {
 // Type aliases for the MCP tool interface
 // =============================================================================
 
-pub type SendCcRequest = InstanceRequest<CcData>;
 pub type SetParamRequest = InstanceRequest<SetParamData>;
 pub type RenameSlotRequest = InstanceRequest<RenameSlotData>;
-
-// Per-note expression request types (MIDI 2.0)
-pub type PerNotePitchBendRequest = InstanceRequest<PerNotePitchBendData>;
-pub type PerNotePressureRequest = InstanceRequest<PerNotePressureData>;
-pub type PerNoteControllerRequest = InstanceRequest<PerNoteControllerData>;
-pub type PerNoteManagementRequest = InstanceRequest<PerNoteManagementData>;
 
 // Fugue request types
 pub type QueueFugueRequest = InstanceRequest<QueueFugueData>;
@@ -679,10 +569,6 @@ pub type CancelFuguesByTagRequest = InstanceRequest<CancelFuguesByTagData>;
 
 fn default_instance() -> String {
     "default".to_string()
-}
-
-fn default_channel() -> u8 {
-    1
 }
 
 fn default_note_velocity() -> Option<u8> {
