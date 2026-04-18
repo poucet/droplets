@@ -12,12 +12,20 @@ use ts_rs::TS;
 pub struct Settings {
     /// Path where exported MIDI files are saved
     pub export_path: PathBuf,
+
+    /// Free-form text appended to the MCP server's system instructions.
+    /// Lets the user hand the LLM per-setup context like "Instance 'lead'
+    /// drives a Vital synth, CC20 is wavetable position" or "stay in C major
+    /// for this session". Read at MCP session start; edit via the Settings UI.
+    #[serde(default)]
+    pub custom_instructions: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             export_path: default_export_path(),
+            custom_instructions: String::new(),
         }
     }
 }
@@ -255,6 +263,7 @@ pub struct SettingsResponse {
     pub export_path: String,
     pub mcp_port: u16,
     pub mcp_url: String,
+    pub custom_instructions: String,
 }
 
 impl SettingsResponse {
@@ -263,12 +272,15 @@ impl SettingsResponse {
             export_path: settings.export_path.to_string_lossy().to_string(),
             mcp_port,
             mcp_url: format!("http://localhost:{}/mcp", mcp_port),
+            custom_instructions: settings.custom_instructions.clone(),
         }
     }
 }
 
-/// Request type for updating settings
+/// Request type for updating settings. Any field `None` is left unchanged;
+/// distinguishes "don't touch" from "set to empty string."
 #[derive(Debug, Clone, Deserialize)]
 pub struct UpdateSettingsRequest {
     pub export_path: Option<String>,
+    pub custom_instructions: Option<String>,
 }

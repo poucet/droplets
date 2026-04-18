@@ -175,6 +175,7 @@ export interface SettingsResponse {
   export_path: string;
   mcp_port: number;
   mcp_url: string;
+  custom_instructions: string;
 }
 
 export async function getSettings(): Promise<SettingsResponse> {
@@ -183,6 +184,7 @@ export async function getSettings(): Promise<SettingsResponse> {
 
 export interface UpdateSettingsRequest {
   export_path?: string;
+  custom_instructions?: string;
 }
 
 export async function updateSettings(settings: UpdateSettingsRequest): Promise<OkResponse> {

@@ -49,6 +49,23 @@ impl Default for DropletsMcp {
     }
 }
 
+/// Build the system-instructions blob for this MCP session:
+/// base markdown (compile-time) + the user's custom text from the GUI
+/// Settings panel (runtime, if non-empty). Kept as a separate fn so the
+/// ServerHandler::get_info caller stays short and the assembly is one place.
+fn build_instructions() -> String {
+    const BASE: &str = include_str!("instructions.md");
+    let custom = crate::fugue::settings::get_settings().custom_instructions;
+    let trimmed = custom.trim();
+    if trimmed.is_empty() {
+        return BASE.to_string();
+    }
+    format!(
+        "{}\n\n## Custom context (set in Settings)\n\n{}\n",
+        BASE, trimmed
+    )
+}
+
 #[tool_router]
 impl DropletsMcp {
     /// Send a MIDI CC message through a plugin instance.
@@ -579,10 +596,12 @@ impl ServerHandler for DropletsMcp {
                 .enable_tools()
                 .build(),
             server_info: Implementation::from_build_env(),
-            // The MCP system prompt lives in instructions.md next to this file —
-            // edit there, not here. include_str! pulls it in at compile time so
-            // there's no runtime filesystem dependency.
-            instructions: Some(include_str!("instructions.md").to_string()),
+            // The MCP system prompt base lives in instructions.md next to this
+            // file — edit there, not here. If the user has set custom
+            // instructions in the GUI Settings panel, append them so the LLM
+            // gets per-setup context (synth CC mappings, stylistic constraints,
+            // etc.) without anyone having to rebuild.
+            instructions: Some(build_instructions()),
         }
     }
 

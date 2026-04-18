@@ -409,12 +409,16 @@ pub fn get_settings() -> SettingsResponse {
     SettingsResponse::new(&settings, crate::mcp::DEFAULT_MCP_PORT)
 }
 
-/// Update settings
+/// Update settings. Each field is Option<...> on the request; leaving a field
+/// out keeps the current value. Empty string explicitly clears the field.
 pub fn update_settings(req: UpdateSettingsRequest) -> Result<OkResponse, String> {
     let mut current = settings::get_settings();
 
     if let Some(path) = req.export_path {
         current.export_path = std::path::PathBuf::from(path);
+    }
+    if let Some(text) = req.custom_instructions {
+        current.custom_instructions = text;
     }
 
     settings::update_settings(current)?;

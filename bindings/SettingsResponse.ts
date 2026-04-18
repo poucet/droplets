@@ -3,4 +3,4 @@
 /**
  * API response type for settings
  */
-export type SettingsResponse = { export_path: string, mcp_port: number, mcp_url: string, };
+export type SettingsResponse = { export_path: string, mcp_port: number, mcp_url: string, custom_instructions: string, };
