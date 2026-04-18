@@ -65,13 +65,31 @@ Add Simply Droplets as a **MIDI effect** and route its output to your instrument
 
 ### 3️⃣ Connect Your AI
 
-Add the MCP server to Claude's config:
+Simply Droplets speaks MCP over **streamable HTTP** on `http://localhost:9999/mcp`. MCP clients that speak HTTP directly (e.g. Claude Code, Cursor) can use that URL as-is:
 
 ```json
 {
   "mcpServers": {
     "simply-droplets": {
       "url": "http://localhost:9999/mcp"
+    }
+  }
+}
+```
+
+**Claude Desktop is stdio-only** and does not support streamable HTTP. Bridge through [`mcp-remote`](https://www.npmjs.com/package/mcp-remote), passing `--allow-http` so it accepts the non-TLS loopback URL:
+
+```json
+{
+  "mcpServers": {
+    "simply-droplets": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "http://localhost:9999/mcp",
+        "--allow-http"
+      ]
     }
   }
 }
