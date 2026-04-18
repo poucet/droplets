@@ -15,12 +15,12 @@ use rmcp::{
     service::RequestContext,
 };
 
-use super::bridge::{CcBridge, CcMessage, NoteMessage, PerNoteExpressionMessage};
+use super::bridge::{CcBridge, CcMessage, PerNoteExpressionMessage};
 use super::requests::{
     CancelFugueRequest, CancelFuguesByTagRequest, FugueContent, GetSlotsRequest,
     PerNoteControllerRequest, PerNoteManagementRequest, PerNotePitchBendRequest,
     PerNotePressureRequest, QueueFugueRequest, RenameInstanceRequest, RenameSlotRequest,
-    SendCcRequest, SendNoteOffRequest, SendNoteOnHiresRequest, SendNoteOnRequest, SetParamRequest,
+    SendCcRequest, SetParamRequest,
     emit_cc_lane, emit_notes, emit_per_note_pitch_bend, emit_per_note_pressure,
     parse_interpolation_mode,
 };
@@ -198,66 +198,6 @@ impl DropletsMcp {
                     format!("Parameter slots on '{}':\n{}", req.instance, formatted.join("\n"))
                 }
             }
-            Err(e) => format!("Error: {}", e),
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
-    }
-
-    /// Send a MIDI Note On message through a plugin instance.
-    #[tool(description = "Send a MIDI Note On message through a Simply Droplets plugin instance. The plugin outputs MIDI notes that your DAW can route to trigger synths, samplers, or other instruments. Note 60 = C4 (middle C). Uses 7-bit velocity (0-127).")]
-    fn send_note_on(&self, Parameters(req): Parameters<SendNoteOnRequest>) -> Result<CallToolResult, McpError> {
-        let msg = NoteMessage::new(
-            req.data.channel.saturating_sub(1).min(15),
-            req.data.note.0.min(127),
-            req.data.velocity.clamp(1, 127),
-            true,
-        );
-
-        let result = match CcBridge::send_note(&req.instance, msg) {
-            Ok(()) => format!(
-                "Sent Note On {} vel={} on channel {} via instance '{}'",
-                req.data.note, req.data.velocity, req.data.channel, req.instance
-            ),
-            Err(e) => format!("Error: {}", e),
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
-    }
-
-    /// Send a MIDI 2.0 Note On with 16-bit high-resolution velocity.
-    #[tool(description = "Send a MIDI 2.0 Note On message with 16-bit velocity (0-65535) for high-resolution dynamics. Use this when you need finer control than standard 7-bit velocity provides. Note 60 = C4 (middle C).")]
-    fn send_note_on_hires(&self, Parameters(req): Parameters<SendNoteOnHiresRequest>) -> Result<CallToolResult, McpError> {
-        let msg = NoteMessage::new_hires(
-            req.data.channel.saturating_sub(1).min(15),
-            req.data.note.0.min(127),
-            req.data.velocity.max(1), // Ensure at least 1 for Note On
-            true,
-        );
-
-        let result = match CcBridge::send_note(&req.instance, msg) {
-            Ok(()) => format!(
-                "Sent MIDI 2.0 Note On {} vel={} (16-bit) on channel {} via instance '{}'",
-                req.data.note, req.data.velocity, req.data.channel, req.instance
-            ),
-            Err(e) => format!("Error: {}", e),
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
-    }
-
-    /// Send a MIDI Note Off message through a plugin instance.
-    #[tool(description = "Send a MIDI Note Off message through a Simply Droplets plugin instance. Use this to release a note that was previously triggered with send_note_on.")]
-    fn send_note_off(&self, Parameters(req): Parameters<SendNoteOffRequest>) -> Result<CallToolResult, McpError> {
-        let msg = NoteMessage::new(
-            req.data.channel.saturating_sub(1).min(15),
-            req.data.note.0.min(127),
-            req.data.velocity.min(127),
-            false,
-        );
-
-        let result = match CcBridge::send_note(&req.instance, msg) {
-            Ok(()) => format!(
-                "Sent Note Off {} on channel {} via instance '{}'",
-                req.data.note, req.data.channel, req.instance
-            ),
             Err(e) => format!("Error: {}", e),
         };
         Ok(CallToolResult::success(vec![Content::text(result)]))

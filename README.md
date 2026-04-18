@@ -101,16 +101,33 @@ Or get fancy:
 
 ### Compact Format
 
-Fugues use a simple, efficient format:
+Fugues use a compact JSON schema designed for LLM token efficiency. Each fugue is a typed block — `notes`, `cc`, `per_note_pitch_bend`, `per_note_pressure`, or a `composite` that bundles several together:
 
-```
-note_on@0:60,100 | note_off@1:60 | cc@0.5:1,64
+```json
+{
+  "fugues": [
+    {
+      "type": "notes",
+      "tag": "melody",
+      "notes": [
+        { "beat": 0, "note": "C4", "duration": 1, "velocity": 100 },
+        { "beat": 1, "note": "E4", "duration": 1 },
+        { "beat": 2, "note": "G4", "duration": 2 }
+      ]
+    },
+    {
+      "type": "cc",
+      "cc": 74,
+      "points": [[0, 20], [4, 100]],
+      "interpolation": "exp"
+    }
+  ],
+  "quantize": "bar",
+  "loop_mode": "forever"
+}
 ```
 
-This plays:
-- Note 60 (middle C) at beat 0 with velocity 100
-- Releases it at beat 1
-- Sets CC1 to 64 at beat 0.5
+Notes auto-generate their own note-offs at `beat + duration`. CC points interpolate smoothly on the audio thread.
 
 ---
 
@@ -118,20 +135,15 @@ This plays:
 
 AI can use these tools to control your music:
 
-### 🎹 Notes
-| Tool | Description |
-|------|-------------|
-| `send_note_on` | Trigger a MIDI note |
-| `send_note_off` | Release a MIDI note |
-| `send_note_on_hires` | 16-bit velocity (MIDI 2.0) |
-
 ### 🎛️ Control
 | Tool | Description |
 |------|-------------|
-| `send_cc` | Send MIDI CC message |
+| `send_cc` | One-shot MIDI CC message |
 | `set_param` | Set automatable parameter slot |
 | `send_per_note_pitch_bend` | Per-note pitch bend (MIDI 2.0) |
 | `send_per_note_pressure` | Polyphonic aftertouch (MIDI 2.0) |
+
+> **Notes are fugue-only by design.** LLM round-trip latency is too high for musically-timed single notes, so composition goes through `queue_fugue` — which schedules events on the audio thread with sample-accurate timing.
 
 ### 🎼 Fugues
 | Tool | Description |

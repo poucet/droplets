@@ -43,7 +43,7 @@ fn send_standalone_midi(conn: &Arc<Mutex<Option<MidiOutputConnection>>>, msg: &M
 ///    plenty of buffers to drain.
 /// 2. A MIDI panic (CC 123 = All Notes Off, CC 120 = All Sound Off) on
 ///    every channel — covers notes not tracked by fugues, e.g. piano-
-///    keyboard presses from the UI or MCP `send_note_on` one-shots.
+///    keyboard presses from the UI.
 fn shutdown_midi(conn: &Arc<Mutex<Option<MidiOutputConnection>>>, instance_id: &str) {
     let _ = simply_droplets::fugue::FugueBridge::clear_all(instance_id);
     thread::sleep(Duration::from_millis(80));

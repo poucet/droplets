@@ -4,7 +4,7 @@ The Fugue system lets AI assistants queue pre-composed musical sequences for tra
 
 ## Why Fugues?
 
-LLMs are slow (~1–10 seconds per response), but music needs precise timing. Issuing per-event MCP commands like `send_note_on` from an LLM produces unpredictable latency and sloppy phrasing.
+LLMs are slow (~1–10 seconds per response), but music needs precise timing. Issuing per-event MCP commands from an LLM produces unpredictable latency and sloppy phrasing — that's why the only note-level primitive Droplets exposes is the fugue.
 
 **Fugues solve this by:**
 

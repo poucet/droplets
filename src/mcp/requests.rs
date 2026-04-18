@@ -214,60 +214,6 @@ pub struct CcData {
     pub value: u8,
 }
 
-/// MIDI Note On data (7-bit velocity)
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct NoteOnData {
-    /// MIDI channel (1-16, default: 1)
-    #[serde(default = "default_channel")]
-    #[schemars(description = "MIDI channel (1-16, default: 1)")]
-    pub channel: u8,
-
-    /// MIDI note. Accepts name ('C4' = middle C = 60, 'F#3', 'Bb5') or number (0-127).
-    #[schemars(description = "MIDI note. Prefer name ('C4', 'F#3', 'Bb5') — also accepts number 0-127 (60 = middle C).")]
-    pub note: Note,
-
-    /// Note velocity (1-127, default: 100)
-    #[serde(default = "default_velocity")]
-    #[schemars(description = "Note velocity (1-127, default: 100)")]
-    pub velocity: u8,
-}
-
-/// MIDI 2.0 Note On data with 16-bit velocity
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct NoteOnHiresData {
-    /// MIDI channel (1-16, default: 1)
-    #[serde(default = "default_channel")]
-    #[schemars(description = "MIDI channel (1-16, default: 1)")]
-    pub channel: u8,
-
-    /// MIDI note. Accepts name ('C4' = middle C = 60, 'F#3', 'Bb5') or number (0-127).
-    #[schemars(description = "MIDI note. Prefer name ('C4', 'F#3', 'Bb5') — also accepts number 0-127 (60 = middle C).")]
-    pub note: Note,
-
-    /// 16-bit velocity (1-65535, default: 32768). MIDI 2.0 high-resolution.
-    #[serde(default = "default_velocity_16bit")]
-    #[schemars(description = "16-bit velocity (1-65535, default: 32768). MIDI 2.0 high-resolution.")]
-    pub velocity: u16,
-}
-
-/// MIDI Note Off data
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct NoteOffData {
-    /// MIDI channel (1-16, default: 1)
-    #[serde(default = "default_channel")]
-    #[schemars(description = "MIDI channel (1-16, default: 1)")]
-    pub channel: u8,
-
-    /// MIDI note. Accepts name ('C4' = middle C = 60, 'F#3', 'Bb5') or number (0-127).
-    #[schemars(description = "MIDI note. Prefer name ('C4', 'F#3', 'Bb5') — also accepts number 0-127 (60 = middle C).")]
-    pub note: Note,
-
-    /// Release velocity (0-127, default: 0)
-    #[serde(default)]
-    #[schemars(description = "Release velocity (0-127, default: 0)")]
-    pub velocity: u8,
-}
-
 // =============================================================================
 // Slot/parameter types
 // =============================================================================
@@ -713,9 +659,6 @@ pub struct GetSlotsRequest {
 // =============================================================================
 
 pub type SendCcRequest = InstanceRequest<CcData>;
-pub type SendNoteOnRequest = InstanceRequest<NoteOnData>;
-pub type SendNoteOnHiresRequest = InstanceRequest<NoteOnHiresData>;
-pub type SendNoteOffRequest = InstanceRequest<NoteOffData>;
 pub type SetParamRequest = InstanceRequest<SetParamData>;
 pub type RenameSlotRequest = InstanceRequest<RenameSlotData>;
 
@@ -740,14 +683,6 @@ fn default_instance() -> String {
 
 fn default_channel() -> u8 {
     1
-}
-
-fn default_velocity() -> u8 {
-    100
-}
-
-fn default_velocity_16bit() -> u16 {
-    32768 // Mid-point of 16-bit range
 }
 
 fn default_note_velocity() -> Option<u8> {
