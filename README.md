@@ -51,7 +51,7 @@ Built by [**Christophe Poucet**](https://www.simplychris.ai) (Simply Chris).
 
 ### 1️⃣ Install the Plugin
 
-Download from [Releases](https://github.com/simply-chris/simply-droplets/releases) and copy to your plugin folder:
+Build from source (see [Building from Source](#-building-from-source) below) and run `cargo xtask install` — it copies the plugin to the right location automatically.
 
 | Platform | VST3 Location | CLAP Location |
 |----------|---------------|---------------|
@@ -222,7 +222,7 @@ Turn AI compositions into DAW clips:
 ### Build + Install (macOS, Linux, Windows)
 
 ```bash
-git clone https://github.com/poucet/simply-droplets.git
+git clone https://github.com/poucet/droplets.git
 cd simply-droplets
 
 # Build bundles for your platform into target/bundle/
