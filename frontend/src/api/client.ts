@@ -71,6 +71,10 @@ async function apiFetch<T>(path: string, instance = 'default'): Promise<T> {
   return response.json();
 }
 
+export async function getSelf(): Promise<{ id: string }> {
+  return apiFetch<{ id: string }>('/self');
+}
+
 export async function getInstances(): Promise<InstancesResponse> {
   return apiFetch<InstancesResponse>('/instances');
 }

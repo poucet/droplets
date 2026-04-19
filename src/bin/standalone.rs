@@ -317,7 +317,7 @@ fn main() {
     };
 
     // Build webview with shared configuration (same as plugin GUI)
-    let config = WebViewConfig::standalone().with_ipc_sender(ipc_sender);
+    let config = WebViewConfig::plugin(ipc_sender, instance_id);
     let builder = configure_webview(WebViewBuilder::new(), Arc::clone(&params_inst), config);
 
     let webview = match builder.build(&window) {

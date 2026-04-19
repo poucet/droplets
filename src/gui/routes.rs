@@ -7,28 +7,25 @@ use crate::params::DropletParams;
 use super::api;
 
 /// Route an API request to the appropriate handler
-/// Instance is determined from the plugin params (always "default" for wry context)
-pub fn handle_request(path: &str, method: &str, body: &[u8], params: &Arc<DropletParams>) -> String {
-    // In wry context, we use "default" instance since we're inside the plugin
-    let instance = "default";
-
+pub fn handle_request(path: &str, method: &str, body: &[u8], params: &Arc<DropletParams>, instance_id: &str) -> String {
     match path {
-        "/slots" => handle_slots(instance),
+        "/self" => handle_self(instance_id),
+        "/slots" => handle_slots(instance_id),
         "/activity" => handle_activity(),
-        "/fugues" => handle_fugues(instance),
-        "/transport" => handle_transport(instance),
+        "/fugues" => handle_fugues(instance_id),
+        "/transport" => handle_transport(instance_id),
         "/instances" => handle_instances(),
-        "/cancel_learn" => handle_cancel_learn(instance, params),
-        "/clear_fugues" => handle_clear_fugues(instance),
+        "/cancel_learn" => handle_cancel_learn(instance_id, params),
+        "/clear_fugues" => handle_clear_fugues(instance_id),
         "/settings" if method == "GET" => handle_get_settings(),
         "/reveal_exports" => handle_reveal_exports(),
         // POST endpoints
-        "/queue_fugue" if method == "POST" => handle_queue_fugue(body, instance),
-        "/cancel_fugue" if method == "POST" => handle_cancel_fugue(body, instance),
-        "/cancel_fugues_by_tag" if method == "POST" => handle_cancel_fugues_by_tag(body, instance),
+        "/queue_fugue" if method == "POST" => handle_queue_fugue(body, instance_id),
+        "/cancel_fugue" if method == "POST" => handle_cancel_fugue(body, instance_id),
+        "/cancel_fugues_by_tag" if method == "POST" => handle_cancel_fugues_by_tag(body, instance_id),
         "/settings" if method == "POST" => handle_update_settings(body),
-        "/export_fugue" if method == "POST" => handle_export_fugue(body, instance),
-        _ => handle_dynamic_route(path, instance, params),
+        "/export_fugue" if method == "POST" => handle_export_fugue(body, instance_id),
+        _ => handle_dynamic_route(path, instance_id, params),
     }
 }
 
@@ -62,6 +59,10 @@ fn handle_dynamic_route(path: &str, instance: &str, params: &Arc<DropletParams>)
 // =============================================================================
 // Handler implementations using shared API
 // =============================================================================
+
+fn handle_self(instance_id: &str) -> String {
+    serde_json::json!({ "id": instance_id }).to_string()
+}
 
 fn handle_slots(instance: &str) -> String {
     match api::get_slots(instance) {

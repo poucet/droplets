@@ -24,36 +24,29 @@ pub struct WebViewConfig {
     pub dev_mode: bool,
     /// Optional IPC message sender for handling incoming IPC messages
     pub ipc_sender: Option<Sender<serde_json::Value>>,
-}
-
-impl Default for WebViewConfig {
-    fn default() -> Self {
-        Self {
-            enable_devtools: cfg!(debug_assertions) || cfg!(feature = "dev-gui"),
-            dev_mode: cfg!(debug_assertions) || cfg!(feature = "dev-gui"),
-            ipc_sender: None,
-        }
-    }
+    /// Instance ID of this plugin window (used by /self endpoint)
+    pub instance_id: String,
 }
 
 impl WebViewConfig {
     /// Create config for standalone mode
-    pub fn standalone() -> Self {
-        Self::default()
-    }
-
-    /// Create config for plugin mode with IPC sender
-    pub fn plugin(ipc_sender: Sender<serde_json::Value>) -> Self {
+    pub fn standalone(instance_id: impl Into<String>) -> Self {
         Self {
-            ipc_sender: Some(ipc_sender),
-            ..Self::default()
+            enable_devtools: cfg!(debug_assertions) || cfg!(feature = "dev-gui"),
+            dev_mode: cfg!(debug_assertions) || cfg!(feature = "dev-gui"),
+            ipc_sender: None,
+            instance_id: instance_id.into(),
         }
     }
 
-    /// Set IPC sender
-    pub fn with_ipc_sender(mut self, sender: Sender<serde_json::Value>) -> Self {
-        self.ipc_sender = Some(sender);
-        self
+    /// Create config for plugin mode with IPC sender
+    pub fn plugin(ipc_sender: Sender<serde_json::Value>, instance_id: impl Into<String>) -> Self {
+        Self {
+            enable_devtools: cfg!(debug_assertions) || cfg!(feature = "dev-gui"),
+            dev_mode: cfg!(debug_assertions) || cfg!(feature = "dev-gui"),
+            ipc_sender: Some(ipc_sender),
+            instance_id: instance_id.into(),
+        }
     }
 }
 
@@ -79,11 +72,13 @@ pub fn configure_webview<'a>(
     // Add custom protocol handler that serves both HTML content and API
     let params_for_protocol = Arc::clone(&params);
     let dev_mode = config.dev_mode;
+    let instance_id_for_protocol = config.instance_id.clone();
     let builder = builder
         .with_asynchronous_custom_protocol(
             APP_PROTOCOL.to_string(),
             move |_webview_id, request, responder| {
                 let params = Arc::clone(&params_for_protocol);
+                let instance_id = instance_id_for_protocol.clone();
                 let uri = request.uri();
                 let path = uri.path();
                 let method = request.method().as_str();
@@ -113,7 +108,7 @@ pub fn configure_webview<'a>(
                 }
 
                 // Handle API requests
-                let response_body = routes::handle_request(path, method, body, &params);
+                let response_body = routes::handle_request(path, method, body, &params, &instance_id);
                 let response = Response::builder()
                     .header(CONTENT_TYPE, "application/json")
                     .header("Access-Control-Allow-Origin", "*")

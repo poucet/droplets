@@ -6,6 +6,7 @@ import {
   getFugues,
   getTransport,
   getInstances,
+  getSelf,
   renameInstance,
   noteOn,
   noteOff,
@@ -43,6 +44,7 @@ const App: React.FC = () => {
   // Instance state
   const [instances, setInstances] = useState<InstanceInfo[]>([]);
   const [selectedInstance, setSelectedInstance] = useState<string>('default');
+  const [selfId, setSelfId] = useState<string | null>(null);
   const [editingInstanceName, setEditingInstanceName] = useState<string | null>(null);
 
   // Fugue state
@@ -226,6 +228,7 @@ const App: React.FC = () => {
   }, [selectedInstance, fetchInstances]);
 
   useEffect(() => {
+    getSelf().then(r => setSelfId(r.id)).catch(() => {});
     // Initial fetch
     fetchInstances();
     fetchSlots();
@@ -305,7 +308,9 @@ const App: React.FC = () => {
               className="instance-dropdown"
             >
               {instances.map((inst) => (
-                <option key={inst.id} value={inst.id}>{inst.name}</option>
+                <option key={inst.id} value={inst.id}>
+                  {inst.name}{inst.id === selfId ? ' ◀ this window' : ''}
+                </option>
               ))}
             </select>
           )}

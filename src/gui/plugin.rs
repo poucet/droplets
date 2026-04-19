@@ -117,7 +117,7 @@ impl<'a> PluginGuiImpl for DropletMainThread<'a> {
         crate::logger::log_gui_event("webview_building", "Starting WebView creation");
 
         // Use shared WebView configuration
-        let config = WebViewConfig::plugin(self.shared.ipc_sender.clone());
+        let config = WebViewConfig::plugin(self.shared.ipc_sender.clone(), self.shared.instance_id.clone());
         let builder = configure_webview(
             WebViewBuilder::new(),
             Arc::clone(&self.shared.params),
