@@ -310,11 +310,11 @@ const App: React.FC = () => {
             <select
               value={selectedInstance}
               onChange={(e) => setSelectedInstance(e.target.value)}
-              className="instance-dropdown"
+              className={`instance-dropdown${selectedInstance === selfId ? ' instance-dropdown--self' : ''}`}
             >
               {instances.map((inst) => (
                 <option key={inst.id} value={inst.id}>
-                  {inst.name}{inst.id === selfId ? ' ◀ this window' : ''}
+                  {inst.id === selfId ? '● ' : '○ '}{inst.name}
                 </option>
               ))}
             </select>

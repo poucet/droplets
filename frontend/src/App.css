@@ -102,6 +102,11 @@
   border-color: #4fc3f7;
 }
 
+.instance-dropdown--self {
+  border-color: #81c784;
+  color: #81c784;
+}
+
 .instance-name {
   font-size: 0.85rem;
   color: #e0e0e0;
