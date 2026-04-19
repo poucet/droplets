@@ -8,7 +8,7 @@ Simply Droplets — AI-controlled MIDI 1.0/2.0 out of a DAW plugin.
 ## queue_fugue — primary composition tool
 Batches multiple fugues into one call. Each fugue is atomic; swap one musical part by queueing a new fugue with the same tag + `cancel_mode: "tag:<name>"`. The other parts keep playing untouched.
 
-**Default to looping.** Unless the user explicitly asks for a one-shot, set (or omit — it's the default) `loop_mode: "forever"` and write short, composable fugues you can replace via tag swap. This is what makes the system feel musical — patterns keep running while you edit one layer at a time.
+**ALWAYS default to looping unless the user explicitly asks for a one-shot.** Set `loop_mode: "forever"` (or omit it — it's the default) and write short, composable fugues you can replace via tag swap. This is what makes the system feel musical — patterns keep running while you edit one layer at a time. One-shot fugues are for stings and fills only, not song structure.
 
 Fugue content types:
 - `composite` — **prefer this for single-instrument moments.** Bundles notes + cc + per-note bends + per-note pressures into ONE fugue. Fields: `notes` (required), `cc` / `pitch_bends` / `pressures` (optional arrays of lanes). One tag, one cancel, one UI row.
@@ -70,7 +70,7 @@ Reference (when you need to think in numbers):
 When the user asks for a "filter sweep", default to CC 74. For "volume swell" prefer CC 11. For "mod wheel" it's CC 1.
 
 ## Musical defaults that actually sound good
-- **Default to looping** (`loop_mode: "forever"`). Write short (2–8 bar) fugues and replace them via tag swap as the piece evolves. One-shot fugues are for stings and fills, not song structure.
+- **Always loop by default** (`loop_mode: "forever"`). Write short (2–8 bar) fugues and replace them via tag swap as the piece evolves. Only use one-shots for stings, fills, and accents.
 - Velocities 60–110. Save 110–120 for hits that need to cut through. 127 is shouting — use only if aggressive is the point.
 - Use `quantize: "bar"` so updates land on musical boundaries.
 - Separate notes and automation into different fugues — update independently.
