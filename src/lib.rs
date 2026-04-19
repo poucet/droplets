@@ -174,8 +174,9 @@ impl<'a> PluginStateImpl for DropletMainThread<'a> {
     fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
         use std::io::Write;
 
-        // Serialize slot state as JSON
-        let state: Vec<_> = (0..params::NUM_CC_SLOTS)
+        let id = &self.shared.instance_id;
+
+        let slots: Vec<_> = (0..params::NUM_CC_SLOTS)
             .map(|i| {
                 let slot = &self.shared.params.slots[i];
                 serde_json::json!({
@@ -186,6 +187,15 @@ impl<'a> PluginStateImpl for DropletMainThread<'a> {
                 })
             })
             .collect();
+
+        let instance_name = mcp::CcBridge::get_name(id);
+        let fugues = fugue::FugueBridge::get_definitions(id).unwrap_or_default();
+
+        let state = serde_json::json!({
+            "slots": slots,
+            "instance_name": instance_name,
+            "fugues": fugues,
+        });
 
         let json = serde_json::to_vec(&state).map_err(|_| PluginError::Message("serialize failed"))?;
         output.write_all(&json).map_err(|_| PluginError::Message("write failed"))?;
@@ -198,12 +208,18 @@ impl<'a> PluginStateImpl for DropletMainThread<'a> {
         let mut data = Vec::new();
         input.read_to_end(&mut data).map_err(|_| PluginError::Message("read failed"))?;
 
-        let state: Vec<serde_json::Value> = serde_json::from_slice(&data)
+        let state: serde_json::Value = serde_json::from_slice(&data)
             .map_err(|_| PluginError::Message("deserialize failed"))?;
 
-        for (i, slot_state) in state.iter().enumerate().take(params::NUM_CC_SLOTS) {
-            let slot = &self.shared.params.slots[i];
+        // Support legacy format (bare array of slots)
+        let slots = if state.is_array() {
+            state.as_array().unwrap().clone()
+        } else {
+            state.get("slots").and_then(|v| v.as_array()).cloned().unwrap_or_default()
+        };
 
+        for (i, slot_state) in slots.iter().enumerate().take(params::NUM_CC_SLOTS) {
+            let slot = &self.shared.params.slots[i];
             if let Some(cc) = slot_state.get("cc").and_then(|v| v.as_u64()) {
                 slot.set_cc(cc as u8);
             }
@@ -215,6 +231,20 @@ impl<'a> PluginStateImpl for DropletMainThread<'a> {
             }
             if let Some(value) = slot_state.get("value").and_then(|v| v.as_f64()) {
                 slot.value.store(value);
+            }
+        }
+
+        let id = self.shared.instance_id.clone();
+
+        if let Some(name) = state.get("instance_name").and_then(|v| v.as_str()) {
+            let _ = mcp::CcBridge::rename(&id, name);
+        }
+
+        if let Some(fugues) = state.get("fugues").and_then(|v| v.as_array()) {
+            for fugue_val in fugues {
+                if let Ok(def) = serde_json::from_value::<fugue::FugueDefinition>(fugue_val.clone()) {
+                    let _ = fugue::FugueBridge::queue(&id, def);
+                }
             }
         }
 

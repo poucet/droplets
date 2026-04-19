@@ -401,6 +401,11 @@ impl CcBridge {
             .collect()
     }
 
+    /// Get the current name for a given instance ID
+    pub fn get_name(id: &str) -> Option<String> {
+        registry().read().unwrap().get(id).map(|e| e.name.clone())
+    }
+
     /// Get the number of registered instances
     pub fn instance_count() -> usize {
         registry().read().unwrap().len()
