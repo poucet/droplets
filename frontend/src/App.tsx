@@ -67,14 +67,16 @@ const App: React.FC = () => {
     try {
       const response = await getInstances();
       setInstances(response.instances);
-      // Auto-select first instance if none selected
-      if (response.instances.length > 0 && selectedInstance === 'default') {
-        setSelectedInstance(response.instances[0].id);
-      }
+      setSelectedInstance(prev => {
+        if (prev === 'default' && response.instances.length > 0) {
+          return response.instances[0].id;
+        }
+        return prev;
+      });
     } catch (e) {
       console.error('Failed to fetch instances:', e);
     }
-  }, [selectedInstance]);
+  }, []);
 
   const fetchSlots = useCallback(async () => {
     try {
@@ -213,13 +215,13 @@ const App: React.FC = () => {
 
   // Handle instance rename
   const handleRenameInstance = useCallback(async (newName: string) => {
-    if (!newName.trim() || newName === selectedInstance) {
+    const trimmed = newName.trim();
+    if (!trimmed) {
       setEditingInstanceName(null);
       return;
     }
     try {
-      await renameInstance(selectedInstance, newName.trim());
-      setSelectedInstance(newName.trim());
+      await renameInstance(selectedInstance, trimmed);
       await fetchInstances();
     } catch (e) {
       console.error('Failed to rename instance:', e);
@@ -228,7 +230,10 @@ const App: React.FC = () => {
   }, [selectedInstance, fetchInstances]);
 
   useEffect(() => {
-    getSelf().then(r => setSelfId(r.id)).catch(() => {});
+    getSelf().then(r => {
+      setSelfId(r.id);
+      setSelectedInstance(r.id);
+    }).catch(() => {});
     // Initial fetch
     fetchInstances();
     fetchSlots();
@@ -330,10 +335,13 @@ const App: React.FC = () => {
           ) : (
             <span
               className="instance-name"
-              onClick={() => setEditingInstanceName(selectedInstance)}
+              onClick={() => {
+                const inst = instances.find(i => i.id === selectedInstance);
+                setEditingInstanceName(inst?.name ?? selectedInstance);
+              }}
               title="Click to rename instance"
             >
-              {selectedInstance}
+              {instances.find(i => i.id === selectedInstance)?.name ?? selectedInstance}
             </span>
           )}
         </div>
