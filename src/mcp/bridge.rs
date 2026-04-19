@@ -391,13 +391,13 @@ impl CcBridge {
         }
     }
 
-    /// List all registered instance names
-    pub fn list_instances() -> Vec<String> {
+    /// List all registered instances as (id, name) pairs
+    pub fn list_instances() -> Vec<(String, String)> {
         registry()
             .read()
             .unwrap()
-            .values()
-            .map(|e| e.name.clone())
+            .iter()
+            .map(|(id, e)| (id.clone(), e.name.clone()))
             .collect()
     }
 

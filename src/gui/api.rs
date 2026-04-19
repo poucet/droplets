@@ -183,10 +183,7 @@ pub fn get_fugue_by_id(instance: &str, id: u64) -> Result<FugueResponse, String>
 pub fn get_instances() -> InstancesResponse {
     let instances = CcBridge::list_instances()
         .into_iter()
-        .map(|name| InstanceInfo {
-            id: name.clone(),
-            name,
-        })
+        .map(|(id, name)| InstanceInfo { id, name })
         .collect();
     InstancesResponse { instances }
 }

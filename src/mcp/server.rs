@@ -74,8 +74,12 @@ impl DropletsMcp {
         let result = if instances.is_empty() {
             "No plugin instances connected. Load Simply Droplets in your DAW first.".to_string()
         } else {
-            serde_json::to_string_pretty(&instances)
-                .unwrap_or_else(|_| format!("{:?}", instances))
+            let objs: Vec<serde_json::Value> = instances
+                .into_iter()
+                .map(|(id, name)| serde_json::json!({ "id": id, "name": name }))
+                .collect();
+            serde_json::to_string_pretty(&objs)
+                .unwrap_or_else(|_| "error serializing instances".to_string())
         };
         Ok(CallToolResult::success(vec![Content::text(result)]))
     }

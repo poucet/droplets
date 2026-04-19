@@ -23,6 +23,7 @@ pub fn handle_request(path: &str, method: &str, body: &[u8], params: &Arc<Drople
         "/queue_fugue" if method == "POST" => handle_queue_fugue(body, instance_id),
         "/cancel_fugue" if method == "POST" => handle_cancel_fugue(body, instance_id),
         "/cancel_fugues_by_tag" if method == "POST" => handle_cancel_fugues_by_tag(body, instance_id),
+        "/rename_instance" if method == "POST" => handle_rename_instance(body),
         "/settings" if method == "POST" => handle_update_settings(body),
         "/export_fugue" if method == "POST" => handle_export_fugue(body, instance_id),
         _ => handle_dynamic_route(path, instance_id, params),
@@ -185,6 +186,18 @@ fn handle_fugue_by_id(id_str: &str, instance: &str) -> String {
 // =============================================================================
 // Fugue Queue/Cancel Handlers (POST)
 // =============================================================================
+
+fn handle_rename_instance(body: &[u8]) -> String {
+    #[derive(serde::Deserialize)]
+    struct Req { instance: String, name: String }
+    let Ok(req) = serde_json::from_slice::<Req>(body) else {
+        return serialize_error("invalid request body");
+    };
+    match api::rename_instance(&req.instance, &req.name) {
+        Ok(response) => serde_json::to_string(&response).unwrap_or_else(|_| serialize_error("serialize failed")),
+        Err(e) => serialize_error(&e),
+    }
+}
 
 fn handle_queue_fugue(body: &[u8], instance: &str) -> String {
     let Ok(req) = serde_json::from_slice::<api::QueueFugueRequest>(body) else {
