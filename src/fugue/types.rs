@@ -356,7 +356,7 @@ impl FugueDefinition {
 }
 
 /// Generate a unique fugue ID using time + random
-fn generate_fugue_id() -> u64 {
+pub fn generate_fugue_id() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let time_part = SystemTime::now()
         .duration_since(UNIX_EPOCH)
