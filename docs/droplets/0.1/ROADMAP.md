@@ -37,7 +37,7 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [ ] | P1 | 15 | Native drag-out of fugues → DAW clip (`.mid` file) | M | High — lets users hand AI-generated patterns to the DAW's piano roll for editing; removes the need for an in-app editor |
 | [ ] | P2 | 16 | Native drag-in of `.mid` → new fugue on an instance | M | Medium — round-trip workflow: edit in the DAW, drop back as a fugue |
 | [ ] | P3 | 18 | Pause instead of delete on tag replacement | M | Medium — lets the user walk back to a prior version of a part instead of losing it forever when the LLM queues a new fugue with the same tag |
-| [ ] | P2 | 19 | Unify GUI + MCP on a single port | S | Medium — halves port consumption per plugin process; simpler firewall / sandbox story. Merge the MCP `/mcp` + `/ws/controller` routes into the existing axum router on :9999 |
+| [ ] | P2 | 19 | Unify GUI + MCP on a single port with three top-level paths | S | Medium — halves port consumption per plugin process; simpler firewall / sandbox story. Primary port stays **9999** (agents already configured). Top-level layout collapses to just `/api` (HTTP calls), `/mcp` (MCP protocol), and `/ws` (WebSocket upgrade). Extension POSTs move under `/api/*`; the MCP-side bare `/project_layout` + `/rename_instance` go away. |
 | [ ] | P2 | 20 | Dynamic port selection on bind conflict | S | Medium — plugin currently dies if :9998/:9999 are in use. Walk a range, bind the first free port, surface the chosen port to the extension + UI |
 
 ---
@@ -335,21 +335,34 @@ See [TASKS.md](TASKS.md) for the detailed task breakdown and resolved design dec
 
 ---
 
-#### Feature 19: Unify GUI + MCP on a single port
+#### Feature 19: Unify GUI + MCP on a single port with three top-level paths
 
-**Problem:** Droplets currently binds **two** TCP ports per plugin process — `:9998` for the GUI HTTP server + WebSocket and `:9999` for the MCP server's `/mcp` + `/ws/controller` + `/project_layout`. The Bitwig extension already hits both. Running a second DAW or a test instance takes the next port pair. Simpler = fewer ports to coordinate (firewall, sandboxes, multi-machine setups) and fewer bind-time race conditions.
+**Problem:** Droplets currently binds **two** TCP ports per plugin process — `:9998` for the GUI HTTP server + WebSocket, and `:9999` for the MCP server's `/mcp` + `/ws/controller` + bare `/project_layout` + bare `/rename_instance`. Two ports doubles firewall/sandbox coordination cost, doubles bind-time race risk, and splits the URL layout: `/api/*` routes live on `:9998` while the extension-facing routes sit bare at root on `:9999`.
 
-**Solution:** Merge the MCP axum router's routes (`/mcp`, `/ws/controller`, `/project_layout`, `/rename_instance`) into the GUI server on `:9999`. Drop the `:9998` listener entirely. No behavior change on the wire from the extension's point of view — just change the port it posts to. Frontend's API path (`/api/*`) is already separate and unaffected.
+**Solution:** One port, three clean top-level paths. Primary port stays **9999** (external MCP agents are already configured for it — preserves compatibility). Everything collapses onto 9999 under:
+
+```
+http://localhost:9999/
+  /api/*          ← HTTP API: frontend + extension POSTs
+                    (includes /api/project_layout, /api/rename_instance)
+  /mcp            ← MCP protocol (unchanged)
+  /ws             ← WebSocket: GUI frontend (unchanged)
+  /ws/controller  ← WebSocket: extension command stream (unchanged)
+```
+
+The MCP-side bare `/project_layout` and `/rename_instance` routes go away — both already have `/api/*` equivalents the frontend uses, and the extension just switches to hitting those.
 
 **Scope:**
-- Combine the two axum Routers via `.merge()` in [src/mcp/mod.rs](../../../src/mcp/mod.rs) / [src/gui/server.rs](../../../src/gui/server.rs).
-- Update the Bitwig extension's post target from `:9999` → `:9998` ([extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsClient.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsClient.kt)).
-- Update standalone binary's port constants.
-- Settings UI: remove the two-port display if any; keep the one MCP URL.
+- Merge the MCP router into the GUI axum app via `.merge()`. Drop the `:9998` listener entirely.
+- Change the unified default from `DEFAULT_GUI_PORT` (9998) to `DEFAULT_MCP_PORT` (9999).
+- Delete the duplicate bare extension routes in [src/mcp/mod.rs](../../../src/mcp/mod.rs) — frontend's `/api/project_layout` + `/api/rename_instance` handlers remain authoritative.
+- Update the Bitwig extension to hit `/api/project_layout` and `/api/rename_instance` at port 9999 ([extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsClient.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsClient.kt)).
+- Collapse the standalone binary's two ports (9996 GUI + 9997 MCP) to one (9997).
+- Settings UI + header MCP-URL display reflect the single port.
 
-**Caveat:** breaks compatibility with any saved controller-script config pointing at `:9999`. Mitigated by (a) updating the extension in the same release, (b) the GUI's MCP-URL display always shows the current port.
+**Caveat:** any external tool pointing at `:9998` breaks. Internal consumers (frontend, Bitwig extension, standalone binary) are all updated in the same change.
 
-**Files:** [src/mcp/mod.rs](../../../src/mcp/mod.rs), [src/gui/server.rs](../../../src/gui/server.rs), [src/bin/standalone.rs](../../../src/bin/standalone.rs), [extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsClient.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsClient.kt).
+**Files:** [src/mcp/mod.rs](../../../src/mcp/mod.rs), [src/gui/server.rs](../../../src/gui/server.rs), [src/bin/standalone.rs](../../../src/bin/standalone.rs), [src/lib.rs](../../../src/lib.rs) (start one server, not two), [extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsClient.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsClient.kt).
 
 ---
 
