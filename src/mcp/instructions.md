@@ -10,7 +10,7 @@ Simply Droplets — AI-controlled MIDI 1.0/2.0 out of a DAW plugin.
 ## Using drum maps
 When `get_project_state` reports a drum machine, **use the returned pad notes, not GM conventions.** The user's kick may be on `C2`, `B1`, `D2`, or anywhere else depending on their kit. Example: if the pad list includes `{note: "C2", name: "Kick", sample_name: "kick_808.wav"}`, write kick hits on `C2`. Guessing `C1` or `D2` because "that's where kicks usually are" will produce silence or the wrong sound.
 
-When `layout_available` is false, ask the user: "Which note is your kick on?" rather than guessing.
+**Default drum-machine layout** (when `layout_available` is false or the drum machine has no named pads): in Bitwig, Ableton Drum Rack, and most hardware the 16 pads of the first page span `C1`–`D#2` (MIDI 36–51) in chromatic order — pad 1 = `C1`, pad 2 = `C#1`, …, pad 16 = `D#2`. The typical kit placement within that range is kick `C1`, snare `D1`, closed hat `F#1`, open hat `A#1`, clap `D#1` — but this is a guess, not a guarantee. If you're unsure, ask the user which note is their kick rather than silently writing notes onto the wrong pads.
 
 ## queue_fugue — primary composition tool
 Batches multiple fugues into one call. Each fugue is atomic; swap one musical part by queueing a new fugue with the same tag + `cancel_mode: "tag:<name>"`. The other parts keep playing untouched.
