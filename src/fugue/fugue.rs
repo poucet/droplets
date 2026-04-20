@@ -152,6 +152,13 @@ impl Fugue {
     /// (phase-locked to the DAW, not wall-clock). Caller must emit note-offs
     /// for active notes before invoking — this clears all runtime state.
     ///
+    /// **Phase is computed against the song's absolute grid at beat 0**, not
+    /// against the fugue's original start_beat. A fugue queued mid-song at
+    /// an unaligned bar (e.g. start_beat=4 for a duration=8 pattern) must
+    /// still resume from its pattern-beat-0 when transport returns to song
+    /// beat 0. Anchoring to the song grid makes loop boundaries predictable:
+    /// the pattern's beat 0 always lands on transport beats 0, dur, 2*dur…
+    ///
     /// Returns `true` if the fugue should remain; `false` if it should be
     /// dropped (mid-flight one-shots that can't meaningfully resume).
     pub fn phase_lock(&mut self, transport_beat: f64) -> bool {
@@ -176,7 +183,7 @@ impl Fugue {
             }
         }
 
-        let phase = (transport_beat - self.start_beat).rem_euclid(dur);
+        let phase = transport_beat.rem_euclid(dur);
         self.start_beat = transport_beat - phase;
         self.current_loop = 0;
         self.next_event_index = self
