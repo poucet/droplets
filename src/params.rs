@@ -1,18 +1,18 @@
-//! CC Slot mapping system for Simply Droplets
+//! CC Slot mapping system for Simply Droplets.
 //!
-//! Each slot represents a CC mapping:
-//! - CC number (learned from incoming MIDI CC)
-//! - Target name (label like "Vital Filter Cutoff")
-//! - Current value (0.0 - 1.0, set by AI via MCP)
+//! Each slot pairs a MIDI CC number + channel + human-readable name. When the
+//! user wiggles a slot from the UI or an MCP tool sets one, the plugin emits
+//! that CC on its MIDI output — the DAW routes it to whichever target the
+//! user has hooked up (HW CC modulator in Bitwig, MIDI-learn on hardware, etc.).
 //!
-//! When the AI sets a slot value, the plugin outputs the corresponding
-//! MIDI CC message which the DAW routes to the target plugin.
+//! Slots are **dynamic**: users can add, remove, rename, and renumber them at
+//! runtime. The internal storage is a `RwLock<Vec<Arc<CcSlot>>>`. Slots are
+//! only ever accessed from the main/MCP threads — the audio thread drives
+//! MIDI output through a separate ring buffer, not by reading these slots
+//! directly — so the lock overhead is fine.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-use std::sync::RwLock;
-
-/// Number of CC slots available
-pub const NUM_CC_SLOTS: usize = 16;
+use std::sync::{Arc, RwLock};
 
 /// Atomic f64 storage for real-time safe value access
 #[repr(transparent)]
@@ -32,7 +32,7 @@ impl AtomicF64 {
     }
 }
 
-/// A single CC slot with mapping info
+/// A single CC slot with mapping info.
 pub struct CcSlot {
     /// CC number this slot is mapped to (0-127, or 255 for unmapped)
     pub cc_number: AtomicU8,
@@ -46,36 +46,13 @@ pub struct CcSlot {
     pub learning: AtomicBool,
 }
 
-pub fn default_cc_config(index: usize) -> (u8, String) {
-    match index {
-        0 => (1, "Mod Wheel".to_string()),
-        1 => (2, "Breath".to_string()),
-        2 => (7, "Volume".to_string()),
-        3 => (10, "Pan".to_string()),
-        4 => (11, "Expression".to_string()),
-        5 => (71, "Filter Resonance".to_string()),
-        6 => (74, "Filter Cutoff".to_string()),
-        7 => (73, "Attack".to_string()),
-        8 => (75, "Decay".to_string()),
-        9 => (72, "Release".to_string()),
-        10 => (91, "Reverb".to_string()),
-        11 => (93, "Chorus".to_string()),
-        12 => (94, "Detune".to_string()),
-        13 => (95, "Phaser".to_string()),
-        14 => (14, "Slot 15".to_string()),
-        15 => (15, "Slot 16".to_string()),
-        _ => ((16 + index - 16).min(127) as u8, format!("Slot {}", index + 1)),
-    }
-}
-
 impl CcSlot {
-    pub fn new(index: usize) -> Self {
-        let (default_cc, name) = default_cc_config(index);
+    pub fn new(cc: u8, name: &str) -> Self {
         Self {
-            cc_number: AtomicU8::new(default_cc),
-            channel: AtomicU8::new(0), // Default to channel 1
+            cc_number: AtomicU8::new(cc.min(127)),
+            channel: AtomicU8::new(0),
             value: AtomicF64::new(0.0),
-            name: RwLock::new(name),
+            name: RwLock::new(name.to_string()),
             learning: AtomicBool::new(false),
         }
     }
@@ -91,10 +68,6 @@ impl CcSlot {
 
     pub fn set_cc(&self, cc: u8) {
         self.cc_number.store(cc.min(127), Ordering::Relaxed);
-    }
-
-    pub fn clear_cc(&self) {
-        self.cc_number.store(255, Ordering::Relaxed);
     }
 
     pub fn get_channel(&self) -> u8 {
@@ -126,9 +99,25 @@ impl CcSlot {
     }
 }
 
-/// All plugin slots and AI message log
+/// Initial slot set for a fresh plugin instance. Covers CC 1 (mod wheel) and
+/// the CC 71–76 MPE/GM conventions (filter + ADSR + vibrato) that most soft
+/// synths either respond to out of the box or have a preset-author mapping
+/// for. Users add/remove/rename beyond this via the Settings UI.
+pub fn default_slots() -> Vec<(u8, &'static str)> {
+    vec![
+        (1, "Mod Wheel"),
+        (71, "Filter Resonance"),
+        (72, "Release"),
+        (73, "Attack"),
+        (74, "Filter Cutoff"),
+        (75, "Decay"),
+        (76, "Vibrato Rate"),
+    ]
+}
+
+/// All plugin slots and AI message log.
 pub struct DropletParams {
-    pub slots: [CcSlot; NUM_CC_SLOTS],
+    slots: RwLock<Vec<Arc<CcSlot>>>,
     /// Recent AI messages (for UI display)
     ai_messages: RwLock<Vec<AiMessage>>,
 }
@@ -143,66 +132,110 @@ pub struct AiMessage {
 
 impl DropletParams {
     pub fn new() -> Self {
+        let initial: Vec<Arc<CcSlot>> = default_slots()
+            .into_iter()
+            .map(|(cc, name)| Arc::new(CcSlot::new(cc, name)))
+            .collect();
         Self {
-            slots: std::array::from_fn(|i| CcSlot::new(i)),
+            slots: RwLock::new(initial),
             ai_messages: RwLock::new(Vec::new()),
         }
     }
 
-    /// Set a slot value (called from MCP) - returns the CC info if mapped
-    pub fn set_slot(&self, index: usize, value: f64) -> Option<(u8, u8, u8)> {
-        if index < NUM_CC_SLOTS {
-            let clamped = value.clamp(0.0, 1.0);
-            self.slots[index].value.store(clamped);
+    /// Create an empty params instance (no default slots). Used when state
+    /// load will repopulate the slot list from a persisted array.
+    pub fn empty() -> Self {
+        Self {
+            slots: RwLock::new(Vec::new()),
+            ai_messages: RwLock::new(Vec::new()),
+        }
+    }
 
-            // Return (channel, cc, value) if mapped
-            if let Some(cc) = self.slots[index].get_cc() {
-                let channel = self.slots[index].get_channel();
-                let midi_value = (clamped * 127.0).round() as u8;
-                return Some((channel, cc, midi_value));
-            }
+    /// Pull a specific slot by index. Returns an `Arc<CcSlot>` so the caller
+    /// can operate on it without holding the slots lock.
+    pub fn get(&self, index: usize) -> Option<Arc<CcSlot>> {
+        self.slots.read().unwrap().get(index).cloned()
+    }
+
+    /// Number of slots currently configured.
+    pub fn len(&self) -> usize {
+        self.slots.read().unwrap().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.slots.read().unwrap().is_empty()
+    }
+
+    /// Append a new slot. Returns its index.
+    pub fn add_slot(&self, cc: u8, name: &str) -> usize {
+        let mut slots = self.slots.write().unwrap();
+        slots.push(Arc::new(CcSlot::new(cc, name)));
+        slots.len() - 1
+    }
+
+    /// Remove a slot by index. Returns true if a slot was removed.
+    pub fn remove_slot(&self, index: usize) -> bool {
+        let mut slots = self.slots.write().unwrap();
+        if index < slots.len() {
+            slots.remove(index);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Replace the entire slot list. Used by state-load to restore a saved
+    /// configuration atomically.
+    pub fn replace_slots(&self, new: Vec<Arc<CcSlot>>) {
+        *self.slots.write().unwrap() = new;
+    }
+
+    /// Set a slot value (called from MCP) - returns the CC info if mapped.
+    pub fn set_slot_value(&self, index: usize, value: f64) -> Option<(u8, u8, u8)> {
+        let slot = self.get(index)?;
+        let clamped = value.clamp(0.0, 1.0);
+        slot.value.store(clamped);
+
+        if let Some(cc) = slot.get_cc() {
+            let channel = slot.get_channel();
+            let midi_value = (clamped * 127.0).round() as u8;
+            return Some((channel, cc, midi_value));
         }
         None
     }
 
-    /// Get a slot value
-    pub fn get_slot(&self, index: usize) -> f64 {
-        if index < NUM_CC_SLOTS {
-            self.slots[index].value.load()
-        } else {
-            0.0
-        }
-    }
-
-    /// Rename a slot
+    /// Rename a slot. Returns the previous name if the slot existed.
     pub fn rename_slot(&self, index: usize, name: &str) -> Option<String> {
-        if index < NUM_CC_SLOTS {
-            let old_name = self.slots[index].get_name();
-            self.slots[index].set_name(name);
-            Some(old_name)
-        } else {
-            None
-        }
+        let slot = self.get(index)?;
+        let old = slot.get_name();
+        slot.set_name(name);
+        Some(old)
     }
 
-    /// Start learning mode for a slot
+    /// Start learning mode for a slot — stops learning on all others.
     pub fn start_learning(&self, index: usize) {
-        if index < NUM_CC_SLOTS {
-            // Stop learning on all other slots
-            for (i, slot) in self.slots.iter().enumerate() {
-                if i == index {
-                    slot.start_learning();
-                } else {
-                    slot.stop_learning();
-                }
+        let slots = self.slots.read().unwrap();
+        for (i, slot) in slots.iter().enumerate() {
+            if i == index {
+                slot.start_learning();
+            } else {
+                slot.stop_learning();
             }
         }
     }
 
-    /// Check if any slot is learning and process incoming CC
-    /// Returns the slot index that learned, if any
+    /// Cancel all learning.
+    pub fn cancel_learning(&self) {
+        for slot in self.slots.read().unwrap().iter() {
+            slot.stop_learning();
+        }
+    }
+
+    /// Check if any slot is learning and process incoming CC. Returns the
+    /// index that learned, if any.
     pub fn process_learn(&self, channel: u8, cc: u8) -> Option<usize> {
-        for (i, slot) in self.slots.iter().enumerate() {
+        let slots = self.slots.read().unwrap();
+        for (i, slot) in slots.iter().enumerate() {
             if slot.is_learning() {
                 slot.set_cc(cc);
                 slot.set_channel(channel);
@@ -213,38 +246,38 @@ impl DropletParams {
         None
     }
 
-    /// Cancel all learning
-    pub fn cancel_learning(&self) {
-        for slot in self.slots.iter() {
-            slot.stop_learning();
-        }
-    }
-
-    /// Get slot info for GUI/MCP
-    pub fn get_slot_info(&self, index: usize) -> Option<SlotInfo> {
-        if index < NUM_CC_SLOTS {
-            let slot = &self.slots[index];
-            Some(SlotInfo {
-                index,
+    /// Snapshot every slot's state as a `SlotInfo` list.
+    pub fn get_all_slots(&self) -> Vec<SlotInfo> {
+        self.slots
+            .read()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(i, slot)| SlotInfo {
+                index: i,
                 name: slot.get_name(),
                 cc: slot.get_cc(),
                 channel: slot.get_channel(),
                 value: slot.value.load(),
                 learning: slot.is_learning(),
             })
-        } else {
-            None
-        }
-    }
-
-    /// Get all slots info
-    pub fn get_all_slots(&self) -> Vec<SlotInfo> {
-        (0..NUM_CC_SLOTS)
-            .filter_map(|i| self.get_slot_info(i))
             .collect()
     }
 
-    /// Add an AI message to the log
+    /// Snapshot a single slot.
+    pub fn get_slot_info(&self, index: usize) -> Option<SlotInfo> {
+        let slot = self.get(index)?;
+        Some(SlotInfo {
+            index,
+            name: slot.get_name(),
+            cc: slot.get_cc(),
+            channel: slot.get_channel(),
+            value: slot.value.load(),
+            learning: slot.is_learning(),
+        })
+    }
+
+    /// Add an AI message to the log.
     pub fn add_ai_message(&self, tool_name: &str, message: &str) {
         let timestamp_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -260,14 +293,12 @@ impl DropletParams {
         let mut messages = self.ai_messages.write().unwrap();
         messages.push(msg);
 
-        // Keep only last 50 messages
         if messages.len() > 50 {
             let drain_count = messages.len() - 50;
             messages.drain(0..drain_count);
         }
     }
 
-    /// Get recent AI messages
     pub fn get_ai_messages(&self) -> Vec<AiMessage> {
         self.ai_messages.read().unwrap().clone()
     }

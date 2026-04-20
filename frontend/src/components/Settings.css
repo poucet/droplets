@@ -225,3 +225,137 @@
   padding-top: 1rem;
   border-top: 1px solid var(--border-color);
 }
+
+/* CC Slots grid — compact, one row per slot, inline-editable. */
+.slots-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.25rem;
+  margin-top: 0.5rem;
+}
+
+.slot-row {
+  display: grid;
+  grid-template-columns: 1fr auto 4rem auto auto;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.03);
+  font-size: 0.85rem;
+}
+
+.slot-row.wiggling {
+  background: rgba(100, 180, 255, 0.12);
+  border-color: rgba(100, 180, 255, 0.5);
+}
+
+.slot-name-input {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-primary);
+  padding: 0.15rem 0.35rem;
+  border-radius: 3px;
+  font-size: inherit;
+  font-family: inherit;
+  min-width: 0;
+}
+
+.slot-name-input:hover {
+  border-color: var(--border-color);
+}
+
+.slot-name-input:focus {
+  outline: none;
+  border-color: var(--border-hover);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.slot-cc-prefix {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  padding-left: 0.3rem;
+}
+
+.slot-cc-input {
+  width: 3.5rem;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-primary);
+  padding: 0.15rem 0.3rem;
+  border-radius: 3px;
+  font-size: inherit;
+  font-family: inherit;
+  text-align: right;
+  -moz-appearance: textfield;
+}
+
+.slot-cc-input::-webkit-outer-spin-button,
+.slot-cc-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.slot-cc-input:hover {
+  border-color: var(--border-color);
+}
+
+.slot-cc-input:focus {
+  outline: none;
+  border-color: var(--border-hover);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.wiggle-btn,
+.slot-remove-btn {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  width: 1.8rem;
+  height: 1.6rem;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.wiggle-btn:hover:not(:disabled),
+.slot-remove-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--border-hover);
+}
+
+.wiggle-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.slot-remove-btn {
+  color: var(--text-secondary);
+}
+
+.slot-remove-btn:hover {
+  color: #ff6b6b;
+  border-color: #ff6b6b;
+}
+
+.slot-add-btn {
+  background: transparent;
+  border: 1px dashed var(--border-color);
+  color: var(--text-secondary);
+  padding: 0.4rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  margin-top: 0.25rem;
+}
+
+.slot-add-btn:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: var(--border-hover);
+  color: var(--text-primary);
+}

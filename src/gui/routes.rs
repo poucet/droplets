@@ -28,11 +28,12 @@ pub fn handle_request(path: &str, method: &str, body: &[u8], params: &Arc<Drople
         "/rename_instance" if method == "POST" => handle_rename_instance(body),
         "/settings" if method == "POST" => handle_update_settings(body),
         "/export_fugue" if method == "POST" => handle_export_fugue(body, instance_id),
-        _ => handle_dynamic_route(path, instance_id, params),
+        "/slots" if method == "POST" => handle_add_slot(body, instance_id),
+        _ => handle_dynamic_route(path, method, body, instance_id, params),
     }
 }
 
-fn handle_dynamic_route(path: &str, instance: &str, params: &Arc<DropletParams>) -> String {
+fn handle_dynamic_route(path: &str, method: &str, body: &[u8], instance: &str, params: &Arc<DropletParams>) -> String {
     if let Some(slot_str) = path.strip_prefix("/start_learn/") {
         return handle_start_learn(slot_str, instance, params);
     }
@@ -54,6 +55,25 @@ fn handle_dynamic_route(path: &str, instance: &str, params: &Arc<DropletParams>)
     // /fugue/{id} - get a single fugue
     if let Some(id_str) = path.strip_prefix("/fugue/") {
         return handle_fugue_by_id(id_str, instance);
+    }
+
+    // /slots/{i}         DELETE → remove a slot
+    // /slots/{i}/cc      POST   body={"cc":<u8>} → set CC number
+    // /slots/{i}/name    POST   body={"name":"..."} → rename
+    // /slots/{i}/channel POST   body={"channel":<u8>} → set channel
+    if let Some(rest) = path.strip_prefix("/slots/") {
+        if let Some(idx_str) = rest.strip_suffix("/cc") {
+            return handle_set_slot_cc(idx_str, body, instance);
+        }
+        if let Some(idx_str) = rest.strip_suffix("/name") {
+            return handle_rename_slot(idx_str, body, instance);
+        }
+        if let Some(idx_str) = rest.strip_suffix("/channel") {
+            return handle_set_slot_channel(idx_str, body, instance);
+        }
+        if method == "DELETE" {
+            return handle_remove_slot(rest, instance);
+        }
     }
 
     serialize_error("not found")
@@ -285,6 +305,91 @@ fn handle_clear_fugues(instance: &str) -> String {
 // =============================================================================
 // Helpers
 // =============================================================================
+
+/// POST /slots — add a new CC slot. Body: `{cc: u8, name: string}`.
+fn handle_add_slot(body: &[u8], instance: &str) -> String {
+    #[derive(serde::Deserialize)]
+    struct Req {
+        cc: u8,
+        name: String,
+    }
+    let Ok(req) = serde_json::from_slice::<Req>(body) else {
+        return serialize_error("invalid body");
+    };
+    match crate::mcp::CcBridge::add_slot(instance, req.cc, &req.name) {
+        Ok(idx) => serde_json::json!({ "ok": true, "index": idx }).to_string(),
+        Err(e) => serialize_error(e),
+    }
+}
+
+/// DELETE /slots/{i} — remove a slot.
+fn handle_remove_slot(idx_str: &str, instance: &str) -> String {
+    let Ok(idx) = idx_str.parse::<usize>() else {
+        return serialize_error("invalid slot index");
+    };
+    match crate::mcp::CcBridge::remove_slot(instance, idx) {
+        Ok(()) => serialize_ok(None),
+        Err(e) => serialize_error(e),
+    }
+}
+
+/// POST /slots/{i}/cc — set the slot's CC number. Body `{cc: u8}`.
+fn handle_set_slot_cc(idx_str: &str, body: &[u8], instance: &str) -> String {
+    let Ok(idx) = idx_str.parse::<usize>() else {
+        return serialize_error("invalid slot index");
+    };
+    #[derive(serde::Deserialize)]
+    struct Req { cc: u8 }
+    let Ok(req) = serde_json::from_slice::<Req>(body) else {
+        return serialize_error("invalid body");
+    };
+    // Preserve channel — pulling it from the existing slot lets us reuse
+    // `map_slot` without a dedicated setter.
+    let channel = crate::mcp::CcBridge::get_slots(instance)
+        .ok()
+        .and_then(|v| v.into_iter().find(|s| s.index == idx).map(|s| s.channel))
+        .unwrap_or(0);
+    match crate::mcp::CcBridge::map_slot(instance, idx, req.cc, channel) {
+        Ok(()) => serialize_ok(None),
+        Err(e) => serialize_error(e),
+    }
+}
+
+/// POST /slots/{i}/name — rename a slot. Body `{name: string}`.
+fn handle_rename_slot(idx_str: &str, body: &[u8], instance: &str) -> String {
+    let Ok(idx) = idx_str.parse::<usize>() else {
+        return serialize_error("invalid slot index");
+    };
+    #[derive(serde::Deserialize)]
+    struct Req { name: String }
+    let Ok(req) = serde_json::from_slice::<Req>(body) else {
+        return serialize_error("invalid body");
+    };
+    match crate::mcp::CcBridge::rename_slot(instance, idx, &req.name) {
+        Ok(_) => serialize_ok(None),
+        Err(e) => serialize_error(e),
+    }
+}
+
+/// POST /slots/{i}/channel — set the slot's MIDI channel (0-15). Body `{channel: u8}`.
+fn handle_set_slot_channel(idx_str: &str, body: &[u8], instance: &str) -> String {
+    let Ok(idx) = idx_str.parse::<usize>() else {
+        return serialize_error("invalid slot index");
+    };
+    #[derive(serde::Deserialize)]
+    struct Req { channel: u8 }
+    let Ok(req) = serde_json::from_slice::<Req>(body) else {
+        return serialize_error("invalid body");
+    };
+    let cc = crate::mcp::CcBridge::get_slots(instance)
+        .ok()
+        .and_then(|v| v.into_iter().find(|s| s.index == idx).and_then(|s| s.cc))
+        .unwrap_or(0);
+    match crate::mcp::CcBridge::map_slot(instance, idx, cc, req.channel) {
+        Ok(()) => serialize_ok(None),
+        Err(e) => serialize_error(e),
+    }
+}
 
 fn serialize_ok(message: Option<&str>) -> String {
     let response = api::OkResponse {

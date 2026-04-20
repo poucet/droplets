@@ -130,6 +130,34 @@ export async function wiggleSlot(slot: number, instance = 'default'): Promise<Ok
   return apiFetch<OkResponse>(`/wiggle/${slot}`, instance);
 }
 
+/** Add a new CC slot on the given instance. Returns the new slot's index. */
+export async function addSlot(cc: number, name: string, instance = 'default'): Promise<{ ok: boolean; index: number }> {
+  return apiPost<{ cc: number; name: string }, { ok: boolean; index: number }>('/slots', { cc, name }, instance);
+}
+
+/** Remove a slot by index. */
+export async function removeSlot(slot: number, instance = 'default'): Promise<OkResponse> {
+  const url = buildUrl(`/slots/${slot}`, instance);
+  const response = await fetch(url, { method: 'DELETE' });
+  if (!response.ok) throw new Error(`API error: ${response.status}`);
+  return response.json();
+}
+
+/** Change the CC number backing a slot. */
+export async function setSlotCc(slot: number, cc: number, instance = 'default'): Promise<OkResponse> {
+  return apiPost<{ cc: number }, OkResponse>(`/slots/${slot}/cc`, { cc }, instance);
+}
+
+/** Rename a slot. */
+export async function renameSlotApi(slot: number, name: string, instance = 'default'): Promise<OkResponse> {
+  return apiPost<{ name: string }, OkResponse>(`/slots/${slot}/name`, { name }, instance);
+}
+
+/** Change the MIDI channel for a slot (0-15). */
+export async function setSlotChannel(slot: number, channel: number, instance = 'default'): Promise<OkResponse> {
+  return apiPost<{ channel: number }, OkResponse>(`/slots/${slot}/channel`, { channel }, instance);
+}
+
 export async function noteOn(note: number, velocity = 100, instance = 'default'): Promise<OkResponse> {
   return apiFetch<OkResponse>(`/note_on/${note}/${velocity}`, instance);
 }

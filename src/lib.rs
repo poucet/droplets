@@ -199,13 +199,16 @@ impl<'a> PluginStateImpl for DropletMainThread<'a> {
 
         let id = &self.shared.instance_id;
 
-        let slots: Vec<_> = (0..params::NUM_CC_SLOTS)
-            .map(|i| {
-                let slot = &self.shared.params.slots[i];
+        let slots: Vec<_> = self
+            .shared
+            .params
+            .get_all_slots()
+            .into_iter()
+            .map(|s| {
                 serde_json::json!({
-                    "cc": slot.get_cc(),
-                    "channel": slot.get_channel(),
-                    "name": slot.get_name(),
+                    "cc": s.cc,
+                    "channel": s.channel,
+                    "name": s.name,
                 })
             })
             .collect();
@@ -224,6 +227,8 @@ impl<'a> PluginStateImpl for DropletMainThread<'a> {
 
     fn load(&mut self, input: &mut InputStream) -> Result<(), PluginError> {
         use std::io::Read;
+        use std::sync::Arc;
+        use params::CcSlot;
 
         let mut data = Vec::new();
         input.read_to_end(&mut data).map_err(|_| PluginError::Message("read failed"))?;
@@ -232,26 +237,32 @@ impl<'a> PluginStateImpl for DropletMainThread<'a> {
             .map_err(|_| PluginError::Message("deserialize failed"))?;
 
         // Support legacy format (bare array of slots).
-        let slots = if state.is_array() {
+        let slot_array = if state.is_array() {
             state.as_array().unwrap().clone()
         } else {
             state.get("slots").and_then(|v| v.as_array()).cloned().unwrap_or_default()
         };
 
-        for (i, slot_state) in slots.iter().enumerate().take(params::NUM_CC_SLOTS) {
-            let slot = &self.shared.params.slots[i];
-            if let Some(cc) = slot_state.get("cc").and_then(|v| v.as_u64()) {
-                slot.set_cc(cc as u8);
-            }
+        // Rebuild slot list from the persisted array. Slots are dynamic now,
+        // so we replace the whole list atomically rather than writing into
+        // fixed indices. Any persisted `value` field is intentionally
+        // ignored — transient state.
+        let mut new_slots: Vec<Arc<CcSlot>> = Vec::with_capacity(slot_array.len());
+        for slot_state in slot_array {
+            let cc = slot_state.get("cc").and_then(|v| v.as_u64()).unwrap_or(255) as u8;
+            let name = slot_state
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Slot")
+                .to_string();
+            let slot = Arc::new(CcSlot::new(cc, &name));
             if let Some(channel) = slot_state.get("channel").and_then(|v| v.as_u64()) {
                 slot.set_channel(channel as u8);
             }
-            if let Some(name) = slot_state.get("name").and_then(|v| v.as_str()) {
-                slot.set_name(name);
-            }
-            // Intentionally ignore any persisted `value` — transient state,
-            // should not jump when a project reopens. Legacy saves that
-            // carried values just get those values dropped.
+            new_slots.push(slot);
+        }
+        if !new_slots.is_empty() {
+            self.shared.params.replace_slots(new_slots);
         }
 
         let id = self.shared.instance_id.clone();
@@ -261,9 +272,7 @@ impl<'a> PluginStateImpl for DropletMainThread<'a> {
         }
 
         // Intentionally ignore any persisted `fugues` array. Fugues are live
-        // session state, not saved configuration. Legacy saves that carried
-        // fugues just get them dropped — the user can re-queue for the new
-        // session.
+        // session state, not saved configuration.
 
         Ok(())
     }

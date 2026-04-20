@@ -9,6 +9,10 @@ import {
   revealExports,
   getSlots,
   wiggleSlot,
+  addSlot,
+  removeSlot,
+  setSlotCc,
+  renameSlotApi,
   type SettingsResponse,
 } from '../api';
 import type { SlotInfo } from '../types';
@@ -64,6 +68,49 @@ export const Settings: React.FC<SettingsProps> = ({ instance }) => {
     }
     setTimeout(() => setWigglingSlot(null), 1100);
   }, [wigglingSlot, instance]);
+
+  const handleAddSlot = useCallback(async () => {
+    // Pick the next unused CC number in the 1–127 range; fall back to 1 if
+    // everything's taken (wraparound is user-visible but harmless).
+    const used = new Set(slots.map(s => s.cc).filter((c): c is number => c !== null));
+    let nextCc = 1;
+    while (nextCc < 128 && used.has(nextCc)) nextCc += 1;
+    if (nextCc === 128) nextCc = 1;
+    try {
+      await addSlot(nextCc, `CC${nextCc}`, instance);
+      await fetchSlots();
+    } catch (e) {
+      console.error('Failed to add slot:', e);
+    }
+  }, [slots, instance, fetchSlots]);
+
+  const handleRemoveSlot = useCallback(async (slotIndex: number) => {
+    try {
+      await removeSlot(slotIndex, instance);
+      await fetchSlots();
+    } catch (e) {
+      console.error('Failed to remove slot:', e);
+    }
+  }, [instance, fetchSlots]);
+
+  const handleRenameSlot = useCallback(async (slotIndex: number, name: string) => {
+    try {
+      await renameSlotApi(slotIndex, name, instance);
+      await fetchSlots();
+    } catch (e) {
+      console.error('Failed to rename slot:', e);
+    }
+  }, [instance, fetchSlots]);
+
+  const handleSetCc = useCallback(async (slotIndex: number, cc: number) => {
+    if (cc < 0 || cc > 127) return;
+    try {
+      await setSlotCc(slotIndex, cc, instance);
+      await fetchSlots();
+    } catch (e) {
+      console.error('Failed to set CC:', e);
+    }
+  }, [instance, fetchSlots]);
 
   const fetchSettings = useCallback(async () => {
     try {
@@ -178,36 +225,27 @@ export const Settings: React.FC<SettingsProps> = ({ instance }) => {
       {success && <div className="settings-success">{success}</div>}
 
       <section className="settings-section">
-        <h3>Parameter Slots</h3>
+        <h3>CC Slots</h3>
         <p className="settings-description">
-          16 automatable CC slots for the selected instance. Map these to synth knobs in your
-          DAW (right-click → Learn MIDI CC on the target) so the AI can drive them via
-          `cc` fugues. Use "wiggle" to jog a slot's CC output for MIDI-learn pickup.
+          MIDI CC mappings for this instance. Rename to match what the CC drives on your synth, or change
+          the CC number. Use "↔" to wiggle the CC so your synth's MIDI-learn picks it up.
         </p>
-        <div className="slots-list">
-          {slots.length === 0 ? (
-            <div className="no-slots"><p>Loading…</p></div>
-          ) : (
-            slots.map((slot) => (
-              <div key={slot.index} className={`slot-item ${wigglingSlot === slot.index ? 'wiggling' : ''}`}>
-                <span className="slot-index">{slot.index}</span>
-                <span className="slot-name">{slot.name}</span>
-                <span className="slot-cc">{slot.cc !== null ? `CC${slot.cc}` : '—'}</span>
-                <div className="slot-bar-container">
-                  <div className="slot-bar" style={{ width: `${slot.value * 100}%` }} />
-                </div>
-                <span className="slot-value">{Math.round(slot.value * 100)}%</span>
-                <button
-                  className="wiggle-btn"
-                  onClick={() => handleWiggle(slot.index)}
-                  disabled={slot.cc === null || wigglingSlot !== null}
-                  title={slot.cc === null ? 'Map a CC first' : 'Wiggle CC to identify knob'}
-                >
-                  {wigglingSlot === slot.index ? '~' : '↔'}
-                </button>
-              </div>
-            ))
-          )}
+        <div className="slots-grid">
+          {slots.map((slot) => (
+            <SlotRow
+              key={slot.index}
+              slot={slot}
+              wiggling={wigglingSlot === slot.index}
+              wiggleDisabled={wigglingSlot !== null}
+              onWiggle={() => handleWiggle(slot.index)}
+              onRename={(name) => handleRenameSlot(slot.index, name)}
+              onSetCc={(cc) => handleSetCc(slot.index, cc)}
+              onRemove={() => handleRemoveSlot(slot.index)}
+            />
+          ))}
+          <button className="slot-add-btn" onClick={handleAddSlot} title="Add a new CC slot">
+            + Add CC
+          </button>
         </div>
       </section>
 
@@ -336,6 +374,93 @@ export const Settings: React.FC<SettingsProps> = ({ instance }) => {
           <span>0.1.0</span>
         </div>
       </section>
+    </div>
+  );
+};
+
+/**
+ * One row in the CC-slots grid. Both `name` and `cc` are editable inline —
+ * the input tracks its own draft state until blur/Enter, so re-renders
+ * driven by the 1s slot-poll don't clobber what the user is typing.
+ */
+interface SlotRowProps {
+  slot: SlotInfo;
+  wiggling: boolean;
+  wiggleDisabled: boolean;
+  onWiggle: () => void;
+  onRename: (name: string) => void;
+  onSetCc: (cc: number) => void;
+  onRemove: () => void;
+}
+
+const SlotRow: React.FC<SlotRowProps> = ({ slot, wiggling, wiggleDisabled, onWiggle, onRename, onSetCc, onRemove }) => {
+  const [nameDraft, setNameDraft] = useState(slot.name);
+  const [nameEditing, setNameEditing] = useState(false);
+  const [ccDraft, setCcDraft] = useState(String(slot.cc ?? ''));
+  const [ccEditing, setCcEditing] = useState(false);
+
+  // Keep drafts in sync with poll-refreshed props — but only when the user
+  // isn't actively editing. Otherwise their keystrokes would get clobbered
+  // on each 1s refresh.
+  useEffect(() => {
+    if (!nameEditing) setNameDraft(slot.name);
+  }, [slot.name, nameEditing]);
+  useEffect(() => {
+    if (!ccEditing) setCcDraft(String(slot.cc ?? ''));
+  }, [slot.cc, ccEditing]);
+
+  const commitName = () => {
+    setNameEditing(false);
+    if (nameDraft !== slot.name) onRename(nameDraft);
+  };
+  const commitCc = () => {
+    setCcEditing(false);
+    const parsed = parseInt(ccDraft, 10);
+    if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 127 && parsed !== slot.cc) {
+      onSetCc(parsed);
+    } else if (!Number.isFinite(parsed)) {
+      // Revert to current value on invalid input.
+      setCcDraft(String(slot.cc ?? ''));
+    }
+  };
+
+  return (
+    <div className={`slot-row ${wiggling ? 'wiggling' : ''}`}>
+      <input
+        className="slot-name-input"
+        value={nameDraft}
+        onChange={(e) => setNameDraft(e.target.value)}
+        onFocus={() => setNameEditing(true)}
+        onBlur={commitName}
+        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+      />
+      <span className="slot-cc-prefix">CC</span>
+      <input
+        className="slot-cc-input"
+        type="number"
+        min={0}
+        max={127}
+        value={ccDraft}
+        onChange={(e) => setCcDraft(e.target.value)}
+        onFocus={() => setCcEditing(true)}
+        onBlur={commitCc}
+        onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
+      />
+      <button
+        className="wiggle-btn"
+        onClick={onWiggle}
+        disabled={slot.cc === null || wiggleDisabled}
+        title={slot.cc === null ? 'Set a CC first' : 'Wiggle CC to identify knob'}
+      >
+        {wiggling ? '~' : '↔'}
+      </button>
+      <button
+        className="slot-remove-btn"
+        onClick={onRemove}
+        title="Remove this slot"
+      >
+        ×
+      </button>
     </div>
   );
 };

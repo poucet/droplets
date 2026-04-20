@@ -146,7 +146,11 @@ async fn run_server(port: u16) {
         // REST API endpoints with instance query param support
         .route("/api/instances", get(api_instances))
         .route("/api/rename_instance", post(api_rename_instance))
-        .route("/api/slots", get(api_slots))
+        .route("/api/slots", get(api_slots).post(api_add_slot))
+        .route("/api/slots/:slot", axum::routing::delete(api_remove_slot))
+        .route("/api/slots/:slot/cc", post(api_set_slot_cc))
+        .route("/api/slots/:slot/name", post(api_rename_slot))
+        .route("/api/slots/:slot/channel", post(api_set_slot_channel))
         .route("/api/activity", get(api_activity))
         .route("/api/fugues", get(api_fugues))
         .route("/api/transport", get(api_transport))
@@ -287,6 +291,80 @@ async fn api_cancel_learn(Query(query): Query<InstanceQuery>) -> impl IntoRespon
     match api::cancel_learn(&query.instance) {
         Ok(response) => json_response(response),
         Err(e) => error_response(StatusCode::BAD_REQUEST, &e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct AddSlotBody { cc: u8, name: String }
+
+async fn api_add_slot(
+    Query(query): Query<InstanceQuery>,
+    Json(body): Json<AddSlotBody>,
+) -> impl IntoResponse {
+    match CcBridge::add_slot(&query.instance, body.cc, &body.name) {
+        Ok(index) => json_response(serde_json::json!({ "ok": true, "index": index })),
+        Err(e) => error_response(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+async fn api_remove_slot(
+    Path(slot): Path<usize>,
+    Query(query): Query<InstanceQuery>,
+) -> impl IntoResponse {
+    match CcBridge::remove_slot(&query.instance, slot) {
+        Ok(()) => json_response(serde_json::json!({ "ok": true })),
+        Err(e) => error_response(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct SetCcBody { cc: u8 }
+
+async fn api_set_slot_cc(
+    Path(slot): Path<usize>,
+    Query(query): Query<InstanceQuery>,
+    Json(body): Json<SetCcBody>,
+) -> impl IntoResponse {
+    // Preserve the current channel; only the CC number is changing.
+    let channel = CcBridge::get_slots(&query.instance)
+        .ok()
+        .and_then(|v| v.into_iter().find(|s| s.index == slot).map(|s| s.channel))
+        .unwrap_or(0);
+    match CcBridge::map_slot(&query.instance, slot, body.cc, channel) {
+        Ok(()) => json_response(serde_json::json!({ "ok": true })),
+        Err(e) => error_response(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct RenameBody { name: String }
+
+async fn api_rename_slot(
+    Path(slot): Path<usize>,
+    Query(query): Query<InstanceQuery>,
+    Json(body): Json<RenameBody>,
+) -> impl IntoResponse {
+    match CcBridge::rename_slot(&query.instance, slot, &body.name) {
+        Ok(_) => json_response(serde_json::json!({ "ok": true })),
+        Err(e) => error_response(StatusCode::BAD_REQUEST, e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct SetChannelBody { channel: u8 }
+
+async fn api_set_slot_channel(
+    Path(slot): Path<usize>,
+    Query(query): Query<InstanceQuery>,
+    Json(body): Json<SetChannelBody>,
+) -> impl IntoResponse {
+    let cc = CcBridge::get_slots(&query.instance)
+        .ok()
+        .and_then(|v| v.into_iter().find(|s| s.index == slot).and_then(|s| s.cc))
+        .unwrap_or(0);
+    match CcBridge::map_slot(&query.instance, slot, cc, body.channel) {
+        Ok(()) => json_response(serde_json::json!({ "ok": true })),
+        Err(e) => error_response(StatusCode::BAD_REQUEST, e),
     }
 }
 

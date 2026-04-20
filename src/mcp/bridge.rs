@@ -474,12 +474,12 @@ impl CcBridge {
         let reg = registry().read().unwrap();
         let entry = Self::find_entry(&reg, instance)?;
 
-        if slot >= crate::params::NUM_CC_SLOTS {
-            return Err("Slot index out of range (0-15)");
+        if slot >= entry.params.len() {
+            return Err("Slot index out of range");
         }
 
         // Set the slot value and get CC info if mapped
-        if let Some((channel, cc, midi_value)) = entry.params.set_slot(slot, value) {
+        if let Some((channel, cc, midi_value)) = entry.params.set_slot_value(slot, value) {
             // Send MIDI CC through the ring buffer
             let msg = CcMessage::new(channel, cc, midi_value);
             let mut producer = entry.producer.lock().map_err(|_| "Producer lock poisoned")?;
@@ -500,14 +500,33 @@ impl CcBridge {
         let reg = registry().read().unwrap();
         let entry = Self::find_entry(&reg, instance)?;
 
-        if slot >= crate::params::NUM_CC_SLOTS {
-            return Err("Slot index out of range (0-15)");
-        }
-
-        let old_name = entry.params.slots[slot].get_name();
-        entry.params.rename_slot(slot, name);
+        let old_name = entry
+            .params
+            .rename_slot(slot, name)
+            .ok_or("Slot index out of range")?;
         log::info!("CcBridge: Renamed slot {} from '{}' to '{}' on '{}'", slot, old_name, name, entry.name);
         Ok(old_name)
+    }
+
+    /// Append a new CC slot on the given instance. Returns the new slot's
+    /// index.
+    pub fn add_slot(instance: &str, cc: u8, name: &str) -> Result<usize, &'static str> {
+        let reg = registry().read().unwrap();
+        let entry = Self::find_entry(&reg, instance)?;
+        let idx = entry.params.add_slot(cc, name);
+        log::info!("CcBridge: Added slot {} (CC{}, '{}') on '{}'", idx, cc, name, entry.name);
+        Ok(idx)
+    }
+
+    /// Remove a CC slot by index. Shifts subsequent slots down.
+    pub fn remove_slot(instance: &str, slot: usize) -> Result<(), &'static str> {
+        let reg = registry().read().unwrap();
+        let entry = Self::find_entry(&reg, instance)?;
+        if !entry.params.remove_slot(slot) {
+            return Err("Slot index out of range");
+        }
+        log::info!("CcBridge: Removed slot {} on '{}'", slot, entry.name);
+        Ok(())
     }
 
     /// Get all parameter slots info for an instance (includes CC mapping info)
@@ -522,8 +541,8 @@ impl CcBridge {
         let reg = registry().read().unwrap();
         let entry = Self::find_entry(&reg, instance)?;
 
-        if slot >= crate::params::NUM_CC_SLOTS {
-            return Err("Slot index out of range (0-15)");
+        if slot >= entry.params.len() {
+            return Err("Slot index out of range");
         }
 
         entry.params.start_learning(slot);
@@ -545,12 +564,9 @@ impl CcBridge {
         let reg = registry().read().unwrap();
         let entry = Self::find_entry(&reg, instance)?;
 
-        if slot >= crate::params::NUM_CC_SLOTS {
-            return Err("Slot index out of range (0-15)");
-        }
-
-        entry.params.slots[slot].set_cc(cc);
-        entry.params.slots[slot].set_channel(channel);
+        let slot_ref = entry.params.get(slot).ok_or("Slot index out of range")?;
+        slot_ref.set_cc(cc);
+        slot_ref.set_channel(channel);
         log::info!("CcBridge: Mapped slot {} to CC{} ch{} on '{}'", slot, cc, channel + 1, entry.name);
         Ok(())
     }
@@ -560,11 +576,8 @@ impl CcBridge {
         let reg = registry().read().unwrap();
         let entry = Self::find_entry(&reg, instance)?;
 
-        if slot >= crate::params::NUM_CC_SLOTS {
-            return Err("Slot index out of range (0-15)");
-        }
-
-        entry.params.slots[slot].clear_cc();
+        let slot_ref = entry.params.get(slot).ok_or("Slot index out of range")?;
+        slot_ref.cc_number.store(255, std::sync::atomic::Ordering::Relaxed);
         log::info!("CcBridge: Unmapped slot {} on '{}'", slot, entry.name);
         Ok(())
     }
