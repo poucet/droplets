@@ -19,8 +19,8 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [x] | P0 | 3 | Add a worked example to `queue_fugue` tool description | S | Very High — LLMs imitate examples |
 | [x] | P0 | 4 | Rewrite FUGUE.md to match the shipping compact schema | S | High — live demo reference |
 | [x] | P1 | 5 | Add `get_transport` MCP tool | S | Medium-High — lets LLM reason about timing |
-| [ ] | P0 | 6 | Multi-instance end-to-end validation | M | Critical — central demo claim |
-| [ ] | P0 | 7 | macOS UI verification on demo machine | S | Critical — risk mitigation |
+| [x] | P0 | 6 | Multi-instance end-to-end validation | M | Critical — central demo claim |
+| [x] | P0 | 7 | macOS UI verification on demo machine | S | Critical — risk mitigation |
 | [x] | P0 | 11 | `composite` fugue type (notes + cc + bends + pressures in one fugue) | M | High — LLMs currently emit 10 fugues for one instrument; this is the biggest LLM-ergonomics fix left |
 | [x] | P1 | 12 | UI lanes for per-note bend/pressure | M | Medium — composite fugues aren't useful if the UI can't render half their content |
 | [x] | P0 | 13 | Transport phase-locking (fugues resume from correct phase on stop/play/relocate) | S | High — without this, every stop/play kills the demo |
@@ -36,6 +36,9 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [x] | P1 | 17 | MCP tool: `get_fugue(id)` returning current FugueDefinition | S | High — small surface, immediately unlocks LLM read-modify-write; ships before the drag features because it's independent and its compact serializer is reusable downstream |
 | [ ] | P1 | 15 | Native drag-out of fugues → DAW clip (`.mid` file) | M | High — lets users hand AI-generated patterns to the DAW's piano roll for editing; removes the need for an in-app editor |
 | [ ] | P2 | 16 | Native drag-in of `.mid` → new fugue on an instance | M | Medium — round-trip workflow: edit in the DAW, drop back as a fugue |
+| [ ] | P3 | 18 | Pause instead of delete on tag replacement | M | Medium — lets the user walk back to a prior version of a part instead of losing it forever when the LLM queues a new fugue with the same tag |
+| [ ] | P2 | 19 | Unify GUI + MCP on a single port | S | Medium — halves port consumption per plugin process; simpler firewall / sandbox story. Merge the MCP `/mcp` + `/ws/controller` routes into the existing axum router on :9999 |
+| [ ] | P2 | 20 | Dynamic port selection on bind conflict | S | Medium — plugin currently dies if :9998/:9999 are in use. Walk a range, bind the first free port, surface the chosen port to the extension + UI |
 
 ---
 
@@ -313,6 +316,60 @@ See [TASKS.md](TASKS.md) for the detailed task breakdown and resolved design dec
 
 ---
 
+#### Feature 18: Pause instead of delete on tag replacement
+
+**Problem:** When a fugue is cancelled by a same-tagged replacement (`cancel_mode: "tag:<name>"`), it's gone. If the user liked the old version better than the new one, the only way back is to ask the LLM to regenerate — which may produce a meaningfully different output each time. There's no "undo" at the musical level.
+
+**Solution:** When a tag-based cancel fires, stash the cancelled fugue into a per-instance paused-fugue ring buffer instead of discarding it. Expose:
+
+- **MCP tool `list_paused(instance, tag?)`** — show what's in the pause buffer. Default returns the most recent 10 entries; `tag` filters to one lineage.
+- **MCP tool `restore_fugue(instance, fugue_id)`** — re-queue a paused fugue as if `queue_fugue` had just been called with it. The restored fugue gets a fresh live id; the original stays in the pause buffer for chain-undo.
+- **UI affordance** in the sequencer tab — per-tag "history" list showing stashed versions with one-click restore.
+
+**Scope + caveats:**
+- **Bounded retention**: keep the last 8 entries per tag per instance. Pause buffer is session-scoped (cleared on plugin unload) — this is a working undo, not a persistent archive.
+- **Complements Feature 17**, doesn't overlap: `get_fugue` is for the LLM's read-modify-write workflow; pause-stash is for the user's undo workflow. Both touch the same data from different angles.
+- **Compact state**: store only the `FugueDefinition` (notes + CC + expression lanes), not runtime state (playhead, loop count). On restore, playback starts fresh from beat 0 — the "undo" is musical content, not timing position.
+
+**Files:** [src/fugue/bridge.rs](../../../src/fugue/bridge.rs) (registry gains `paused: HashMap<String, VecDeque<FugueDefinition>>`), [src/fugue/sequencer.rs](../../../src/fugue/sequencer.rs) (intercept tag-cancel, stash instead of drop), [src/mcp/server.rs](../../../src/mcp/server.rs) (new tools), frontend sequencer-tab history panel.
+
+---
+
+#### Feature 19: Unify GUI + MCP on a single port
+
+**Problem:** Droplets currently binds **two** TCP ports per plugin process — `:9998` for the GUI HTTP server + WebSocket and `:9999` for the MCP server's `/mcp` + `/ws/controller` + `/project_layout`. The Bitwig extension already hits both. Running a second DAW or a test instance takes the next port pair. Simpler = fewer ports to coordinate (firewall, sandboxes, multi-machine setups) and fewer bind-time race conditions.
+
+**Solution:** Merge the MCP axum router's routes (`/mcp`, `/ws/controller`, `/project_layout`, `/rename_instance`) into the GUI server on `:9999`. Drop the `:9998` listener entirely. No behavior change on the wire from the extension's point of view — just change the port it posts to. Frontend's API path (`/api/*`) is already separate and unaffected.
+
+**Scope:**
+- Combine the two axum Routers via `.merge()` in [src/mcp/mod.rs](../../../src/mcp/mod.rs) / [src/gui/server.rs](../../../src/gui/server.rs).
+- Update the Bitwig extension's post target from `:9999` → `:9998` ([extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsClient.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsClient.kt)).
+- Update standalone binary's port constants.
+- Settings UI: remove the two-port display if any; keep the one MCP URL.
+
+**Caveat:** breaks compatibility with any saved controller-script config pointing at `:9999`. Mitigated by (a) updating the extension in the same release, (b) the GUI's MCP-URL display always shows the current port.
+
+**Files:** [src/mcp/mod.rs](../../../src/mcp/mod.rs), [src/gui/server.rs](../../../src/gui/server.rs), [src/bin/standalone.rs](../../../src/bin/standalone.rs), [extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsClient.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsClient.kt).
+
+---
+
+#### Feature 20: Dynamic port selection on bind conflict
+
+**Problem:** The plugin hard-codes port 9998 (and 9999 until Feature 19 lands). If that port is in use (previous plugin instance not fully torn down, unrelated process, test harness), the plugin silently fails to bind and the UI/MCP server is simply missing. No user-visible error and no recovery.
+
+**Solution:** On startup, try the canonical port first; if bind fails with `AddrInUse`, walk a bounded range (e.g., 9998, 10000, 10001, … up to 9998 + 20) until a bind succeeds. Surface the chosen port:
+
+- **Into the plugin state** so the frontend can fetch it (`getSettings().mcp_url` already returns the current URL — just make sure this path reflects the actual bound port, not the default).
+- **Into the Bitwig extension** via the existing Droplets-instance direct-parameter display. Add a second param slot carrying the port number as a display string; the extension reads it the same way it reads the instance ID.
+
+**Caveats:**
+- The Bitwig extension can no longer assume `:9998` — it reads the port from the instance's param-display. Backwards compat: fall back to 9998 when no port display is available (old plugin, new extension).
+- Port changes across plugin reloads are a minor nuisance (cached MCP client connections may go stale). Mitigated by short-lived connections on the plugin side.
+
+**Files:** [src/gui/server.rs](../../../src/gui/server.rs) (bind loop), [src/mcp/mod.rs](../../../src/mcp/mod.rs) (same if Feature 19 not landed yet), [src/instance_param.rs](../../../src/instance_param.rs) (new port-display param), [extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsExtension.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsExtension.kt) (read the port display alongside the instance ID).
+
+---
+
 ## Implementation Order
 
 ```
@@ -344,11 +401,22 @@ Phase 01:
   2026-04-21: DEMO
   ↓
 Phase 02: 8 (egui migration) + 9 (stateful MCP) + 10 (audio-thread per-note ramps)
-          17 (get_fugue) → 15 (drag-out) → 16 (drag-in)
+          17 (get_fugue) → 15 (drag-out) → 16 (drag-in) [done/in progress]
           ↑ 17 first — tiny surface, independent of drag plumbing, and its
             compact read-back serializer gets reused by 15 when bundling
             multiple fugues into a .mid. 15 then lands the primary hand-off
             flow. 16 closes the full round-trip last.
+
+          Infra cleanups, order independent of the features above:
+          19 (single port) → 20 (dynamic port)
+          ↑ 19 first — halving the port count simplifies the bind-retry
+            logic 20 has to implement. Doing them in this order means 20
+            only walks one port range, not two.
+
+          Ergonomic polish:
+          18 (pause-instead-of-delete) — post-drag-out because it layers
+            on top of the existing tag-swap mechanic and doesn't block
+            anything else.
 ```
 
 ---
