@@ -398,6 +398,55 @@ impl DropletsMcp {
         };
         Ok(CallToolResult::success(vec![Content::text(result)]))
     }
+
+    /// Get the minimal project-state summary — which Droplets instances are
+    /// connected and what each track's primary sound source is.
+    #[tool(description = "Call this FIRST when composing. Returns a compact summary of which Droplets instances are connected, their track names, and each track's primary device. For drum tracks, includes pad notes (as pitch notation like 'C2') with pad names and loaded sample names — so you can write a drum pattern with correct note mapping instead of guessing GM conventions. For synth tracks, includes the instrument name and preset. If `layout_available` is false, no host controller extension is running (e.g. Ableton without the script); fall back to asking the user or GM conventions. Call `get_track_info` next if you need more detail.")]
+    fn get_project_state(&self) -> Result<CallToolResult, McpError> {
+        let layout = CcBridge::get_project_layout();
+        let instances = CcBridge::list_instances();
+        let state = super::project::ProjectState::build(layout.as_ref(), &instances);
+        let body = serde_json::to_string_pretty(&state)
+            .unwrap_or_else(|_| "error serializing project state".to_string());
+        Ok(CallToolResult::success(vec![Content::text(body)]))
+    }
+
+    /// Get the full recursive device chain for one instance's track.
+    #[tool(description = "Return the full device chain for one Droplets instance's track: every device on the main chain, drum machine pads with nested device chains and sample names, effect presets, etc. Does not include per-parameter detail (use `get_device_parameters` for that). Returns an error when no layout is available or the instance isn't on any known track.")]
+    fn get_track_info(&self, Parameters(req): Parameters<super::requests::GetTrackInfoRequest>) -> Result<CallToolResult, McpError> {
+        let result = match CcBridge::resolve_instance_id(&req.instance) {
+            Ok(id) => {
+                let layout = CcBridge::get_project_layout();
+                match super::project::TrackInfo::build(layout.as_ref(), &id) {
+                    Some(info) => serde_json::to_string_pretty(&info)
+                        .unwrap_or_else(|_| "error serializing track info".to_string()),
+                    None => format!(
+                        "No track info available for instance '{}' (no host controller extension, or track not matched).",
+                        req.instance
+                    ),
+                }
+            }
+            Err(e) => format!("Error: {}", e),
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
+    }
+
+    /// Get parameter-level detail for one addressed device.
+    #[tool(description = "Get the parameter list for one device on a track, addressed by a device_path like 'device:0' (first device on the chain) or 'device:0/pad:36/device:0' (first device inside the kick pad of the first drum machine). Pad indices are MIDI note numbers (0-127). Returns `{ device_name, parameters: [{ name, index, displayed_value }] }`. Use this only when you need to inspect or reference specific parameters — prefer the compact `get_project_state` / `get_track_info` views for orientation.")]
+    fn get_device_parameters(&self, Parameters(req): Parameters<super::requests::GetDeviceParametersRequest>) -> Result<CallToolResult, McpError> {
+        let result = match CcBridge::resolve_instance_id(&req.instance) {
+            Ok(id) => {
+                let layout = CcBridge::get_project_layout();
+                match super::project::DeviceParameters::build(layout.as_ref(), &id, &req.device_path) {
+                    Ok(params) => serde_json::to_string_pretty(&params)
+                        .unwrap_or_else(|_| "error serializing device parameters".to_string()),
+                    Err(e) => format!("Error: {}", e),
+                }
+            }
+            Err(e) => format!("Error: {}", e),
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
+    }
 }
 
 impl ServerHandler for DropletsMcp {

@@ -551,6 +551,33 @@ pub struct GetSlotsRequest {
     pub instance: String,
 }
 
+/// Request for `get_track_info` — just an instance reference.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetTrackInfoRequest {
+    /// Target plugin instance name or "default" for first available
+    #[serde(default = "default_instance")]
+    #[schemars(description = "Target plugin instance name or 'default' for first available")]
+    pub instance: String,
+}
+
+/// Request for `get_device_parameters` — instance + a device-path string
+/// like `"device:0/pad:36/device:1"`.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetDeviceParametersRequest {
+    /// Target plugin instance name or "default" for first available
+    #[serde(default = "default_instance")]
+    #[schemars(description = "Target plugin instance name or 'default' for first available")]
+    pub instance: String,
+    /// Path addressing one device inside the instance's track.
+    ///
+    /// Form: alternating `device:<index>` for chain positions and
+    /// `pad:<midi_note>` when descending into a drum machine. Example:
+    /// `"device:0/pad:36/device:1"` → the second device on the Kick pad of
+    /// the track's first drum machine.
+    #[schemars(description = "Device path like 'device:0/pad:36/device:1'. Use note numbers (0-127) for pads. Walk the path with `device:N` for chain position and `pad:N` for descending into a drum machine.")]
+    pub device_path: String,
+}
+
 // =============================================================================
 // Type aliases for the MCP tool interface
 // =============================================================================

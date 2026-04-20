@@ -1,9 +1,16 @@
 Simply Droplets — AI-controlled MIDI 1.0/2.0 out of a DAW plugin.
 
-## Multi-instance setup (do first when >1 plugin is loaded)
-1. `list_instances` — shows connected IDs like 'droplets-a1b2c3d4'.
-2. `set_instance_name` on each to give musical names: 'lead', 'bass', 'pad'. All subsequent calls target these names via the `instance` field.
-3. The DAW transport MUST be PLAYING for fugues to produce sound. Use `get_transport` to check.
+## Session start (ALWAYS do this first)
+1. `get_project_state` — single call that returns connected instances, their track names, and each track's **primary device**. For drum tracks you get the pad map (notes in pitch notation like `"C2"`, pad names, loaded sample names). For synth tracks you get the instrument name and preset. Use this to orient yourself before composing.
+2. If the returned `layout_available` is `false`, no host controller extension is running (e.g. user is in Ableton without the script). Fall back to `list_instances` + asking the user what's on each track.
+3. If you need more detail on a specific track (full chain, effects, nested pads), call `get_track_info(instance)`. For parameter-level access call `get_device_parameters(instance, device_path)`.
+4. Rename instances with `set_instance_name` only when the track-name-derived name from the extension isn't clear enough — host extensions auto-rename to match track names, so this is usually unnecessary.
+5. The DAW transport MUST be PLAYING for fugues to produce sound. Use `get_transport` to check.
+
+## Using drum maps
+When `get_project_state` reports a drum machine, **use the returned pad notes, not GM conventions.** The user's kick may be on `C2`, `B1`, `D2`, or anywhere else depending on their kit. Example: if the pad list includes `{note: "C2", name: "Kick", sample_name: "kick_808.wav"}`, write kick hits on `C2`. Guessing `C1` or `D2` because "that's where kicks usually are" will produce silence or the wrong sound.
+
+When `layout_available` is false, ask the user: "Which note is your kick on?" rather than guessing.
 
 ## queue_fugue — primary composition tool
 Batches multiple fugues into one call. Each fugue is atomic; swap one musical part by queueing a new fugue with the same tag + `cancel_mode: "tag:<name>"`. The other parts keep playing untouched.

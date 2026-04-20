@@ -19,6 +19,7 @@
 //! DAW routes to target plugin
 
 mod bridge;
+pub mod project;
 mod requests;
 mod server;
 
@@ -29,12 +30,40 @@ use rmcp::transport::streamable_http_server::{
     StreamableHttpService, StreamableHttpServerConfig,
     session::local::LocalSessionManager,
 };
-use axum::Router;
+use axum::{
+    Router,
+    extract::ws::{Message, WebSocket, WebSocketUpgrade},
+    http::StatusCode,
+    response::IntoResponse,
+};
 use std::sync::{Arc, OnceLock};
 use std::net::SocketAddr;
+use tokio::sync::broadcast;
 
 /// Singleton flag to ensure only one server starts
 static SERVER_STARTED: OnceLock<()> = OnceLock::new();
+
+/// Broadcast channel for `ControllerCommand`s streamed to the host
+/// controller extension via `/ws/controller`. Process-wide: any MCP tool
+/// that needs to push a command sends on this sender, and every connected
+/// WebSocket subscriber receives a copy. Bounded capacity (drops oldest on
+/// overflow — acceptable for DAW-config commands that don't need
+/// latency-critical delivery).
+const CONTROLLER_CHANNEL_CAPACITY: usize = 64;
+static CONTROLLER_TX: OnceLock<broadcast::Sender<project::ControllerCommand>> = OnceLock::new();
+
+fn controller_tx() -> &'static broadcast::Sender<project::ControllerCommand> {
+    CONTROLLER_TX.get_or_init(|| broadcast::channel(CONTROLLER_CHANNEL_CAPACITY).0)
+}
+
+/// Send a command to any connected host controller extension. v1 doesn't
+/// emit commands from MCP tools yet; callers that do can use this.
+#[allow(dead_code)]
+pub fn send_controller_command(cmd: project::ControllerCommand) {
+    // Ignored if no subscribers — the broadcast API returns Err in that
+    // case, which isn't an error for our semantics.
+    let _ = controller_tx().send(cmd);
+}
 
 /// Default port for the MCP server (plugin)
 pub const DEFAULT_MCP_PORT: u16 = 9999;
@@ -107,7 +136,16 @@ async fn run_server(port: u16) {
 
                 response
             }
-        }));
+        }))
+        // Host controller extensions (Bitwig, Ableton) push project state here.
+        // Treated as trusted local traffic — no auth because the server binds
+        // only to 127.0.0.1.
+        .route("/project_layout", axum::routing::post(handle_project_layout))
+        // WebSocket stream of ControllerCommands for the host extension.
+        // v1 emits nothing; the endpoint exists so the extension can
+        // establish its side of the pipe and so future MCP tools can enqueue
+        // commands without a protocol change.
+        .route("/ws/controller", axum::routing::any(handle_controller_ws));
 
     log::info!("MCP server listening on http://{}/mcp", addr);
 
@@ -134,4 +172,84 @@ async fn run_server(port: u16) {
 /// Check if the MCP server has been started
 pub fn is_server_running() -> bool {
     SERVER_STARTED.get().is_some()
+}
+
+/// `GET /ws/controller` — upgrade to a WebSocket that streams
+/// `ControllerCommand`s from the plugin process to a host controller
+/// extension. Each command is serialized as a JSON text frame.
+///
+/// v1 sends nothing. The connection exists so the extension can open and
+/// keep its side of the pipe; when MCP tools start emitting commands
+/// (future MIDI-mapping tool etc.), no protocol change is needed.
+async fn handle_controller_ws(ws: WebSocketUpgrade) -> impl IntoResponse {
+    ws.on_upgrade(controller_ws_loop)
+}
+
+async fn controller_ws_loop(mut socket: WebSocket) {
+    let mut rx = controller_tx().subscribe();
+    log::info!("controller WebSocket connected");
+
+    loop {
+        tokio::select! {
+            // Forward commands to the extension as JSON text frames.
+            cmd = rx.recv() => {
+                match cmd {
+                    Ok(cmd) => {
+                        let Ok(json) = serde_json::to_string(&cmd) else {
+                            log::warn!("controller WS: failed to serialize command");
+                            continue;
+                        };
+                        if socket.send(Message::Text(json.into())).await.is_err() {
+                            log::info!("controller WebSocket disconnected (send failed)");
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        log::warn!("controller WS: dropped {} commands due to backlog", n);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            // Drain anything the client sends so close frames and pings are
+            // handled; we don't process inbound content yet.
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(Message::Close(_))) | None => {
+                        log::info!("controller WebSocket closed by peer");
+                        break;
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(e)) => {
+                        log::info!("controller WebSocket recv error: {}", e);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `POST /project_layout` — accept a full ProjectLayout from a host
+/// controller extension and store it for the MCP tools to read.
+///
+/// Body is a JSON [`project::ProjectLayout`]. Replies 200 on success, 400 on
+/// parse error. Failures are logged rather than surfaced to the extension
+/// beyond a status code — the extension should retry on error with backoff.
+async fn handle_project_layout(
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    match serde_json::from_slice::<project::ProjectLayout>(&body) {
+        Ok(layout) => {
+            log::info!(
+                "project_layout received: {} tracks",
+                layout.tracks.len()
+            );
+            CcBridge::set_project_layout(layout);
+            (StatusCode::OK, "ok").into_response()
+        }
+        Err(e) => {
+            log::warn!("project_layout parse error: {}", e);
+            (StatusCode::BAD_REQUEST, format!("parse error: {}", e)).into_response()
+        }
+    }
 }

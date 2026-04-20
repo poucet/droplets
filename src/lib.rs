@@ -1,4 +1,4 @@
-use clack_extensions::{audio_ports::*, gui::*, note_ports::*, state::*};
+use clack_extensions::{audio_ports::*, gui::*, note_ports::*, params::*, state::*};
 use clack_plugin::stream::{InputStream, OutputStream};
 use clack_plugin::prelude::*;
 use clack_plugin::plugin::features::*;
@@ -16,6 +16,7 @@ use params::DropletParams;
 mod midi;
 pub mod fugue;
 pub mod gui;
+pub mod instance_param;
 pub mod logger;
 pub mod mcp;
 pub mod params;
@@ -52,9 +53,12 @@ impl Plugin for DropletPlugin {
             .register::<PluginAudioPorts>()
             .register::<PluginNotePorts>()
             .register::<PluginGui>()
-            .register::<PluginState>();
-        // Note: PluginParams intentionally not registered - this plugin controls
-        // other plugins' parameters via MIDI, it doesn't expose its own parameters
+            .register::<PluginState>()
+            // One read-only informational param exposing the instance ID, so
+            // host controller scripts can correlate a device-on-track with an
+            // MCP instance. This plugin still doesn't use params for anything
+            // musical — it controls other plugins' params via MIDI.
+            .register::<PluginParams>();
     }
 }
 

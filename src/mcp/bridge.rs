@@ -184,6 +184,13 @@ struct InstanceEntry {
 /// Global registry of plugin instances
 static REGISTRY: OnceLock<RwLock<HashMap<String, InstanceEntry>>> = OnceLock::new();
 
+/// Last-known project layout pushed by a host controller extension.
+///
+/// Process-wide (not per-instance): the extension POSTs the full project
+/// in one call. `None` until the first push — all MCP tools that consume
+/// this handle that as "no host extension running, fall back gracefully."
+static PROJECT_LAYOUT: OnceLock<RwLock<Option<super::project::ProjectLayout>>> = OnceLock::new();
+
 /// Activity log for GUI visualization
 static ACTIVITY_LOG: OnceLock<Mutex<VecDeque<ActivityEvent>>> = OnceLock::new();
 
@@ -192,6 +199,10 @@ const RING_BUFFER_SIZE: usize = 256;
 
 fn registry() -> &'static RwLock<HashMap<String, InstanceEntry>> {
     REGISTRY.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn project_layout_lock() -> &'static RwLock<Option<super::project::ProjectLayout>> {
+    PROJECT_LAYOUT.get_or_init(|| RwLock::new(None))
 }
 
 fn activity_log() -> &'static Mutex<VecDeque<ActivityEvent>> {
@@ -404,6 +415,28 @@ impl CcBridge {
     /// Get the current name for a given instance ID
     pub fn get_name(id: &str) -> Option<String> {
         registry().read().unwrap().get(id).map(|e| e.name.clone())
+    }
+
+    /// Store the latest project layout pushed by a host controller extension.
+    /// Replaces any prior snapshot — the extension sends the full project on
+    /// every change.
+    pub fn set_project_layout(layout: super::project::ProjectLayout) {
+        *project_layout_lock().write().unwrap() = Some(layout);
+    }
+
+    /// Get a clone of the current project layout, if any. Cloning here keeps
+    /// the read lock hold brief and the returned value owned, which matches
+    /// how the MCP tools consume it.
+    pub fn get_project_layout() -> Option<super::project::ProjectLayout> {
+        project_layout_lock().read().unwrap().clone()
+    }
+
+    /// Resolve an instance reference (name, ID, or the sentinel "default")
+    /// to its stable ID. Returns the MCP-conventional error message so
+    /// callers can surface it directly.
+    pub fn resolve_instance_id(instance: &str) -> Result<String, &'static str> {
+        let reg = registry().read().unwrap();
+        Self::find_id(&reg, instance)
     }
 
     /// Get the number of registered instances
