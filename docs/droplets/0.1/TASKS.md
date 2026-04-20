@@ -10,34 +10,38 @@ Split into two phases: the **Rust side** is DAW-agnostic and unblocks everything
 
 ### Phase 14a — Rust side (DAW-agnostic)
 
+**Status (2026-04-20 — shipped):** all 11 tasks complete. 145 tests pass.
+
 | Done | # | Task | Notes |
 |------|---|------|-------|
-| [ ] | 14a.1 | Expose instance ID as a read-only plugin parameter | Register `PluginParams` extension in [src/lib.rs](../../../src/lib.rs) (currently intentionally off). Param's displayed-value string = `droplets-a1b2c3d4`. Encode underlying numeric as the u32 instance-ID bits. Host extensions read the displayed string via direct-parameter API. |
-| [ ] | 14a.2 | Define `ProjectLayout` types | New module `src/mcp/project.rs`. Recursive `Device` enum with variants `Instrument { name, vendor, preset_name, sample_name, parameters }`, `Effect { name, vendor, preset_name, parameters }`, `DrumMachine { name, pads }`, `Container { name, kind, chains }`, `Unknown { name, vendor }`. `DrumPad { note: u8 (serialized as pitch notation), name, devices: Vec<Device> }`. `ParameterInfo { name, index, displayed_value }`. `#[serde(tag = "type", rename_all = "snake_case")]`. ts-rs export for future TS use. |
-| [ ] | 14a.3 | Tiered serialization views | Three views over the same rich internal type: tier 1 (minimal — primary device per track + drum pad note/name/sample_name, no params, no effect chain), tier 2 (full device chain + drum pads + nested chains, no params), tier 3 (params for one addressed device). Implement via wrapper structs or a `SerializationTier` enum that selects field inclusion. |
-| [ ] | 14a.4 | `ProjectLayout` storage in bridge | Add `project_layout: Arc<ArcSwap<Option<ProjectLayout>>>` (process-wide, not per-instance — extension pushes the whole project). Module-level in [src/mcp/bridge.rs](../../../src/mcp/bridge.rs). |
-| [ ] | 14a.5 | HTTP `POST /project_layout` endpoint | Accepts JSON body, deserializes into `ProjectLayout`, stores into the `ArcSwap`. Returns 200. Reuses existing HTTP server in [src/mcp/server.rs](../../../src/mcp/server.rs). |
-| [ ] | 14a.6 | MCP tool: `get_project_state` | Tier 1 view. Returns `{ instances: [{ id, name, track_name, primary_device }], other_tracks: [{ name }] }`. `primary_device` = first `Instrument` or `DrumMachine` in the top-level chain, or `null` for effects-only. Drum machine primary device includes `pads: [{ note: "C2", name, sample_name }]`. |
-| [ ] | 14a.7 | MCP tool: `get_track_info` | Tier 2 view. Takes `instance: String`. Returns full recursive device chain for that instance's track. No params. |
-| [ ] | 14a.8 | MCP tool: `get_device_parameters` | Tier 3 view. Takes `instance: String, device_path: String` (e.g. `"device:0/pad:36/device:1"`). Returns the param list for that single device. Defer implementation until extension populates `parameters` arrays — stub OK for v1. |
-| [ ] | 14a.9 | WebSocket `/ws/controller` endpoint | Internal command queue (bounded, drop-oldest). Extension connects and receives `ControllerCommand`s. v1 emits nothing; endpoint + queue + reconnection handling exist so future MCP tools can enqueue without protocol changes. `enum ControllerCommand { /* variants TBD */ }` with `#[serde(tag = "type")]`. |
-| [ ] | 14a.10 | Update [instructions.md](../../../src/mcp/instructions.md) | Add "## DAW context" section. Direct LLM to call `get_project_state` at the start of every session. Explain graceful degradation (empty → DAW without host extension). Clarify tier model: state → track → device. Note: when available, the primary device tells you what kind of sound is on each track; drum maps give correct note-to-sample mapping so you don't have to guess. |
-| [ ] | 14a.11 | Unit tests for `ProjectLayout` serialization | Verify tier 1/2/3 views, pitch-notation serialization on pad notes, round-trip through `POST /project_layout`. |
+| [x] | 14a.1 | Expose instance ID as a read-only plugin parameter | New [src/instance_param.rs](../../../src/instance_param.rs). `ClapId(1)`, name `"Instance"`, flag `IS_READONLY`. `value_to_text` renders the current `DropletShared::instance_id` — host extensions read it via `addDirectParameterValueDisplayObserver`. `PluginParams` extension registered in [src/lib.rs:62-67](../../../src/lib.rs#L62-L67). |
+| [x] | 14a.2 | Define `ProjectLayout` types | New [src/mcp/project.rs](../../../src/mcp/project.rs). Recursive `Device` enum (Instrument / Effect / DrumMachine / Container / Unknown), `DrumPad { note: u8, name, devices }`, `Chain`, `ParameterInfo`. Drum pad notes are MIDI numbers on the wire; all outgoing views render via `midi_to_name`. Full serde + ts-rs exports generated. |
+| [x] | 14a.3 | Tiered serialization views | Three wrapper structs over the same internal type: `ProjectState` (tier 1), `TrackInfo` + `DeviceTier2` + `DrumPadTier2` + `ChainTier2` (tier 2), `DeviceParameters` (tier 3). Each constructed via a `::build(layout, ...)` associated fn. Tier 2 types don't even carry a `parameters` field — compile-time guarantee that params don't leak at tier 2. |
+| [x] | 14a.4 | `ProjectLayout` storage in bridge | Added `static PROJECT_LAYOUT: OnceLock<RwLock<Option<ProjectLayout>>>` in [src/mcp/bridge.rs](../../../src/mcp/bridge.rs) beside the existing `REGISTRY`. `CcBridge::set_project_layout` / `get_project_layout` wrap it. Chose `RwLock<Option<...>>` over `ArcSwap` to match the existing bridge pattern. |
+| [x] | 14a.5 | HTTP `POST /project_layout` endpoint | Wired into the MCP server's axum router in [src/mcp/mod.rs](../../../src/mcp/mod.rs). Body is JSON `ProjectLayout`. Returns 200 on success, 400 with parse error on malformed JSON. |
+| [x] | 14a.6 | MCP tool: `get_project_state` | Ships tier 1 with `{ instances, other_tracks, layout_available }`. `layout_available: false` when the host extension hasn't pushed yet — LLM falls back to GM/ask-the-user. `primary_device` is the first Instrument or DrumMachine on the chain; effects-only chains serialize as `None`. Drum machine primaries include pad summaries with pitch-notation notes + sample names. |
+| [x] | 14a.7 | MCP tool: `get_track_info` | Tier 2. Takes `{ instance }`, resolves name→ID via `CcBridge::resolve_instance_id`, looks up the track in the layout, serializes via `DeviceTier2::from(&Device)`. Returns a helpful "no track info available" string when the instance isn't on any known track. |
+| [x] | 14a.8 | MCP tool: `get_device_parameters` | Tier 3 fully implemented (not stubbed). `device_path` parsed via `parse_device_path` (accepts `device:N`, `pad:N_MIDI`, `chain:N`), resolved via `resolve_path`. Returns `{ device_name, parameters }`. Ready for when the extension starts populating `parameters` arrays. |
+| [x] | 14a.9 | WebSocket `/ws/controller` endpoint | `tokio::sync::broadcast::Sender<ControllerCommand>` in a `OnceLock` (capacity 64, drop-oldest via broadcast's Lagged semantics). Handler subscribes, forwards commands as JSON text frames, drains inbound frames. `ControllerCommand::Noop` is the only variant for now — enough to exercise the pipe. `pub fn send_controller_command` is the push API for future MCP tools. |
+| [x] | 14a.10 | Update [instructions.md](../../../src/mcp/instructions.md) | Replaced the "multi-instance setup" section with "session start" that leads with `get_project_state`. New "Using drum maps" section tells the LLM to use the returned pad notes rather than GM conventions. Explicit fallback when `layout_available: false`. |
+| [x] | 14a.11 | Unit tests for `ProjectLayout` | 11 tests in [src/mcp/project.rs](../../../src/mcp/project.rs) covering: tier 1 drum-map pitch notation, tier 1 instrument-track summary, tier 1 other-tracks, tier 1 without layout, tier 2 parameters-stripped, tier 2 pad note naming, tier 2 missing instance, path parsing (valid/invalid), tier 3 resolution through pads, tier 3 error paths, round-trip serde. |
 
 ### Phase 14b — Bitwig extension
 
+Built in parallel by a second agent. Source is at [extensions/bitwig/](../../../extensions/bitwig/) (uncommitted at time of writing). Track progress + final verification in this section.
+
 | Done | # | Task | Notes |
 |------|---|------|-------|
-| [ ] | 14b.1 | Scaffold `bitwig-extension/` directory | Sibling of `src/`. README with build instructions and install path. `build.sh` calling `kotlinc -cp bitwig-api.jar src/*.kt -d build/` + `jar cf Droplets.bwextension -C build/ .`. Commit Bitwig's API jar or script its extraction from `/Applications/Bitwig Studio.app`. |
-| [ ] | 14b.2 | Extension entry + controller definition | `DropletsExtension` class extending `ControllerExtension`. `DropletsExtensionDefinition` with UUID, name, vendor. Register in `META-INF/services/com.bitwig.extension.controller.ControllerExtensionDefinition`. |
-| [ ] | 14b.3 | Track + device enumeration | `TrackBank` with reasonable size (32). Per track, `Track.createDeviceBank(16)`. Filter-by-matcher variant using `host.createVST3DeviceMatcher(<droplets-vst3-uid>)` for fast Droplets detection. |
-| [ ] | 14b.4 | Read instance ID from Droplets params | `device.addDirectParameterIdObserver` + `setObservedParameterIds([<instance-id-param-id>])` + `addDirectParameterValueDisplayObserver` to read the displayed string. |
-| [ ] | 14b.5 | Drum Machine pad enumeration | `device.hasDrumPads()` detection → `device.createDrumPadBank(128)` → per pad: `name()`, `addNoteObserver`, nested `pad.createDeviceBank(8)` for chain, `sampleName()` on the nested Sampler. |
-| [ ] | 14b.6 | Device chain walk + preset names | Per device: `name()`, `presetName()`, `vendor()` where available, `isPlugin()`. Recurse into `DrumPad.createDeviceBank`. Parameter reading deferred (tier 3). |
-| [ ] | 14b.7 | Auto-rename Droplets instance | On first sight of a Droplets device on track X, POST `/rename_instance` to the plugin with `{ instance: <instance_id>, name: <track_name> }`. Use existing MCP rename route. |
-| [ ] | 14b.8 | Build ProjectLayout JSON + POST | Schedule work off the observer thread. Use `java.net.http.HttpClient` to POST to `http://127.0.0.1:9999/project_layout`. Re-POST on any relevant observer change (device added/removed, preset/sample swap, pad name change, track name change). |
-| [ ] | 14b.9 | WebSocket client for `/ws/controller` | Connect, auto-reconnect on failure. Handle `ControllerCommand` variants as they land (v1: none to handle, just connect + log). |
-| [ ] | 14b.10 | Bitwig-demo walkthrough | With extension installed: load Droplets on a drum track + a synth track → verify `get_project_state` shows the right primary devices and pad names → verify auto-rename → verify drum-pattern demo picks correct notes from pad names. |
+| [ ] | 14b.1 | Scaffold `extensions/bitwig/` directory | Kotlin + `kotlinc`/`jar` shell script, no Gradle. Sibling of `src/`. |
+| [ ] | 14b.2 | Extension entry + controller definition | `DropletsExtension` + `DropletsExtensionDefinition`, service manifest registered. |
+| [ ] | 14b.3 | Track + device enumeration | `TrackBank` with reasonable size, per-track `DeviceBank`, VST3 matcher for Droplets detection. |
+| [ ] | 14b.4 | Read instance ID from Droplets params | Direct-parameter ID observer + display-value observer on the `Instance` param. |
+| [ ] | 14b.5 | Drum Machine pad enumeration | `createDrumPadBank` + per-pad `name()` / `addNoteObserver` / nested `DeviceBank` / `sampleName()`. |
+| [ ] | 14b.6 | Device chain walk + preset names | Per device: name, preset, vendor, recurse through containers. Params deferred for tier 3. |
+| [ ] | 14b.7 | Auto-rename Droplets instance | POST `/rename_instance` on first sight, so the LLM sees track-matched names without user intervention. |
+| [ ] | 14b.8 | Build ProjectLayout JSON + POST | Schedule HTTP off the observer thread; re-POST on relevant changes. |
+| [ ] | 14b.9 | WebSocket client for `/ws/controller` | Connect + auto-reconnect. v1 has nothing to handle beyond `Noop`. |
+| [ ] | 14b.10 | Bitwig-demo walkthrough | End-to-end: load on 2 tracks, verify primary devices + pad names via `get_project_state`, verify auto-rename, demo drum pattern uses correct notes. |
 
 ### Phase 14c — Ableton (follow-up, not demo-critical)
 
@@ -51,8 +55,9 @@ Remote Script (Python) or M4L device — decide based on Ableton version of demo
 
 ---
 
-## Open questions
+## Resolved design decisions
 
-- **Instance ID param encoding:** best way to make the CLAP parameter's display string equal the instance ID? CLAP params are floats; we need the displayed-value mapping to return the ID string regardless of the numeric value. Investigate `clack`'s `Param::display` hooks in [src/params.rs](../../../src/params.rs) when implementing 14a.1.
-- **Ableton/Logic degradation messaging:** should `get_project_state` return `{ supported: false, reason: "no host extension running" }` or just an empty payload? Former is more informative for the LLM; latter is simpler. Lean toward former — one extra bool field, much clearer for the model.
-- **`device_path` addressing format:** `"device:0/pad:36/device:1"` (using pad's MIDI note) vs `"device:0/pad:3/device:1"` (using pad bank index). Note-based is more stable across reorderings. Decide when implementing 14a.3.
+- **Instance ID param encoding:** went with `ParamInfoFlags::IS_READONLY` + constant numeric value `0.0` + `value_to_text` returning the `instance_id` string. Host extensions read via `addDirectParameterValueDisplayObserver`. Numeric value is meaningless but that's fine — only the displayed string matters for this correlation.
+- **Degradation messaging:** `get_project_state` returns `layout_available: bool` alongside the instance list. `false` = no host extension; the LLM falls back. Instructions.md steers the fallback explicitly.
+- **`device_path` addressing:** note-based pad segment (`pad:36` = MIDI C2). Survives pad reorderings because it's addressed by trigger note rather than position. `parse_device_path` rejects out-of-range notes.
+- **Storage primitive:** used `OnceLock<RwLock<Option<ProjectLayout>>>` to match the existing bridge pattern rather than pulling in `ArcSwap` for a single struct. Contention is negligible (writer runs only when the extension re-POSTs on change).
