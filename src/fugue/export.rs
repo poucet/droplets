@@ -242,62 +242,195 @@ fn lerp(a: f64, b: f64, t: f64) -> f64 {
 // potential future MCP tool.
 // =============================================================================
 
+/// Cap (in beats) applied when computing LCM durations in
+/// `merge_fugues_by_tag`. 128 beats = 32 bars at 4/4. Above this, relatively
+/// prime or otherwise pathological duration combinations would produce
+/// exports too large to be musically useful; fall back to the max of the
+/// input durations with a log warning. In practice the LLM writes fugues
+/// with nice power-of-two durations (2, 4, 8, 16 beats), so this cap is
+/// almost never hit.
+const LCM_CAP_BEATS: f64 = 128.0;
+
+/// Quantize beats to this resolution when computing LCM. 960 ticks/beat
+/// matches the standard DAW PPQ and cleanly divides triplets (÷3), sixteenth
+/// notes (÷4), swung grids, etc. — anything the LLM is likely to write.
+const LCM_TICKS_PER_BEAT: u64 = 960;
+
 /// Merge fugues that share a tag into one `FugueDefinition` per tag.
 /// Untagged fugues pass through as-is (one output entry each, tag stays
-/// `None`). Order is stable: the first-seen tag (and untagged fugues in
-/// input order) determines output order.
+/// `None`). Order is stable: the first-seen tag determines output order.
+///
+/// **Duration handling via LCM:** when a tag group's members have different
+/// durations — a 4-bar bass line + a 16-bar melody, say — the merged fugue's
+/// duration is the LCM of its members' durations, and each member's events
+/// are replicated to fill that span. This matches the user's musical
+/// expectation that dropping the merged clip into a DAW and looping it
+/// produces the same result as playing the fugues together live. With only
+/// `max`, the shorter pattern would stop mid-loop.
+///
+/// Example: bass (4 beats) + melody (16 beats) → LCM = 16, bass replicated 4×,
+/// melody once, merged duration = 16.
+///
+/// **Oversized LCM — truncate instead of revert to `max`.** If the computed
+/// LCM exceeds [`LCM_CAP_BEATS`] (relatively prime durations, exotic time
+/// signatures), the merged duration is clamped to the cap and every member
+/// keeps replicating as many cycles as fit; the final (partial) cycle's
+/// events past the cap are dropped. This preserves the "everything plays
+/// in parallel" feel even when a perfect loop isn't representable in the
+/// export size budget.
 ///
 /// Merged fields:
-/// - **events**: union of all inputs in the group, sorted by `beat_offset`
-/// - **duration_beats**: max of input durations — the merged fugue needs to
-///   be at least as long as its longest contributor
-/// - **loop_mode**, **quantize**, **cancel_mode**, **cc_interpolation**: inherited
-///   from the first fugue of the group. Groups usually have one fugue, so
-///   this is a deterministic pick that matches the typical case
-/// - **tag**: the shared tag for the group
+/// - **events**: union of replicated inputs, sorted by `beat_offset`
+/// - **duration_beats**: LCM (or capped at `LCM_CAP_BEATS`)
+/// - **loop_mode**, **quantize**, **cancel_mode**, **cc_interpolation**:
+///   inherited from the first fugue of the group
+/// - **tag**: the shared tag (`None` for untagged singletons)
 /// - **id**: freshly generated so the merged fugue has a distinct identity
 pub fn merge_fugues_by_tag(defs: &[FugueDefinition]) -> Vec<FugueDefinition> {
-    let mut out: Vec<FugueDefinition> = Vec::new();
+    // Group first, then merge — separating the two phases keeps the LCM +
+    // replication logic on flat lists rather than tangled with tag tracking.
+    let mut groups: Vec<(Option<String>, Vec<&FugueDefinition>)> = Vec::new();
     let mut tag_to_index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-
     for def in defs {
         match &def.tag {
             Some(tag) => {
                 if let Some(&idx) = tag_to_index.get(tag) {
-                    // Merge into the existing group entry.
-                    let merged = &mut out[idx];
-                    merged.events.extend(def.events.iter().cloned());
-                    merged.duration_beats = merged.duration_beats.max(def.duration_beats);
+                    groups[idx].1.push(def);
                 } else {
-                    // First time we've seen this tag — clone the fugue so
-                    // we don't mutate the caller's data, then give it a
-                    // fresh id (the merged fugue is a new identity).
-                    let mut base = def.clone();
-                    base.id = crate::fugue::types::generate_fugue_id();
-                    tag_to_index.insert(tag.clone(), out.len());
-                    out.push(base);
+                    tag_to_index.insert(tag.clone(), groups.len());
+                    groups.push((Some(tag.clone()), vec![def]));
                 }
             }
             None => {
-                // Untagged: pass through in place. Each untagged fugue is
-                // its own group — we don't know if the user meant two
-                // untagged queues to mean "the same part."
-                out.push(def.clone());
+                // Each untagged fugue is its own group — we don't know if
+                // two untagged queues were meant to represent the same part.
+                groups.push((None, vec![def]));
             }
         }
     }
 
-    // Sort events in every merged group. Passes-through untagged entries
-    // already have sorted events, but a sort is O(n log n) and cheap here.
-    for def in &mut out {
-        def.events.sort_by(|a, b| {
+    let mut out: Vec<FugueDefinition> = Vec::with_capacity(groups.len());
+    for (tag, members) in groups {
+        // Single-member group: nothing to merge, just pass through with a
+        // fresh id (or keep original id for untagged singletons since they're
+        // unchanged). Avoids unnecessary event cloning for the common case.
+        if members.len() == 1 {
+            let mut base = members[0].clone();
+            if tag.is_some() {
+                base.id = crate::fugue::types::generate_fugue_id();
+            }
+            out.push(base);
+            continue;
+        }
+
+        let durations: Vec<f64> = members.iter().map(|d| d.duration_beats).collect();
+        let target_duration = lcm_beats_capped(&durations, LCM_CAP_BEATS);
+
+        // Replicate each fugue's events across target_duration. When LCM fit
+        // under the cap, every cycle completes exactly at the boundary. When
+        // we capped, the last cycle of at least one member is partial —
+        // events past `target_duration` are dropped ("cut them off at the end"
+        // semantics) rather than leaving the tail silent.
+        let mut merged_events: Vec<TimedFugueEvent> = Vec::new();
+        for def in &members {
+            let d = def.duration_beats;
+            if d <= 0.0 {
+                continue;
+            }
+            let mut cycle = 0usize;
+            loop {
+                let offset = cycle as f64 * d;
+                if offset >= target_duration {
+                    break;
+                }
+                for ev in &def.events {
+                    let new_beat = ev.beat_offset + offset;
+                    if new_beat < target_duration {
+                        merged_events.push(TimedFugueEvent {
+                            beat_offset: new_beat,
+                            event: ev.event,
+                        });
+                    }
+                }
+                cycle += 1;
+            }
+        }
+
+        merged_events.sort_by(|a, b| {
             a.beat_offset
                 .partial_cmp(&b.beat_offset)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+
+        // Inherit quantize/loop/interpolation from the first member. Groups
+        // with >1 member are unusual enough that a smarter policy isn't
+        // worth the complexity.
+        let mut base = members[0].clone();
+        base.id = crate::fugue::types::generate_fugue_id();
+        base.tag = tag;
+        base.events = merged_events;
+        base.duration_beats = target_duration;
+        out.push(base);
     }
 
     out
+}
+
+/// LCM over a slice of `f64` beat durations, clamped at `cap_beats`. Pairs
+/// with the caller's truncation logic: when the true LCM would blow the cap
+/// (relatively prime durations, exotic time signatures), return the cap and
+/// let the caller replicate members until they run out of room.
+///
+/// Quantizes to [`LCM_TICKS_PER_BEAT`] ticks before computing LCM, so floats
+/// that come in as (near-)rationals like `1.0 / 3.0` still snap cleanly.
+fn lcm_beats_capped(durations: &[f64], cap_beats: f64) -> f64 {
+    if durations.is_empty() {
+        return 0.0;
+    }
+    let mut lcm_t: u64 = beats_to_ticks(durations[0]);
+    let cap_ticks = beats_to_ticks(cap_beats);
+    for &d in &durations[1..] {
+        let d_t = beats_to_ticks(d);
+        if d_t == 0 {
+            continue;
+        }
+        lcm_t = lcm_u64(lcm_t, d_t);
+        // Early bail on explosion — the numbers can grow fast with coprime
+        // durations, and we'd rather return the cap than risk overflow on
+        // the next iteration.
+        if lcm_t > cap_ticks {
+            log::warn!(
+                "merge_fugues_by_tag: LCM of durations {:?} exceeds {} beat cap; \
+                 clamping merged duration to cap and truncating member cycles at the end",
+                durations, cap_beats
+            );
+            return cap_beats;
+        }
+    }
+    ticks_to_beats(lcm_t)
+}
+
+fn beats_to_ticks(b: f64) -> u64 {
+    (b * LCM_TICKS_PER_BEAT as f64).round() as u64
+}
+
+fn ticks_to_beats(t: u64) -> f64 {
+    t as f64 / LCM_TICKS_PER_BEAT as f64
+}
+
+fn lcm_u64(a: u64, b: u64) -> u64 {
+    if a == 0 || b == 0 {
+        return 0;
+    }
+    a / gcd_u64(a, b) * b
+}
+
+fn gcd_u64(a: u64, b: u64) -> u64 {
+    if b == 0 {
+        a
+    } else {
+        gcd_u64(b, a % b)
+    }
 }
 
 /// Owned intermediate representation of a multi-fugue MIDI export.
@@ -621,6 +754,8 @@ mod tests {
 
     #[test]
     fn merge_folds_same_tag_into_one_definition() {
+        // LCM(4, 8) = 8. The 4-beat fugue replicates twice, the 8-beat
+        // fugue plays once — merged duration 8, 6 total events.
         let a = FugueDefinition::new(
             vec![TimedFugueEvent::note_on(0.0, 0, 36, 100), TimedFugueEvent::note_off(1.0, 0, 36)],
             4.0,
@@ -634,12 +769,117 @@ mod tests {
         assert_eq!(merged.len(), 1);
         let combined = &merged[0];
         assert_eq!(combined.tag.as_deref(), Some("bass"));
-        assert_eq!(combined.events.len(), 4);
-        // Duration = max of inputs' durations.
+        // a's 2 events × 2 cycles + b's 2 events × 1 cycle = 6 events.
+        assert_eq!(combined.events.len(), 6);
         assert_eq!(combined.duration_beats, 8.0);
-        // Events sorted by beat_offset (0, 1, 2, 3).
+        // a's events at (0, 1) replicate to (4, 5); b's events at (2, 3) once.
         let beats: Vec<f64> = combined.events.iter().map(|e| e.beat_offset).collect();
-        assert_eq!(beats, vec![0.0, 1.0, 2.0, 3.0]);
+        assert_eq!(beats, vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn merge_lcm_expands_shorter_fugue_to_fill_longer() {
+        // 4-bar bass + 16-bar melody → LCM 16. Bass plays 4×, melody 1×.
+        // This is the "two loops at different resolutions" case the LLM
+        // naturally writes and users expect to loop cleanly in the DAW.
+        let bass_4_beats = FugueDefinition::new(
+            vec![TimedFugueEvent::note_on(0.0, 0, 36, 100)],
+            4.0,
+        ).with_tag("bass");
+        let melody_16_beats = FugueDefinition::new(
+            vec![TimedFugueEvent::note_on(0.0, 0, 60, 100)],
+            16.0,
+        ).with_tag("bass");  // Same tag so they merge.
+
+        let merged = merge_fugues_by_tag(&[bass_4_beats, melody_16_beats]);
+        assert_eq!(merged.len(), 1);
+        let combined = &merged[0];
+        assert_eq!(combined.duration_beats, 16.0);
+        // Bass replicates at offsets 0, 4, 8, 12 (4 cycles); melody once at 0.
+        let bass_beats: Vec<f64> = combined
+            .events
+            .iter()
+            .filter(|e| matches!(e.event, crate::fugue::types::FugueEvent::NoteOn { note: 36, .. }))
+            .map(|e| e.beat_offset)
+            .collect();
+        assert_eq!(bass_beats, vec![0.0, 4.0, 8.0, 12.0]);
+        let melody_beats: Vec<f64> = combined
+            .events
+            .iter()
+            .filter(|e| matches!(e.event, crate::fugue::types::FugueEvent::NoteOn { note: 60, .. }))
+            .map(|e| e.beat_offset)
+            .collect();
+        assert_eq!(melody_beats, vec![0.0]);
+    }
+
+    #[test]
+    fn merge_lcm_coprime_durations_within_cap() {
+        // 3 + 5 = LCM 15. Coprime but small enough to be under the cap.
+        let a = FugueDefinition::new(
+            vec![TimedFugueEvent::note_on(0.0, 0, 60, 100)],
+            3.0,
+        ).with_tag("x");
+        let b = FugueDefinition::new(
+            vec![TimedFugueEvent::note_on(0.0, 0, 62, 100)],
+            5.0,
+        ).with_tag("x");
+        let merged = merge_fugues_by_tag(&[a, b]);
+        assert_eq!(merged[0].duration_beats, 15.0);
+        // a replicates 5×, b replicates 3×.
+        assert_eq!(merged[0].events.len(), 5 + 3);
+    }
+
+    #[test]
+    fn merge_lcm_oversized_truncates_at_cap() {
+        // LCM(127, 128) = 16256 beats — far past the 128-beat cap. Both
+        // members should replicate as many cycles as fit at 128 beats, with
+        // events past the cap truncated. Neither silent-tails nor plays-once.
+        let a = FugueDefinition::new(
+            vec![TimedFugueEvent::note_on(0.0, 0, 60, 100)],
+            127.0,
+        ).with_tag("x");
+        let b = FugueDefinition::new(
+            vec![TimedFugueEvent::note_on(0.0, 0, 62, 100)],
+            128.0,
+        ).with_tag("x");
+        let merged = merge_fugues_by_tag(&[a, b]);
+        assert_eq!(merged[0].duration_beats, 128.0);
+
+        // a (127-beat): cycles start at 0 and 127; the cycle at 127 has its
+        // event at 127 which is < 128, so it plays. 2 events total for a.
+        // b (128-beat): one cycle at offset 0, event at 0 < 128. 1 event.
+        // Grand total: 3 events.
+        assert_eq!(merged[0].events.len(), 3);
+
+        // All events within the cap.
+        for ev in &merged[0].events {
+            assert!(ev.beat_offset < 128.0);
+        }
+    }
+
+    #[test]
+    fn merge_lcm_short_against_huge_truncates_cleanly() {
+        // 1-beat pattern + 127-beat pattern → LCM = 127, under cap. All
+        // fine. Harder case: 1-beat pattern + a 131-beat pattern. LCM jumps
+        // to 131 (still under 128? no, 131 > 128). Actually LCM(1, 131) = 131.
+        // That exceeds cap (128). Clamp to 128, replicate short 128× — short
+        // should still show up many times, not be dropped. Exercises the
+        // truncate-instead-of-silence semantics end to end.
+        let short = FugueDefinition::new(
+            vec![TimedFugueEvent::note_on(0.0, 0, 60, 100)],
+            1.0,
+        ).with_tag("x");
+        let long = FugueDefinition::new(
+            vec![TimedFugueEvent::note_on(0.0, 0, 62, 100)],
+            131.0,
+        ).with_tag("x");
+        let merged = merge_fugues_by_tag(&[short, long]);
+        assert_eq!(merged[0].duration_beats, 128.0);
+        // short: 128 cycles at offsets 0..127, one event each = 128.
+        // long: one cycle at offset 0 (next cycle would start at 131 > 128).
+        //   Its event at beat 0 is within cap → 1 event.
+        // Total 129.
+        assert_eq!(merged[0].events.len(), 129);
     }
 
     #[test]
