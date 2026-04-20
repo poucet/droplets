@@ -12,7 +12,6 @@ import {
   noteOn,
   noteOff,
   wiggleSlot,
-  queueFugue,
   cancelFugue,
   exportFugue,
   RealtimeConnection,
@@ -34,8 +33,7 @@ import type {
 // thrash on every render.
 const EMPTY_INFOS: FugueInfo[] = [];
 const EMPTY_DEFS: Map<string, FugueDefinition> = new Map();
-import { FugueList, FugueViewer, FugueComposer, Settings, DawLayout } from './components';
-import type { ComposerFugue } from './components';
+import { FugueList, FugueViewer, Settings, DawLayout } from './components';
 import { useTransport, useTimingSync } from './timing';
 
 // Note names for display. DAW convention: C3 = middle C = MIDI 60
@@ -64,8 +62,6 @@ const App: React.FC = () => {
   // WS reconnect, no REST round-trip).
   const [fuguesByInstance, setFuguesByInstance] = useState<Map<string, { infos: FugueInfo[]; definitions: Map<string, FugueDefinition> }>>(new Map());
   const [selectedFugueId, setSelectedFugueId] = useState<string | undefined>();
-  const [showComposer, setShowComposer] = useState(false);
-  const [editingFugue, setEditingFugue] = useState<FugueDefinition | null>(null);
 
   // Per-instance transport cache — used to re-sync the timing manager on
   // instance switch without a refetch. Effect below runs the re-sync; it
@@ -234,23 +230,6 @@ const App: React.FC = () => {
       console.error('Failed to cancel fugue:', e);
     }
   }, [selectedInstance, selectedFugueId, fetchFugues]);
-
-  const handleQueueFugue = useCallback(async (fugue: ComposerFugue) => {
-    try {
-      await queueFugue(fugue, selectedInstance);
-      setShowComposer(false);
-      setEditingFugue(null);
-      // Refresh fugue list
-      await fetchFugues();
-    } catch (e) {
-      console.error('Failed to queue fugue:', e);
-    }
-  }, [selectedInstance, fetchFugues]);
-
-  const handleEditFugue = useCallback((fugue: FugueDefinition) => {
-    setEditingFugue(fugue);
-    setShowComposer(true);
-  }, []);
 
   const handleExportFugue = useCallback(async (id: string) => {
     try {
@@ -459,54 +438,29 @@ const App: React.FC = () => {
 
       <main className="app-main">
         {activeTab === 'sequencer' ? (
-          /* Sequencer Tab */
+          /* Sequencer Tab — read-only view of what's playing. Composing is
+             LLM-driven via MCP; the UI used to have an in-app editor, but it
+             duplicated the DAW's piano roll badly and was removed. */
           <div className="sequencer-view">
             <div className="sequencer-header">
               <h2>Fugue Sequencer</h2>
-              <button
-                className="new-fugue-btn"
-                onClick={() => {
-                  if (showComposer) {
-                    setShowComposer(false);
-                    setEditingFugue(null);
-                  } else {
-                    setShowComposer(true);
-                    setEditingFugue(null);
-                  }
-                }}
-              >
-                {showComposer ? 'Back to List' : '+ New Fugue'}
-              </button>
             </div>
-
-            {showComposer ? (
-              <FugueComposer
-                onQueue={handleQueueFugue}
-                onCancel={() => {
-                  setShowComposer(false);
-                  setEditingFugue(null);
-                }}
-                initialFugue={editingFugue ?? undefined}
+            <div className="sequencer-content">
+              <FugueList
+                fugues={fugueInfos}
+                selectedId={selectedFugueId}
+                onSelect={handleSelectFugue}
+                onCancel={handleCancelFugue}
+                onExport={handleExportFugue}
               />
-            ) : (
-              <div className="sequencer-content">
-                <FugueList
-                  fugues={fugueInfos}
-                  selectedId={selectedFugueId}
-                  onSelect={handleSelectFugue}
-                  onCancel={handleCancelFugue}
-                  onExport={handleExportFugue}
-                />
 
-                {selectedFugue && (
-                  <FugueViewer
-                    fugue={selectedFugue}
-                    info={selectedInfo}
-                    onEdit={handleEditFugue}
-                  />
-                )}
-              </div>
-            )}
+              {selectedFugue && (
+                <FugueViewer
+                  fugue={selectedFugue}
+                  info={selectedInfo}
+                />
+              )}
+            </div>
           </div>
         ) : activeTab === 'monitor' ? (
           /* Monitor Tab */
