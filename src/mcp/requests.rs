@@ -273,6 +273,31 @@ pub enum FugueContent {
         #[schemars(description = "Fugue-level default interpolation for segments whose points don't specify a curve. 'linear' (default), 'exp', 'log', or 'none'.")]
         interpolation: Option<String>,
     },
+    /// Automate a Droplets plugin slot param over time.
+    ///
+    /// Slots are the preferred surface for automating synth parameters in a
+    /// modern DAW: each of the 16 slots is exposed as a native host parameter,
+    /// mapped once by the user (right-click → Map in Bitwig, Configure → drag
+    /// in Ableton) to whichever synth control they want to drive. The LLM then
+    /// writes the slot's normalized 0.0–1.0 value over beats, and the DAW
+    /// records it as real automation on the target parameter.
+    ///
+    /// Use this in preference to the `cc` variant for soft synths — standard
+    /// CCs don't drive modern plugin synths out of the box. Keep `cc` for
+    /// external hardware targets.
+    Slot {
+        /// Slot index 0–15. The LLM should read `slots` in `get_project_state`
+        /// to see which slot is currently mapped to what.
+        #[schemars(description = "Slot index 0-15. See get_project_state's `slots` per instance for the current human-readable name of each slot (e.g. 'Filter Cutoff').")]
+        slot: u8,
+        /// Normalized 0.0–1.0 trajectory points. Same tuple form as other lanes.
+        #[schemars(description = "Array of [beat, value] or [beat, value, curve] points. Values 0.0-1.0 (normalized). The audio thread interpolates between consecutive points and emits host param events so the DAW records the automation.")]
+        points: Vec<Point>,
+        /// Lane-level default curve.
+        #[serde(default)]
+        #[schemars(description = "Fugue-level default interpolation: 'linear' (default), 'exp' (ease-in), 'log' (ease-out), or 'none' (stepped). Per-point curves override.")]
+        interpolation: Option<String>,
+    },
     /// Per-note pressure/aftertouch over time (MIDI 2.0). Modulates a single held note.
     /// Requires a concurrent Notes fugue holding the target note.
     /// Same per-segment curve shape as CC and per-note pitch bend.
@@ -312,6 +337,13 @@ pub enum FugueContent {
         #[serde(default)]
         #[schemars(description = "Array of per-note pressure lanes. Each targets one held note. Omit or empty if no pressure.")]
         pressures: Vec<CompactPressure>,
+        /// Slot-param automation lanes. One entry per slot you want to drive
+        /// alongside the composite's notes (e.g. notes + filter sweep via a
+        /// user-mapped slot). Empty when the composite is only notes + MIDI
+        /// expression.
+        #[serde(default)]
+        #[schemars(description = "Array of slot-param automation lanes. Each targets one of the 16 Droplets slot params (slot 0-15). Preferred over raw CC lanes for driving soft-synth parameters — the user maps each slot to a synth control in their DAW once, then the LLM writes slot values and the DAW records native automation. Omit or empty if no slot automation.")]
+        slots: Vec<CompactSlot>,
     },
 }
 
@@ -326,6 +358,21 @@ pub struct CompactCc {
     #[schemars(description = "Array of [beat, value] or [beat, value, curve] points. Values 0-127.")]
     pub points: Vec<Point>,
     /// Default curve for segments without a per-point curve.
+    #[serde(default)]
+    #[schemars(description = "Lane-level default interpolation: 'linear' (default), 'exp', 'log', or 'none'. Per-point curves override.")]
+    pub interpolation: Option<String>,
+}
+
+/// One slot-param automation lane inside a [`FugueContent::Composite`].
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CompactSlot {
+    /// Slot index 0–15.
+    #[schemars(description = "Slot index 0-15. See get_project_state's per-instance `slots` for what each slot is currently mapped to.")]
+    pub slot: u8,
+    /// Array of [beat, value] or [beat, value, curve] points. Values 0.0–1.0.
+    #[schemars(description = "Array of [beat, value] or [beat, value, curve] points. Values 0.0-1.0 (normalized).")]
+    pub points: Vec<Point>,
+    /// Lane-level default curve.
     #[serde(default)]
     #[schemars(description = "Lane-level default interpolation: 'linear' (default), 'exp', 'log', or 'none'. Per-point curves override.")]
     pub interpolation: Option<String>,
@@ -888,6 +935,30 @@ pub fn emit_cc_lane(
                 value,
                 curve: Some(resolved),
             },
+        ));
+    }
+}
+
+/// Emit slot events for one lane. Mirrors `emit_cc_lane` but targets a slot
+/// index instead of a (channel, CC) pair, and carries normalized 0..1 float
+/// values instead of 0-127 ints. Curve handling is identical — each event
+/// carries its own resolved curve so composites with multiple slot lanes can
+/// use different shapes without fighting over a single fugue-level mode.
+pub fn emit_slot_lane(
+    slot: u8,
+    points: &[Point],
+    lane_default_mode: InterpolationMode,
+    events: &mut Vec<TimedFugueEvent>,
+) {
+    let slot = slot.min(15);
+    for point in points {
+        let value = (point.value as f32).clamp(0.0, 1.0);
+        let resolved = point.curve.as_deref()
+            .map(|c| parse_interpolation_mode(Some(c)))
+            .unwrap_or(lane_default_mode);
+        events.push(TimedFugueEvent::new(
+            point.beat,
+            FugueEvent::Slot { slot, value, curve: Some(resolved) },
         ));
     }
 }
@@ -1774,7 +1845,7 @@ mod tests {
         }"#;
         let content: FugueContent = serde_json::from_str(json).unwrap();
         match content {
-            FugueContent::Composite { notes, cc, pitch_bends, pressures } => {
+            FugueContent::Composite { notes, cc, pitch_bends, pressures, slots } => {
                 assert_eq!(notes.len(), 3);
                 assert_eq!(notes[0].note.0, 36);  // C1 in DAW convention (C3=60)
                 assert_eq!(cc.len(), 2);
@@ -1783,6 +1854,7 @@ mod tests {
                 assert_eq!(pitch_bends.len(), 1);
                 assert_eq!(pitch_bends[0].note.0, 55);  // G2 in DAW convention
                 assert_eq!(pressures.len(), 2);
+                assert!(slots.is_empty());
             }
             _ => panic!("expected Composite variant"),
         }
@@ -1797,11 +1869,12 @@ mod tests {
         }"#;
         let content: FugueContent = serde_json::from_str(json).unwrap();
         match content {
-            FugueContent::Composite { notes, cc, pitch_bends, pressures } => {
+            FugueContent::Composite { notes, cc, pitch_bends, pressures, slots } => {
                 assert_eq!(notes.len(), 1);
                 assert!(cc.is_empty());
                 assert!(pitch_bends.is_empty());
                 assert!(pressures.is_empty());
+                assert!(slots.is_empty());
             }
             _ => panic!("expected Composite variant"),
         }

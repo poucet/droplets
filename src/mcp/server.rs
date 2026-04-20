@@ -19,7 +19,7 @@ use super::bridge::CcBridge;
 use super::requests::{
     CancelFugueRequest, CancelFuguesByTagRequest, FugueContent, GetSlotsRequest,
     QueueFugueRequest, RenameInstanceRequest, RenameSlotRequest, SetParamRequest,
-    emit_cc_lane, emit_notes, emit_per_note_pitch_bend, emit_per_note_pressure,
+    emit_cc_lane, emit_notes, emit_per_note_pitch_bend, emit_per_note_pressure, emit_slot_lane,
     parse_interpolation_mode,
 };
 use crate::fugue::{
@@ -266,7 +266,11 @@ impl DropletsMcp {
                     let default_mode = parse_interpolation_mode(interpolation.as_deref());
                     emit_per_note_pressure(note.0, points, default_mode, fugue_channel, &mut events);
                 }
-                FugueContent::Composite { notes, cc, pitch_bends, pressures } => {
+                FugueContent::Slot { slot, points, interpolation } => {
+                    let lane_mode = parse_interpolation_mode(interpolation.as_deref());
+                    emit_slot_lane(*slot, points, lane_mode, &mut events);
+                }
+                FugueContent::Composite { notes, cc, pitch_bends, pressures, slots } => {
                     // One fugue, multiple concerns. Each lane carries its own
                     // interpolation mode; events get curves set explicitly
                     // per-lane so different CC lanes can use different curves
@@ -283,6 +287,10 @@ impl DropletsMcp {
                     for lane in pressures {
                         let lane_mode = parse_interpolation_mode(lane.interpolation.as_deref());
                         emit_per_note_pressure(lane.note.0, &lane.points, lane_mode, fugue_channel, &mut events);
+                    }
+                    for lane in slots {
+                        let lane_mode = parse_interpolation_mode(lane.interpolation.as_deref());
+                        emit_slot_lane(lane.slot, &lane.points, lane_mode, &mut events);
                     }
                 }
             }
