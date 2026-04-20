@@ -31,12 +31,7 @@ pub fn fugue_to_smf(definition: &FugueDefinition, tempo_bpm: f64) -> Vec<u8> {
     let tempo_microseconds = (60_000_000.0 / tempo_bpm) as u32;
     track_events.push((0, TrackEventKind::Meta(MetaMessage::Tempo(u24::new(tempo_microseconds)))));
 
-    // Collect all events with absolute tick positions
-    let events = if definition.cc_interpolation == InterpolationMode::Linear {
-        interpolate_cc_events(&definition.events, definition.duration_beats)
-    } else {
-        definition.events.clone()
-    };
+    let events = densify_cc_events(&definition.events, definition.cc_interpolation);
 
     for timed_event in &events {
         let tick = beat_to_tick(timed_event.beat_offset);
@@ -143,76 +138,88 @@ fn fugue_event_to_midi(event: &FugueEvent) -> Option<TrackEventKind<'static>> {
     }
 }
 
-/// Interpolate CC events for smooth automation export
+/// Densify CC lanes for MIDI export: turn sparse anchor events into a
+/// smooth event stream so DAW piano-roll automation curves match what
+/// the fugue schema describes.
 ///
-/// For Linear interpolation mode, generates intermediate CC values between
-/// consecutive CC events on the same channel/CC number.
-fn interpolate_cc_events(events: &[TimedFugueEvent], _duration_beats: f64) -> Vec<TimedFugueEvent> {
-    let mut result: Vec<TimedFugueEvent> = Vec::new();
-
-    // Group CC events by (channel, cc) for interpolation
-    let mut cc_events: HashMap<(u8, u8), Vec<(f64, u8)>> = HashMap::new();
+/// ## Curve selection per segment
+/// Each CC event carries an optional per-point `curve` (the "curve
+/// arriving at this point" convention — see `FugueEvent::Cc`). For each
+/// segment between two anchors on the same `(channel, cc)` lane, the
+/// arriving point's curve wins; absent that, the fugue-level
+/// `cc_interpolation` applies.
+///
+/// ## When we emit intermediate points
+/// - `InterpolationMode::None` on either the fugue or the segment →
+///   stepped; emit only the anchors. DAW shows flat segments with jumps.
+/// - Any other mode (`Linear`, `Exp`, `Log`) → emit ~8 intermediate
+///   events per beat (`CC_INTERP_RESOLUTION_TICKS / PPQ`), each with
+///   `t` remapped through `InterpolationMode::apply_curve`. The exported
+///   `.mid` then carries a smooth ramp that Bitwig/Live render as a
+///   proper automation curve instead of two levels with a jump.
+///
+/// Non-CC events pass through unchanged.
+fn densify_cc_events(
+    events: &[TimedFugueEvent],
+    fugue_default_curve: InterpolationMode,
+) -> Vec<TimedFugueEvent> {
+    let mut cc_lanes: HashMap<(u8, u8), Vec<(f64, u8, Option<InterpolationMode>)>> = HashMap::new();
     let mut non_cc_events: Vec<TimedFugueEvent> = Vec::new();
 
     for event in events {
-        match &event.event {
-            FugueEvent::Cc { channel, cc, value, .. } => {
-                cc_events
-                    .entry((*channel, *cc))
+        match event.event {
+            FugueEvent::Cc { channel, cc, value, curve } => {
+                cc_lanes
+                    .entry((channel, cc))
                     .or_default()
-                    .push((event.beat_offset, *value));
+                    .push((event.beat_offset, value, curve));
             }
-            _ => {
-                non_cc_events.push(event.clone());
-            }
+            _ => non_cc_events.push(*event),
         }
     }
 
-    // Add non-CC events as-is
-    result.extend(non_cc_events);
-
-    // Interpolate each CC lane
+    let mut result: Vec<TimedFugueEvent> = non_cc_events;
     let resolution_beats = CC_INTERP_RESOLUTION_TICKS as f64 / PPQ as f64;
 
-    for ((channel, cc), mut points) in cc_events {
-        // Sort by beat offset
-        points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-
+    for ((channel, cc), mut points) in cc_lanes {
+        points.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
         if points.is_empty() {
             continue;
         }
 
-        // Always include first point
+        // First anchor always ships — it sets the starting value.
         result.push(TimedFugueEvent::cc(points[0].0, channel, cc, points[0].1));
 
-        // Interpolate between consecutive points
         for window in points.windows(2) {
-            let (start_beat, start_val) = window[0];
-            let (end_beat, end_val) = window[1];
+            let (start_beat, start_val, _) = window[0];
+            let (end_beat, end_val, arriving_curve) = window[1];
 
-            if start_val == end_val {
-                // No interpolation needed, just add end point
+            // Per-segment curve: the arriving point's curve overrides the
+            // fugue-level default. Matches the same convention per-note
+            // expression uses.
+            let curve = arriving_curve.unwrap_or(fugue_default_curve);
+
+            let flat_segment =
+                start_val == end_val || curve == InterpolationMode::None;
+            if flat_segment {
                 result.push(TimedFugueEvent::cc(end_beat, channel, cc, end_val));
                 continue;
             }
 
-            // Generate intermediate points
             let mut current_beat = start_beat + resolution_beats;
             while current_beat < end_beat {
                 let t = (current_beat - start_beat) / (end_beat - start_beat);
-                let value = lerp(start_val as f64, end_val as f64, t) as u8;
+                let curved_t = curve.apply_curve(t);
+                let value = lerp(start_val as f64, end_val as f64, curved_t)
+                    .clamp(0.0, 127.0) as u8;
                 result.push(TimedFugueEvent::cc(current_beat, channel, cc, value));
                 current_beat += resolution_beats;
             }
-
-            // Add end point
             result.push(TimedFugueEvent::cc(end_beat, channel, cc, end_val));
         }
     }
 
-    // Sort all events by beat offset
-    result.sort_by(|a, b| a.beat_offset.partial_cmp(&b.beat_offset).unwrap());
-
+    result.sort_by(|a, b| a.beat_offset.partial_cmp(&b.beat_offset).unwrap_or(std::cmp::Ordering::Equal));
     result
 }
 
@@ -473,11 +480,7 @@ impl ExportedMidi {
                 }
             };
 
-            let events = if def.cc_interpolation == InterpolationMode::Linear {
-                interpolate_cc_events(&def.events, def.duration_beats)
-            } else {
-                def.events.clone()
-            };
+            let events = densify_cc_events(&def.events, def.cc_interpolation);
 
             tracks.push(ExportedTrack { name, events });
         }
@@ -530,6 +533,62 @@ impl ExportedMidi {
 /// `merge_fugues_by_tag(...)`.
 pub fn fugues_to_smf(definitions: &[FugueDefinition], tempo_bpm: f64) -> Vec<u8> {
     ExportedMidi::from_fugues(definitions, tempo_bpm).to_bytes()
+}
+
+/// "Drag all" variant: every input fugue flattens into **one** MIDI
+/// track, regardless of tag. Used when the user wants a single DAW clip
+/// carrying every active fugue for an instance (e.g. notes + a CC filter
+/// sweep meant to play on one channel).
+///
+/// Contrast with [`fugues_to_smf`], which preserves tag groupings as
+/// separate tracks — that's the right behavior when the fugues are
+/// independent parts (bass vs melody), but wrong when they're concerns
+/// of a single instrument the DAW should treat as one clip.
+///
+/// LCM duration + replication logic runs the same as `merge_fugues_by_tag`
+/// so a short CC sweep loops cleanly alongside a longer note pattern.
+pub fn fugues_to_single_track_smf(
+    definitions: &[FugueDefinition],
+    tempo_bpm: f64,
+) -> Vec<u8> {
+    let Some(merged) = merge_all_fugues(definitions) else {
+        return ExportedMidi { tempo_bpm, tracks: Vec::new() }.to_bytes();
+    };
+    let name = merged
+        .tag
+        .clone()
+        .unwrap_or_else(|| "merged".to_string());
+    let events = densify_cc_events(&merged.events, merged.cc_interpolation);
+    ExportedMidi {
+        tempo_bpm,
+        tracks: vec![ExportedTrack { name, events }],
+    }
+    .to_bytes()
+}
+
+/// Flatten every input fugue into one `FugueDefinition`, ignoring tags.
+/// Implementation shortcut: re-tag everything with a synthetic marker
+/// and delegate to [`merge_fugues_by_tag`] so the LCM + replication
+/// logic stays in one place. Returns `None` when input is empty.
+pub fn merge_all_fugues(definitions: &[FugueDefinition]) -> Option<FugueDefinition> {
+    if definitions.is_empty() {
+        return None;
+    }
+    let retagged: Vec<FugueDefinition> = definitions
+        .iter()
+        .map(|d| {
+            let mut clone = d.clone();
+            clone.tag = Some("_merged".to_string());
+            clone
+        })
+        .collect();
+    let mut merged = merge_fugues_by_tag(&retagged);
+    debug_assert_eq!(merged.len(), 1);
+    merged.pop().map(|mut m| {
+        // Drop the synthetic tag — callers decide how to name the track.
+        m.tag = None;
+        m
+    })
 }
 
 /// Conductor track: tempo meta at tick 0 + EndOfTrack. Separated from the
@@ -623,9 +682,81 @@ mod tests {
             TimedFugueEvent::cc(0.0, 0, 1, 0),
             TimedFugueEvent::cc(1.0, 0, 1, 127),
         ];
-        let interpolated = interpolate_cc_events(&events, 1.0);
-        // Should have more than 2 events due to interpolation
-        assert!(interpolated.len() > 2);
+        let densified = densify_cc_events(&events, InterpolationMode::Linear);
+        // Should have more than 2 events due to densification
+        assert!(densified.len() > 2);
+    }
+
+    #[test]
+    fn densify_skips_interpolation_when_fugue_default_is_none() {
+        // InterpolationMode::None = stepped; DAW should see the exact two
+        // anchors and draw a flat-to-jump shape between them.
+        let events = vec![
+            TimedFugueEvent::cc(0.0, 0, 1, 0),
+            TimedFugueEvent::cc(1.0, 0, 1, 127),
+        ];
+        let densified = densify_cc_events(&events, InterpolationMode::None);
+        assert_eq!(densified.len(), 2);
+    }
+
+    #[test]
+    fn densify_expands_exp_curve_via_apply_curve() {
+        // Exponential ramp: intermediate values should follow t² shape
+        // (slow then fast), not a straight line. Previously Exp mode fell
+        // through to "don't densify" and exported only two levels.
+        let events = vec![
+            TimedFugueEvent::cc(0.0, 0, 1, 0),
+            TimedFugueEvent::cc(1.0, 0, 1, 120),
+        ];
+        let densified = densify_cc_events(&events, InterpolationMode::Exp);
+        assert!(densified.len() > 2, "Exp curve should densify, not just emit anchors");
+
+        // Pick a mid-segment sample and confirm it matches Exp curve, not linear.
+        // At t=0.5, linear would give ~60; exp (t²) gives ~30.
+        let midpoint = densified
+            .iter()
+            .find(|e| (e.beat_offset - 0.5).abs() < 0.08)
+            .expect("expected a sample near the midpoint");
+        let midvalue = match midpoint.event {
+            FugueEvent::Cc { value, .. } => value,
+            _ => panic!(),
+        };
+        // t² at t=0.5 → 0.25 → value ≈ 30. Linear would be ~60.
+        assert!(midvalue < 50, "Exp curve at t=0.5 should be <50, got {}", midvalue);
+    }
+
+    #[test]
+    fn densify_per_point_curve_overrides_fugue_default() {
+        // Fugue-level says Linear but this segment's arriving point
+        // carries an explicit Exp curve tag — the segment should honour
+        // the per-point override.
+        let events = vec![
+            TimedFugueEvent::new(0.0, FugueEvent::Cc { channel: 0, cc: 1, value: 0, curve: None }),
+            TimedFugueEvent::new(1.0, FugueEvent::Cc { channel: 0, cc: 1, value: 120, curve: Some(InterpolationMode::Exp) }),
+        ];
+        let densified = densify_cc_events(&events, InterpolationMode::Linear);
+        let midpoint = densified
+            .iter()
+            .find(|e| (e.beat_offset - 0.5).abs() < 0.08)
+            .expect("expected sample near midpoint");
+        let midvalue = match midpoint.event {
+            FugueEvent::Cc { value, .. } => value,
+            _ => panic!(),
+        };
+        // Should be low (Exp), not ~60 (Linear).
+        assert!(midvalue < 50, "per-point Exp should override Linear default; got {}", midvalue);
+    }
+
+    #[test]
+    fn densify_per_point_none_makes_segment_stepped() {
+        // Fugue-level Linear but a segment explicitly tagged None should
+        // stay stepped. Used when the LLM wants a filter-hold-then-jump.
+        let events = vec![
+            TimedFugueEvent::new(0.0, FugueEvent::Cc { channel: 0, cc: 1, value: 0, curve: None }),
+            TimedFugueEvent::new(1.0, FugueEvent::Cc { channel: 0, cc: 1, value: 120, curve: Some(InterpolationMode::None) }),
+        ];
+        let densified = densify_cc_events(&events, InterpolationMode::Linear);
+        assert_eq!(densified.len(), 2, "explicit None curve should not densify this segment");
     }
 
     // ------------------------------------------------------------------
@@ -903,6 +1034,70 @@ mod tests {
     // ------------------------------------------------------------------
     // ExportedMidi — the build-then-inspect-or-serialize stage.
     // ------------------------------------------------------------------
+
+    #[test]
+    fn fugues_to_single_track_flattens_different_tags() {
+        // Two fugues with different tags — drag-all should collapse both
+        // into ONE MIDI track (plus the conductor). With the default
+        // `fugues_to_smf` they would become two named tracks, and DAWs
+        // that split multi-track SMFs into multiple clips (like Bitwig)
+        // would produce two clips instead of one.
+        let notes = FugueDefinition::new(
+            vec![
+                TimedFugueEvent::note_on(0.0, 0, 60, 100),
+                TimedFugueEvent::note_off(1.0, 0, 60),
+            ],
+            4.0,
+        )
+        .with_tag("notes");
+        let sweep = FugueDefinition::new(
+            vec![
+                TimedFugueEvent::cc(0.0, 0, 74, 30),
+                TimedFugueEvent::cc(4.0, 0, 74, 100),
+            ],
+            4.0,
+        )
+        .with_tag("filter-sweep")
+        .with_cc_interpolation(InterpolationMode::Linear);
+
+        let bytes = fugues_to_single_track_smf(&[notes, sweep], 120.0);
+        let smf = parse_smf(&bytes);
+        // Conductor + exactly ONE musical track — the flatten guarantee.
+        assert_eq!(smf.tracks.len(), 2, "expected conductor + 1 merged track");
+
+        // That one track should carry both the notes and the (densified)
+        // CC stream. Check at least one of each survived the merge.
+        let musical = &smf.tracks[1];
+        let has_note_on = musical.iter().any(|e| matches!(
+            e.kind,
+            TrackEventKind::Midi { message: MidiMessage::NoteOn { .. }, .. }
+        ));
+        let has_cc = musical.iter().any(|e| matches!(
+            e.kind,
+            TrackEventKind::Midi { message: MidiMessage::Controller { .. }, .. }
+        ));
+        assert!(has_note_on, "merged track missing note events");
+        assert!(has_cc, "merged track missing CC events");
+    }
+
+    #[test]
+    fn fugues_to_single_track_empty_input_still_valid() {
+        let bytes = fugues_to_single_track_smf(&[], 120.0);
+        let smf = parse_smf(&bytes);
+        // Just the conductor track — parseable empty export.
+        assert_eq!(smf.tracks.len(), 1);
+    }
+
+    #[test]
+    fn merge_all_fugues_drops_synthetic_tag() {
+        // merge_all_fugues internally re-tags everything to `_merged` to
+        // reuse merge_fugues_by_tag's LCM logic. That synthetic tag
+        // shouldn't leak out — callers expect a clean `tag: None`.
+        let a = FugueDefinition::new(vec![], 4.0).with_tag("a");
+        let b = FugueDefinition::new(vec![], 4.0).with_tag("b");
+        let merged = merge_all_fugues(&[a, b]).expect("non-empty input");
+        assert!(merged.tag.is_none(), "synthetic _merged tag leaked: {:?}", merged.tag);
+    }
 
     #[test]
     fn exported_midi_structure_is_inspectable() {

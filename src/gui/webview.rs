@@ -261,6 +261,17 @@ fn handle_start_drag(
         }
     };
 
+    // `active: true` = drag-all affordance (one track, every fugue on this
+    // instance flattened together). `fugue_ids` = specific-fugue drag.
+    // Anything else → default to drag-all semantics since the user asked
+    // for something ambiguous and getting a single clip is the less
+    // surprising outcome.
+    let drag_all = payload
+        .get("active")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+        || payload.get("fugue_ids").is_none();
+
     let selected: Vec<_> = if let Some(ids) = payload.get("fugue_ids").and_then(|v| v.as_array()) {
         let wanted: std::collections::HashSet<u64> = ids
             .iter()
@@ -272,7 +283,6 @@ fn handle_start_drag(
             .filter(|d| wanted.contains(&d.id))
             .collect()
     } else {
-        // "active: true" or anything else → everything currently queued.
         definitions
     };
 
@@ -288,7 +298,15 @@ fn handle_start_drag(
         .and_then(|v| v.as_f64())
         .unwrap_or(120.0);
 
-    let bytes = export::fugues_to_smf(&selected, tempo_bpm);
+    // Drag-all flattens every fugue into one MIDI track (see
+    // `fugues_to_single_track_smf`) so the DAW gets one clip carrying
+    // notes + CC together. Specific-fugue drags keep the per-tag
+    // track layout since the user asked for that fugue in isolation.
+    let bytes = if drag_all {
+        export::fugues_to_single_track_smf(&selected, tempo_bpm)
+    } else {
+        export::fugues_to_smf(&selected, tempo_bpm)
+    };
 
     // Materialize in the OS temp dir so the DAW can copy it before we
     // clean up. Filename includes a timestamp so concurrent drags don't
