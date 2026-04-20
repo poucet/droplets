@@ -277,8 +277,11 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
             self.fugue_info_handle.update_definitions(definitions);
         }
 
-        // For VSTi: Output silence to audio buffers (required for instrument classification)
-        // This makes Ableton treat us as a proper instrument with MIDI routing
+        // We declare an audio output bus (see src/midi/ports.rs) but never
+        // actually produce audio — Droplets is a note effect. Zero the
+        // output buffers each block so stale audio from whatever the host
+        // put there last doesn't leak downstream. Not all hosts guarantee
+        // a pre-zeroed buffer, so we do it unconditionally.
         for mut port in audio.output_ports() {
             if let Ok(channels) = port.channels() {
                 if let Some(mut channels_f32) = channels.into_f32() {

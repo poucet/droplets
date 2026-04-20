@@ -1,6 +1,9 @@
 //! Port declarations for Simply Droplets
 //!
-//! Declares audio ports (required by some hosts) and note ports for MIDI.
+//! Declares a stereo audio pass-through (required by the clap-wrapper's
+//! VST3 bridge — Ableton refuses to instantiate the plugin when it
+//! reports zero audio buses in this wrapper config) plus note I/O for
+//! MIDI input (CC-learn) and MIDI output (to downstream instruments).
 
 use clack_extensions::audio_ports::*;
 use clack_extensions::note_ports::*;
@@ -8,7 +11,6 @@ use clack_plugin::prelude::*;
 
 use crate::DropletMainThread;
 
-// Audio ports required by VST3 hosts - declare stereo pass-through
 impl<'a> PluginAudioPortsImpl for DropletMainThread<'a> {
     fn count(&mut self, _is_input: bool) -> u32 {
         1

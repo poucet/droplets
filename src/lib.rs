@@ -66,6 +66,15 @@ impl DefaultPluginFactory for DropletPlugin {
     fn get_descriptor() -> PluginDescriptor {
         // For VST3 builds, include INSTRUMENT so Ableton routes MIDI correctly.
         // For CLAP builds, use NOTE_EFFECT only (proper categorization for Bitwig etc).
+        //
+        // Note: attempts to classify the VST3 build as a MIDI effect
+        // (stackable before a synth on the same Ableton track) have not
+        // succeeded through the clap-wrapper. Zero audio buses made Ableton
+        // reject the plugin at instantiation; category-only changes without
+        // INSTRUMENT left the wrapper without a main VST3 category and
+        // Ableton still treated it inconsistently. Tracking as a known
+        // limitation — workaround is External Instrument routing, fix
+        // likely requires wrapper patches.
         #[cfg(clap_wrapper_vst3)]
         let features = [NOTE_EFFECT, INSTRUMENT];
         #[cfg(not(clap_wrapper_vst3))]

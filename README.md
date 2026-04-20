@@ -63,6 +63,17 @@ Build from source (see [Building from Source](#-building-from-source) below) and
 
 Add Simply Droplets as a **MIDI effect** and route its output to your instruments.
 
+**Bitwig:** drop Droplets on a Note Effects chain before any instrument; MIDI flows downstream automatically.
+
+**Ableton Live:** the VST3 build is classified as an instrument (a clap-wrapper limitation — the wrapper can't emit a MIDI-effect-only VST3 category today). Use Ableton's two-track MIDI-routing pattern:
+
+1. Put Droplets on its own MIDI track.
+2. Create a second MIDI track with your real instrument (drum rack, synth, sampler, etc.).
+3. On the second track, set **MIDI From** to the Droplets track and select **Droplets** in the plugin dropdown below it.
+4. Arm the second track (or set monitor to `In`) so it hears the incoming MIDI.
+
+Droplets still appears in the Plug-Ins browser under the Instruments list. Proper MIDI-effect classification is tracked as a post-demo fix.
+
 ### 3️⃣ Connect Your AI
 
 Simply Droplets speaks MCP over **streamable HTTP** on `http://localhost:9999/mcp`. MCP clients that speak HTTP directly (e.g. Claude Code, Cursor) can use that URL as-is:
