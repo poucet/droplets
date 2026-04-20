@@ -87,19 +87,19 @@ See [ROADMAP.md §Feature 15](ROADMAP.md#feature-15-native-drag-out-of-fugues--d
 | [x] | 15c.3 | Visual feedback | Cursor changes to `grab` on rows and the drag-all button, `grabbing` while pressed. Drag-all button shows live count. Further visual tweaks (drag-preview image, row highlight while drag is in-flight) deferred — drag-crate's v1 draws no preview; DAWs show their own drag ghost anyway. |
 | [ ] | 15c.4 | Platform caveats doc | Short note in [FUGUE_UI.md](../../FUGUE_UI.md) about macOS Gatekeeper: first-time drag may require a quarantine-bypass dialog for the temp file. Users drop onto a Bitwig clip and it works. |
 
-### Phase 15d — HTTP endpoints for LLM / scripted use
+### ~~Phase 15d — HTTP endpoints for LLM / scripted use~~ (dropped)
 
-| Done | # | Task | Notes |
-|------|---|------|-------|
-| [ ] | 15d.1 | `GET /api/export/fugue/:id` | Serves the `.mid` for one fugue. Query param `tempo` overrides the session tempo. Response `Content-Type: audio/midi`. Useful as a test harness for 15a and for MCP-driven export flows. |
-| [ ] | 15d.2 | `GET /api/export/active?instance=` | Serves a `.mid` bundling all currently-active fugues on the instance. Same format as the drag-out path (one track per tag). |
-| [ ] | 15d.3 | New MCP tool `export_fugues(instance, fugue_ids?)` | Returns `{ path: "/path/to/file.mid", size_bytes }`. The file is written to the user-configured export dir (not the temp dir the drag-out uses). Useful when the LLM wants to "save this pattern somewhere I can find later." |
+Dropped — overlap with existing affordances made this mostly redundant:
+
+- The `↓` button in FugueList already saves individual fugues to the user's export directory.
+- Drag-out covers "all active fugues as one `.mid`" from the UI.
+- Feature 17's `get_fugue` already gives the LLM read-back; an "export to disk" MCP tool would be a trivial follow-up if the LLM workflow actually demands it (not speculative demand).
 
 ### Phase 15e — Caveats + docs
 
 | Done | # | Task | Notes |
 |------|---|------|-------|
-| [ ] | 15e.2 | Update [instructions.md](../../../src/mcp/instructions.md) | Tell the LLM that `export_fugues` exists for hand-off workflows. |
+| [ ] | 15e.2 | Update [instructions.md](../../../src/mcp/instructions.md) | Tell the LLM that drag-out is the user-facing hand-off path. |
 
 ---
 
