@@ -184,7 +184,15 @@ impl<'a> PluginMainThread<'a, DropletShared<'a>> for DropletMainThread<'a> {
     }
 }
 
-/// CLAP State extension - save/load plugin state
+/// CLAP State extension — persist only *configuration* across saves:
+/// instance name + per-slot CC-mapping identity (cc/channel/name).
+///
+/// Explicitly NOT persisted:
+/// - **Fugues.** Fugues are live musical state, not a saved project. Reloading
+///   them on project open would re-fire long-running loops that the user may
+///   no longer want; the AI should re-queue what's needed for the current
+///   session.
+/// - **Slot values.** Transient — driven by MCP calls and live CC input.
 impl<'a> PluginStateImpl for DropletMainThread<'a> {
     fn save(&mut self, output: &mut OutputStream) -> Result<(), PluginError> {
         use std::io::Write;
@@ -198,18 +206,15 @@ impl<'a> PluginStateImpl for DropletMainThread<'a> {
                     "cc": slot.get_cc(),
                     "channel": slot.get_channel(),
                     "name": slot.get_name(),
-                    "value": slot.value.load(),
                 })
             })
             .collect();
 
         let instance_name = mcp::CcBridge::get_name(id);
-        let fugues = fugue::FugueBridge::get_definitions(id).unwrap_or_default();
 
         let state = serde_json::json!({
             "slots": slots,
             "instance_name": instance_name,
-            "fugues": fugues,
         });
 
         let json = serde_json::to_vec(&state).map_err(|_| PluginError::Message("serialize failed"))?;
@@ -226,7 +231,7 @@ impl<'a> PluginStateImpl for DropletMainThread<'a> {
         let state: serde_json::Value = serde_json::from_slice(&data)
             .map_err(|_| PluginError::Message("deserialize failed"))?;
 
-        // Support legacy format (bare array of slots)
+        // Support legacy format (bare array of slots).
         let slots = if state.is_array() {
             state.as_array().unwrap().clone()
         } else {
@@ -244,9 +249,9 @@ impl<'a> PluginStateImpl for DropletMainThread<'a> {
             if let Some(name) = slot_state.get("name").and_then(|v| v.as_str()) {
                 slot.set_name(name);
             }
-            if let Some(value) = slot_state.get("value").and_then(|v| v.as_f64()) {
-                slot.value.store(value);
-            }
+            // Intentionally ignore any persisted `value` — transient state,
+            // should not jump when a project reopens. Legacy saves that
+            // carried values just get those values dropped.
         }
 
         let id = self.shared.instance_id.clone();
@@ -255,13 +260,10 @@ impl<'a> PluginStateImpl for DropletMainThread<'a> {
             let _ = mcp::CcBridge::rename(&id, name);
         }
 
-        if let Some(fugues) = state.get("fugues").and_then(|v| v.as_array()) {
-            for fugue_val in fugues {
-                if let Ok(def) = serde_json::from_value::<fugue::FugueDefinition>(fugue_val.clone()) {
-                    let _ = fugue::FugueBridge::queue(&id, def);
-                }
-            }
-        }
+        // Intentionally ignore any persisted `fugues` array. Fugues are live
+        // session state, not saved configuration. Legacy saves that carried
+        // fugues just get them dropped — the user can re-queue for the new
+        // session.
 
         Ok(())
     }
