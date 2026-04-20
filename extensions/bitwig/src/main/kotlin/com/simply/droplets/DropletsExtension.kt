@@ -6,12 +6,14 @@ import com.bitwig.extension.callback.StringArrayValueChangedCallback
 import com.bitwig.extension.callback.StringValueChangedCallback
 import com.bitwig.extension.controller.ControllerExtension
 import com.bitwig.extension.controller.api.ControllerHost
+import com.bitwig.extension.controller.api.CursorRemoteControlsPage
 import com.bitwig.extension.controller.api.Device
 import com.bitwig.extension.controller.api.DeviceBank
 import com.bitwig.extension.controller.api.DirectParameterValueDisplayObserver
 import com.bitwig.extension.controller.api.DrumPad
 import com.bitwig.extension.controller.api.DrumPadBank
 import com.bitwig.extension.controller.api.EnumValue
+import com.bitwig.extension.controller.api.RemoteControl
 import com.bitwig.extension.controller.api.StringValue
 import com.bitwig.extension.controller.api.Track
 import com.bitwig.extension.controller.api.TrackBank
@@ -27,6 +29,13 @@ private const val DRUM_PADS = 32
 private const val DRUM_BANK_SCROLL = 36
 private const val DEVICES_PER_PAD = 2
 private const val REBUILD_DEBOUNCE_MS = 150L
+
+// Remote Controls Page 1 of the track's primary instrument exposes 8 named,
+// automation-ready parameters. We mirror those into Droplets' slot 0–7 so the
+// LLM gets a meaningful auto-mapping for any synth/preset without the user
+// hand-binding anything. Bound here = we track the names and surface them in
+// the project layout; actual value-driving happens on the plugin side.
+private const val REMOTE_CONTROLS_PER_PAGE = 8
 
 // Bitwig's native Drum Machine UUID. Published in the community extension library
 // (novation.commonsmk3.SpecialDevices). Used with `createBitwigDeviceMatcher` to
@@ -62,6 +71,11 @@ class DropletsExtension(
 
     /** Per-pad nested device bank, created at init. */
     private val padDeviceBanks = HashMap<DrumPad, DeviceBank>()
+
+    /** Per-track primary-instrument Remote Controls Page 1 cursor, created at init.
+     *  Follows the track's primary instrument automatically — when the user swaps
+     *  the preset / instrument, the page tracks it. */
+    private val trackRemotePages = HashMap<Track, CursorRemoteControlsPage>()
 
     private var rebuildScheduled = false
 
@@ -125,6 +139,18 @@ class DropletsExtension(
         padBank.scrollPosition().set(DRUM_BANK_SCROLL)
         trackDrumPadBanks[track] = padBank
         for (p in 0 until DRUM_PADS) wirePad(padBank.getItemAt(p) as DrumPad)
+
+        // Primary-instrument Remote Controls Page 1. Must be created at init.
+        // Bitwig re-targets the cursor when the user swaps instruments/presets,
+        // so each param's name() observer fires and we rebuild the layout.
+        val remote = track.createCursorRemoteControlsPage(REMOTE_CONTROLS_PER_PAGE)
+        trackRemotePages[track] = remote
+        remote.pageCount().markInterested()
+        for (i in 0 until REMOTE_CONTROLS_PER_PAGE) {
+            val rc = remote.getParameter(i) as RemoteControl
+            rc.exists().markInterested()
+            subscribeString(rc.name())
+        }
     }
 
     private fun wireDevice(device: Device) {
@@ -231,11 +257,15 @@ class DropletsExtension(
                     client.postRenameInstance(id, trackName)
                 }
             }
-            tracks.add(linkedMapOf(
+            val trackJson = linkedMapOf<String, Any?>(
                 "track_name" to trackName,
                 "droplets_instance_id" to instanceId,
                 "devices" to devicesJson,
-            ))
+            )
+            if (instanceId != null) {
+                trackJson["remote_controls"] = encodeRemoteControls(track)
+            }
+            tracks.add(trackJson)
         }
 
         val hasAnyDroplets = dropletsCount > 0
@@ -247,6 +277,23 @@ class DropletsExtension(
             log("  → POSTing layout (${tracks.size} tracks)")
             client.postProjectLayout(Json.encode(mapOf("tracks" to tracks)))
         }
+    }
+
+    /** Snapshot the track's primary-instrument Remote Controls Page 1 as a list
+     *  of `{index, name}`. Only entries whose param exists AND has a non-blank
+     *  name are included — avoids feeding the LLM empty slots from an effects-only
+     *  track or a device without a Remote Controls page. */
+    private fun encodeRemoteControls(track: Track): List<Map<String, Any?>> {
+        val remote = trackRemotePages[track] ?: return emptyList()
+        val out = ArrayList<Map<String, Any?>>()
+        for (i in 0 until REMOTE_CONTROLS_PER_PAGE) {
+            val rc = remote.getParameter(i) as RemoteControl
+            if (!rc.exists().get()) continue
+            val name = rc.name().get()
+            if (name.isBlank()) continue
+            out.add(linkedMapOf("index" to i, "name" to name))
+        }
+        return out
     }
 
     private fun findInstanceId(device: Device): String? {

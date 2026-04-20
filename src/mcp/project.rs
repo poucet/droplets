@@ -40,6 +40,21 @@ pub struct TrackContext {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub droplets_instance_id: Option<String>,
     pub devices: Vec<Device>,
+    /// Primary-instrument Remote Controls Page 1, as seen by the host controller
+    /// extension. Only populated when a Droplets instance is on this track.
+    /// Each entry describes one of the 8 remote-control parameters by index and
+    /// human-readable name — the plugin mirrors these onto slots 0–7 so the LLM
+    /// can automate named instrument parameters without the user hand-mapping.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remote_controls: Vec<RemoteControlInfo>,
+}
+
+/// One parameter on the primary instrument's Remote Controls Page 1.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RemoteControlInfo {
+    pub index: u8,
+    pub name: String,
 }
 
 /// A device somewhere in a chain. Recursive through `DrumMachine`/`Container`.
@@ -582,6 +597,7 @@ mod tests {
                 TrackContext {
                     track_name: "Drums".into(),
                     droplets_instance_id: Some("droplets-aaaa".into()),
+                    remote_controls: vec![],
                     devices: vec![Device::DrumMachine {
                         name: "Drum Machine".into(),
                         pads: vec![
@@ -613,6 +629,7 @@ mod tests {
                 TrackContext {
                     track_name: "Bass".into(),
                     droplets_instance_id: Some("droplets-bbbb".into()),
+                    remote_controls: vec![],
                     devices: vec![
                         Device::Instrument {
                             name: "Serum".into(),
@@ -640,6 +657,7 @@ mod tests {
                 TrackContext {
                     track_name: "Vocals".into(),
                     droplets_instance_id: None,
+                    remote_controls: vec![],
                     devices: vec![Device::Effect {
                         name: "Reverb".into(),
                         vendor: None,
