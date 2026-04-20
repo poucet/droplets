@@ -35,10 +35,12 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [ ] | P2 | 10 | Audio-thread ramps for per-note expression (pitch bend, pressure) | M | Quality — sample-accurate per-note curves instead of server-side discrete-event expansion |
 | [x] | P1 | 17 | MCP tool: `get_fugue(id)` returning current FugueDefinition | S | High — small surface, immediately unlocks LLM read-modify-write; ships before the drag features because it's independent and its compact serializer is reusable downstream |
 | [ ] | P1 | 15 | Native drag-out of fugues → DAW clip (`.mid` file) | M | High — lets users hand AI-generated patterns to the DAW's piano roll for editing; removes the need for an in-app editor |
-| [ ] | P2 | 16 | Native drag-in of `.mid` → new fugue on an instance | M | Medium — round-trip workflow: edit in the DAW, drop back as a fugue |
+| [x] | P2 | 16 | Native drag-in of `.mid` → new fugue on an instance | M | Medium — round-trip workflow: edit in the DAW, drop back as a fugue |
 | [ ] | P3 | 18 | Pause instead of delete on tag replacement | M | Medium — lets the user walk back to a prior version of a part instead of losing it forever when the LLM queues a new fugue with the same tag |
 | [ ] | P2 | 19 | Unify GUI + MCP on a single port with three top-level paths | S | Medium — halves port consumption per plugin process; simpler firewall / sandbox story. Primary port stays **9999** (agents already configured). Top-level layout collapses to just `/api` (HTTP calls), `/mcp` (MCP protocol), and `/ws` (WebSocket upgrade). Extension POSTs move under `/api/*`; the MCP-side bare `/project_layout` + `/rename_instance` go away. |
 | [ ] | P2 | 20 | Dynamic port selection on bind conflict | S | Medium — plugin currently dies if :9998/:9999 are in use. Walk a range, bind the first free port, surface the chosen port to the extension + UI |
+| [ ] | P3 | 21 | MPE round-trip for per-note expression in drag-out/drag-in | L | Medium — today Features 15/16 drop pitch bend + pressure because MIDI 1.0 SMF has no per-note target. MPE (channel-per-note encoding) is understood by Logic, Bitwig, Live 12+, Cubase, so a `.mid` emitted in MPE shape round-trips the full expressivity. Cost: dynamic channel allocation on export, channel→note attribution on import |
+| [ ] | P4 | 22 | Adopt MIDI 2.0 / SMF2 for native per-note support | L | Low (today) — SMF2 has true per-note bend/pressure in the format itself. DAW support is inconsistent as of 2026; revisit once Logic / Bitwig / Live all read SMF2 natively. Supersedes Feature 21 when that happens |
 
 ---
 
@@ -380,6 +382,40 @@ The MCP-side bare `/project_layout` and `/rename_instance` routes go away — bo
 - Port changes across plugin reloads are a minor nuisance (cached MCP client connections may go stale). Mitigated by short-lived connections on the plugin side.
 
 **Files:** [src/gui/server.rs](../../../src/gui/server.rs) (bind loop), [src/mcp/mod.rs](../../../src/mcp/mod.rs) (same if Feature 19 not landed yet), [src/instance_param.rs](../../../src/instance_param.rs) (new port-display param), [extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsExtension.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsExtension.kt) (read the port display alongside the instance ID).
+
+---
+
+#### Feature 21: MPE round-trip for per-note expression in drag-out/drag-in
+
+**Problem:** Features 15 (drag-out) and 16 (drag-in) lose per-note pitch bend and per-note pressure at the MIDI file boundary. The export path drops the `note` field because MIDI 1.0's `PitchBend` / `Aftertouch` are channel-wide; the import path drops bend/aftertouch for the same reason (we cannot know which note a channel-level bend was meant for). For composite fugues with expressive trajectories this is a meaningful fidelity loss on the drag-out edit round-trip.
+
+**Solution:** Adopt **MPE** (MIDI Polyphonic Expression) as the wire encoding for drag-out/drag-in. MPE is a convention over MIDI 1.0: notes in a zone get assigned one channel each (typically ch 2–16 around ch 1 as the global channel), so channel-level pitch bend and CC74 effectively carry per-note values. Every modern DAW that matters (Logic, Bitwig, Ableton Live 12+, Cubase) both writes and reads MPE natively — so a `.mid` emitted in MPE shape round-trips correctly.
+
+**Scope:**
+- **Export:** during `merge_fugues_by_tag`, detect fugues that contain `PerNotePitchBend` or `PerNotePressure` events and switch those tracks into MPE mode: allocate a channel per overlapping held note (round-robin within the master zone), emit the per-note bend/pressure as channel-level pitch bend / CC74 on the allocated channel. Emit an MPE configuration meta (RPN 6 / 7) at the top of the track so DAWs auto-enable MPE mode on import.
+- **Import:** detect the MPE configuration meta (or pitch bend density that looks like MPE — every note-on uses a unique channel in a zone). When detected, attribute channel-level bend / CC74 / aftertouch to the currently-held note on that channel. Unknown-shape files stay on the current lossy path.
+- **Fallback:** Rust-side `ExportOptions { mpe: bool, auto: bool }` and `ImportOptions { mpe: AutoMpe }`. Auto-detection is the default; explicit override is for debugging.
+
+**Non-goals:** in-plugin MIDI I/O does not change — the plugin still emits MIDI 2.0-style per-note expression to the DAW's synth. MPE is purely a wire format for the drag lanes.
+
+**Files:** [src/fugue/export.rs](../../../src/fugue/export.rs) (per-track channel allocation + MPE meta), [src/fugue/import.rs](../../../src/fugue/import.rs) (MPE detection + channel-to-note attribution), new `src/fugue/mpe.rs` for the shared channel-zone logic.
+
+---
+
+#### Feature 22: Adopt MIDI 2.0 / SMF2 for native per-note support
+
+**Problem:** MPE (Feature 21) is a workable encoding but requires channel juggling on both ends. MIDI 2.0 resolves this with proper per-note pitch bend and per-note pressure messages in the format itself; SMF2 (MIDI Clip File) specifies the file container.
+
+**Solution — deferred:** Re-evaluate once DAW support matures. As of 2026, Logic / Bitwig / Ableton Live / Cubase read SMF2 inconsistently (or not at all), so emitting SMF2 by default would break the drag hand-off for most users. Once support is broad enough that a SMF2 file opens correctly in ≥3 of the 4 major DAWs, Feature 22 supersedes Feature 21: the exporter emits SMF2 natively, the importer reads SMF2 in addition to SMF1/MPE.
+
+**Scope (when we pick it up):**
+- Add `midly`-equivalent crate (or extend `midly`) with SMF2 support.
+- Drop MPE channel-juggling in favour of direct per-note event emission / parsing.
+- Keep SMF1/MPE emit path alongside SMF2 for backwards compat — gated by an option, default follows the majority-DAW-support signal at the time.
+
+**Tracking:** watch `midly`, DAW release notes, and the AMEI / MIDI Association's SMF2 adoption tracker for a signal to move.
+
+**Files:** TBD when picked up.
 
 ---
 

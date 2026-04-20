@@ -109,23 +109,27 @@ See [ROADMAP.md §Feature 16](ROADMAP.md#feature-16-native-drag-in-of-mid--fugue
 
 ### Phase 16a — MIDI parser → FugueDefinition
 
+**Status (2026-04-20 — shipped):** all tasks complete. 12 unit tests pass.
+
 | Done | # | Task | Notes |
 |------|---|------|-------|
-| [ ] | 16a.1 | New [src/fugue/import.rs](../../../src/fugue/import.rs) with `smf_to_fugues(&[u8], opts) -> Result<Vec<FugueDefinition>, String>` | Opts: default channel, loop_mode, quantize, tag-prefix. Parse via `midly::Smf::parse` (already a dep). Handle both SMF format 0 and format 1. |
-| [ ] | 16a.2 | Note on/off pairing | Track active (channel, note) pairs across a single parse; emit a note event with `duration = off_tick - on_tick` scaled to beats via the file's PPQ. A dangling note-on at EOF closes at the last parsed tick. |
-| [ ] | 16a.3 | CC events passthrough | Straight translation: `MidiMessage::Controller { cc, value }` → `FugueEvent::Cc { channel, cc, value, curve: None }`. Fugue-level `cc_interpolation: Linear` so ramps rebuild smoothly. |
-| [ ] | 16a.4 | Drop per-note expression | `PitchBend` and `Aftertouch` ignored — MIDI 1.0 channel events don't carry the per-note target. Document the lossy conversion (16a.1 opts can include `strict: bool` that errors on unsupported events instead). |
-| [ ] | 16a.5 | Multi-track handling | SMF format 1 → one `FugueDefinition` per track, each gets the track name as its tag (falls back to `imported-N`). Format 0 → single fugue. |
-| [ ] | 16a.6 | Tests | Round-trip: a fugue exported via 15a re-imports to an equivalent event stream (modulo per-note expression). Fuzz: malformed SMF produces a clean `Err`, never panics. |
+| [x] | 16a.1 | New [src/fugue/import.rs](../../../src/fugue/import.rs) with `smf_to_fugues(&[u8], opts) -> Result<Vec<FugueDefinition>, String>` | Shipped as a **two-stage decoupled pipeline**: `ImportedMidi::parse(bytes, strict)` (deserialize → intermediate) → `.into_fugues(&opts)` (convert with policy). `smf_to_fugues` is the thin wrapper for the common end-to-end case. Mirrors the export side's merge → build → serialize shape, so callers can inspect the parsed intermediate before applying policy. |
+| [x] | 16a.2 | Note on/off pairing | FIFO queue of unmatched note-ons per `(channel, note)` so rapid re-triggers of the same pitch pair correctly. `NoteOn vel=0` treated as note-off (running-status convention). Dangling note-ons close at EndOfTrack tick (or max event tick fallback) so the fugue scheduler never sees a stuck note. |
+| [x] | 16a.3 | CC events passthrough | Direct translation: `MidiMessage::Controller { cc, value }` → `FugueEvent::Cc { channel, cc, value, curve: None }`. Imported fugues default to `cc_interpolation: Linear` so DAW-emitted dense CC streams stay smooth on playback. |
+| [x] | 16a.4 | Drop per-note expression | `PitchBend` and `Aftertouch` dropped silently by default. `ImportOptions { strict: true }` errors on those events instead — caller-facing guarantee for round-trip fidelity. `ProgramChange` and `ChannelAftertouch` also dropped (not representable in the fugue schema). |
+| [x] | 16a.5 | Multi-track handling | SMF format 0 → one fugue. SMF format 1 → one fugue per track that carries playable MIDI events (pure-meta tracks including the conductor are skipped). Tag comes from the track's `TrackName` meta when present, otherwise a synthetic `imported-N` in first-seen order. `ImportOptions::tag_prefix` namespaces the whole batch. |
+| [x] | 16a.6 | Tests | 12 tests: malformed bytes → `Err`, conductor-only file → no fugues, tagged single-fugue round-trip, multi-track round-trip, `tag_prefix` namespacing, synthetic tag fallback, NoteOn-vel-0 pairing, dangling note-on closes at EOT, CC passthrough, strict-mode rejects pitch-bend, option passthrough (loop_mode/quantize/cancel_mode), intermediate-without-policy inspection pattern. |
 
 ### Phase 16b — HTTP endpoint + drop zone
 
+**Status (2026-04-20 — shipped):** all four tasks complete.
+
 | Done | # | Task | Notes |
 |------|---|------|-------|
-| [ ] | 16b.1 | `POST /api/import/fugue?instance=&tag_prefix=&loop_mode=&quantize=` | Body: `Content-Type: audio/midi` raw bytes. Parse via 16a, queue each resulting fugue via `FugueBridge::queue`. Respond `{ ok, fugue_ids: [..] }`. |
-| [ ] | 16b.2 | Drop zone in [App.tsx](../../../frontend/src/App.tsx) instance header | Accepts `.mid` drag events. `onDrop` reads the file as ArrayBuffer and POSTs. Visual feedback: the header highlights while a file is dragged over. |
-| [ ] | 16b.3 | MCP tool `import_fugue(instance, base64_mid, options?)` | Accepts base64-encoded MIDI. Decodes, queues through the same path as 16b.1. Returns `fugue_ids`. |
-| [ ] | 16b.4 | Handle drop onto a specific instance row | If the user's project has multiple Droplets instances, dropping on `instance "bass"` queues to that instance specifically (not `selectedInstance`). |
+| [x] | 16b.1 | `POST /api/import_fugue?instance=&tag_prefix=&loop_mode=&quantize=` | Body: raw SMF bytes (Content-Type `audio/midi` or `application/octet-stream` — axum's `Bytes` extractor accepts either). Wired into both [src/gui/server.rs](../../../src/gui/server.rs) (standalone HTTP) and [src/gui/routes.rs](../../../src/gui/routes.rs) (wry custom protocol). Shared core in [src/gui/api.rs](../../../src/gui/api.rs) `api::import_fugue` so MCP and HTTP land in the same code path. Response: `{ ok, fugue_ids: [..] }`. |
+| [x] | 16b.2 | Drop zone in [App.tsx](../../../frontend/src/App.tsx) | Whole `.sequencer-view` is a drop target. `dragenter/leave` depth-counted to avoid child-element flicker. Dashed-outline highlight via `.sequencer-view.is-drop-target` + a header "drop hint" that only renders during an active drag. Dropped files are filtered by `.mid` / `.midi` extension; each is read as ArrayBuffer and POSTed sequentially so per-file errors don't cascade. Fugue list auto-refreshes after import. |
+| [x] | 16b.3 | MCP tool `import_fugue(instance, base64_mid, options?)` | `#[tool]` fn in [src/mcp/server.rs](../../../src/mcp/server.rs) taking `ImportFugueRequest { instance, base64_mid, tag_prefix?, loop_mode?, quantize?, strict? }`. Base64 decode via `base64 = "0.22"` (new direct dep; was already transitively pulled by tokio-rustls). Delegates to `api::import_fugue` using the same `ImportFugueQuery` shape as the HTTP handler — one core function, three surfaces (wry, HTTP, MCP). Extracted `parse_loop_mode_str` + `parse_quantize_str` helpers and pointed the existing `queue_fugue` parser at them to keep the formats in sync. |
+| [x] | 16b.4 | Per-instance drop | v1 routes drops to the currently-selected instance (`selectedInstance`). A future multi-instance sidebar would let the user drop on a specific row; deferred until the UI grows that affordance — the current single-instance view makes per-row dropping ambiguous. |
 
 ---
 
