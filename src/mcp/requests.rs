@@ -548,39 +548,42 @@ impl schemars::JsonSchema for CompactNote {
     }
 
     fn json_schema(_gen: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        // Advertise both forms to the LLM / schema consumer. Array form is
-        // listed first so tools showing the schema see the terse preferred
-        // shape before the verbose one.
+        // Both wire forms are advertised to the LLM. The schema avoids
+        // the JSON-Schema-draft-07 positional `items: [...]` tuple form
+        // (Anthropic's API rejects it — they validate against Draft
+        // 2020-12 where `items` must be a single schema). Positional
+        // meaning is conveyed in the description field instead, which
+        // the LLM picks up just fine.
         let value = serde_json::json!({
-            "description": "A note. Prefer the array form [beat, note, duration?, velocity?, channel?] for terseness — e.g. [0, \"C1\", 0.75, 120]. duration defaults to 1, velocity to 100, channel to the fugue default. Object form {beat, note, duration, velocity?, channel?} is also accepted for readability.",
+            "description": "A note in a fugue. PREFERRED form (terse): array [beat, note, duration?, velocity?, channel?] — e.g. [0, \"C1\", 0.75, 120]. Positional: beat (number, beat offset from fugue start), note (integer 0-127 or pitch-notation string like \"C3\", \"F#2\"), duration (number, beats — default 1), velocity (integer 1-127 or null — default 100), channel (integer 1-16 or null — default = fugue channel). Use null to skip a middle field while specifying a later one. Object form {beat, note, duration?, velocity?, channel?} is also accepted for readability.",
             "oneOf": [
                 {
                     "type": "array",
-                    "description": "Terse form: [beat, note, duration?, velocity?, channel?]. Defaults: duration=1, velocity=100, channel=fugue default.",
+                    "description": "Terse form [beat, note, duration?, velocity?, channel?]. See parent description for positional meaning.",
                     "minItems": 2,
                     "maxItems": 5,
-                    "items": [
-                        { "type": "number", "description": "Beat offset from fugue start" },
-                        { "oneOf": [
-                            { "type": "integer", "minimum": 0, "maximum": 127 },
-                            { "type": "string", "pattern": "^[A-Ga-g][#b]?-?[0-9]+$" }
-                        ], "description": "MIDI note (0-127) or name ('C3', 'F#2')" },
-                        { "type": "number", "description": "Duration in beats (default 1)" },
-                        { "anyOf": [{"type":"integer","minimum":1,"maximum":127},{"type":"null"}], "description": "Velocity 1-127 (default 100)" },
-                        { "anyOf": [{"type":"integer","minimum":1,"maximum":16},{"type":"null"}], "description": "Channel 1-16 (default = fugue channel)" }
-                    ]
+                    "items": {
+                        "anyOf": [
+                            { "type": "number" },
+                            { "type": "string" },
+                            { "type": "null" }
+                        ]
+                    }
                 },
                 {
                     "type": "object",
                     "properties": {
-                        "beat": { "type": "number" },
-                        "note": { "oneOf": [
-                            { "type": "integer", "minimum": 0, "maximum": 127 },
-                            { "type": "string", "pattern": "^[A-Ga-g][#b]?-?[0-9]+$" }
-                        ] },
-                        "duration": { "type": "number" },
-                        "velocity": { "type": "integer", "minimum": 1, "maximum": 127 },
-                        "channel": { "type": "integer", "minimum": 1, "maximum": 16 }
+                        "beat": { "type": "number", "description": "Beat offset from fugue start" },
+                        "note": {
+                            "oneOf": [
+                                { "type": "integer", "minimum": 0, "maximum": 127 },
+                                { "type": "string", "pattern": "^[A-Ga-g][#b]?-?[0-9]+$" }
+                            ],
+                            "description": "MIDI note (0-127) or name ('C3', 'F#2')"
+                        },
+                        "duration": { "type": "number", "description": "Duration in beats (default 1)" },
+                        "velocity": { "type": "integer", "minimum": 1, "maximum": 127, "description": "Velocity 1-127 (default 100)" },
+                        "channel": { "type": "integer", "minimum": 1, "maximum": 16, "description": "Channel 1-16 (default = fugue channel)" }
                     },
                     "required": ["beat", "note"]
                 }
