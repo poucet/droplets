@@ -242,12 +242,6 @@ fn main() {
                         let msg = MidiMessage::Cc(CcMessage::new(channel, cc, end_value));
                         send_standalone_midi(&conn_out_fugue, &msg);
                     }
-                    // Slot events target the plugin's host-param surface. The
-                    // standalone binary drives external hardware via raw MIDI
-                    // and has no host params to write to, so slot events are
-                    // dropped here. Users who want to automate hardware from
-                    // standalone should use `cc` fugues.
-                    ProcessedEvent::SlotInstant { .. } | ProcessedEvent::SlotRamp { .. } => {}
                 }
             }
 

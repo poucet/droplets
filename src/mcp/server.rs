@@ -18,8 +18,8 @@ use rmcp::{
 use super::bridge::CcBridge;
 use super::requests::{
     CancelFugueRequest, CancelFuguesByTagRequest, FugueContent, GetSlotsRequest,
-    QueueFugueRequest, RenameInstanceRequest, RenameSlotRequest, SetParamRequest,
-    emit_cc_lane, emit_notes, emit_per_note_pitch_bend, emit_per_note_pressure, emit_slot_lane,
+    QueueFugueRequest, RenameInstanceRequest,
+    emit_cc_lane, emit_notes, emit_per_note_pitch_bend, emit_per_note_pressure,
     parse_interpolation_mode,
 };
 use crate::fugue::{
@@ -134,32 +134,6 @@ impl DropletsMcp {
         Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
-    /// Set a parameter slot value for DAW automation/modulation.
-    #[tool(description = "Set a parameter slot value (0.0-1.0). These slots are automatable parameters that can be mapped via your DAW's modulation system (Ableton LFOs, Bitwig modulators) to control any plugin on the same track.")]
-    fn set_param(&self, Parameters(req): Parameters<SetParamRequest>) -> Result<CallToolResult, McpError> {
-        let result = match CcBridge::set_param(&req.instance, req.data.slot, req.data.value) {
-            Ok(()) => format!(
-                "Set slot {} = {:.2} ({:.0}%) on instance '{}'",
-                req.data.slot, req.data.value, req.data.value * 100.0, req.instance
-            ),
-            Err(e) => format!("Error: {}", e),
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
-    }
-
-    /// Rename a parameter slot for easier identification.
-    #[tool(description = "Rename a parameter slot to describe what it controls. For example, if slot 0 is mapped to 'Vital Filter Cutoff' in your DAW, rename it so both the UI and AI can identify it clearly.")]
-    fn rename_slot(&self, Parameters(req): Parameters<RenameSlotRequest>) -> Result<CallToolResult, McpError> {
-        let result = match CcBridge::rename_slot(&req.instance, req.data.slot, &req.data.name) {
-            Ok(old_name) => format!(
-                "Renamed slot {} from '{}' to '{}' on instance '{}'",
-                req.data.slot, old_name, req.data.name, req.instance
-            ),
-            Err(e) => format!("Error: {}", e),
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
-    }
-
     /// List all parameter slots for an instance with their names, CC mappings, and current values.
     #[tool(description = "List all parameter slots for an instance with their names, CC mappings, and values. Shows which slots are mapped to MIDI CC and can output CC when set.")]
     fn list_slots(&self, Parameters(req): Parameters<GetSlotsRequest>) -> Result<CallToolResult, McpError> {
@@ -266,11 +240,7 @@ impl DropletsMcp {
                     let default_mode = parse_interpolation_mode(interpolation.as_deref());
                     emit_per_note_pressure(note.0, points, default_mode, fugue_channel, &mut events);
                 }
-                FugueContent::Slot { slot, points, interpolation } => {
-                    let lane_mode = parse_interpolation_mode(interpolation.as_deref());
-                    emit_slot_lane(*slot, points, lane_mode, &mut events);
-                }
-                FugueContent::Composite { notes, cc, pitch_bends, pressures, slots } => {
+                FugueContent::Composite { notes, cc, pitch_bends, pressures } => {
                     // One fugue, multiple concerns. Each lane carries its own
                     // interpolation mode; events get curves set explicitly
                     // per-lane so different CC lanes can use different curves
@@ -287,10 +257,6 @@ impl DropletsMcp {
                     for lane in pressures {
                         let lane_mode = parse_interpolation_mode(lane.interpolation.as_deref());
                         emit_per_note_pressure(lane.note.0, &lane.points, lane_mode, fugue_channel, &mut events);
-                    }
-                    for lane in slots {
-                        let lane_mode = parse_interpolation_mode(lane.interpolation.as_deref());
-                        emit_slot_lane(lane.slot, &lane.points, lane_mode, &mut events);
                     }
                 }
             }

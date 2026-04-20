@@ -15,7 +15,6 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::bridge::CcBridge;
 
 /// Project-wide snapshot pushed by the host controller extension.
 ///
@@ -121,24 +120,6 @@ pub struct InstanceSummary {
     /// available or the track is effects-only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_device: Option<PrimaryDevice>,
-    /// Per-slot hints: what has the user named each of the 16 plugin slots?
-    /// Only non-default names are included — generic "Slot N" entries are
-    /// elided so the LLM isn't tempted to target unmapped slots.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub slots: Vec<SlotHint>,
-}
-
-/// One slot's name hint for the LLM. `cc` lists the slot's backing MIDI CC
-/// number, kept for parity with the standalone hardware path — for host-param
-/// automation in a DAW, the LLM should use a `slot` fugue lane keyed by
-/// `index`, not emit raw CC.
-#[derive(Debug, Clone, Serialize, TS)]
-#[ts(export)]
-pub struct SlotHint {
-    pub index: u8,
-    pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cc: Option<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -165,25 +146,11 @@ impl ProjectState {
                 let track = layout.tracks.iter().find(|t| {
                     t.droplets_instance_id.as_deref() == Some(id.as_str())
                 });
-                let slots = CcBridge::get_slots(id)
-                    .map(|slot_infos| {
-                        slot_infos
-                            .into_iter()
-                            .filter(|s| !is_default_slot_name(s.index, &s.name))
-                            .map(|s| SlotHint {
-                                index: s.index as u8,
-                                name: s.name,
-                                cc: s.cc,
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
                 InstanceSummary {
                     id: id.clone(),
                     name: name.clone(),
                     track_name: track.map(|t| t.track_name.clone()),
                     primary_device: track.and_then(|t| t.primary_device.clone()),
-                    slots,
                 }
             })
             .collect();
@@ -197,14 +164,6 @@ impl ProjectState {
 
         Self { instances, other_tracks, layout_available }
     }
-}
-
-/// Factory default slot names are generic hints that don't correspond to any
-/// real mapping until the user configures them. Surfacing them would mislead
-/// the LLM into targeting slots that go nowhere.
-fn is_default_slot_name(index: usize, name: &str) -> bool {
-    let (_, default_name) = crate::params::default_cc_config(index);
-    name == default_name
 }
 
 // =============================================================================

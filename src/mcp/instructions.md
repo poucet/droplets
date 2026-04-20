@@ -3,9 +3,8 @@ Simply Droplets — AI-controlled MIDI 1.0/2.0 out of a DAW plugin.
 ## Session start (ALWAYS do this first)
 1. `get_project_state` — single call that returns connected instances, their track names, and each track's **primary device**. For drum tracks you get the pad map (notes in pitch notation like `"C2"`, pad names, loaded sample names). For synth tracks you get the instrument name and preset. Use this to orient yourself before composing.
 2. If the returned `layout_available` is `false`, no host controller extension is running (e.g. user is in Ableton without the script). Fall back to `list_instances` + asking the user what's on each track.
-3. If you need more detail on a specific track (full chain, effects, nested pads), call `get_track_info(instance)`. For parameter-level access call `get_device_parameters(instance, device_path)`.
-4. Rename instances with `set_instance_name` only when the track-name-derived name from the extension isn't clear enough — host extensions auto-rename to match track names, so this is usually unnecessary.
-5. The DAW transport MUST be PLAYING for fugues to produce sound. Use `get_transport` to check.
+3. Rename instances with `set_instance_name` only when the track-name-derived name from the extension isn't clear enough — host extensions auto-rename to match track names, so this is usually unnecessary.
+4. The DAW transport MUST be PLAYING for fugues to produce sound. Use `get_transport` to check.
 
 ## Using drum maps
 When `get_project_state` reports a drum machine, **use the returned pad notes, not GM conventions.** The user's kick may be on `C2`, `B1`, `D2`, or anywhere else depending on their kit. Example: if the pad list includes `{note: "C2", name: "Kick", sample_name: "kick_808.wav"}`, write kick hits on `C2`. Guessing `C1` or `D2` because "that's where kicks usually are" will produce silence or the wrong sound.
@@ -73,33 +72,24 @@ Reference (when you need to think in numbers):
 - Melody / lead:          60–84  (C3–C5)
 - Lead / top-line hooks:  72–96  (C4–C6)
 
-### Automating synth parameters — use `slot` fugues, not `cc`
+### Common CC numbers (widely supported, but individual synths may remap)
+- CC 1   — Modulation wheel (typically adds vibrato / depth)
+- CC 7   — Channel volume (fader level)
+- CC 10  — Pan (0 = left, 64 = center, 127 = right)
+- CC 11  — Expression (for dynamics — preferred over volume for swells)
+- CC 64  — Sustain pedal (0–63 = off, 64–127 = on)
+- CC 71  — Resonance / filter Q
+- CC 72  — Release time
+- CC 73  — Attack time
+- CC 74  — Filter cutoff / brightness  ← the classic filter sweep CC
+- CC 91  — Reverb send amount
+- CC 93  — Chorus / mod-FX send amount
+- CC 120 — All sound off (panic)
+- CC 123 — All notes off
 
-Droplets exposes 16 **slot parameters** per instance as native host automation params. The user maps each slot to a synth control once in their DAW (right-click → Map in Bitwig, Configure → drag in Ableton), then you drive slots with `slot` fugue lanes and the DAW records the automation natively on the target parameter. This is the only reliable way to automate modern soft synths (Polysynth, Serum, Pigments, Omnisphere, Vital, …) — they ignore raw MIDI CCs out of the box.
+When the user asks for a "filter sweep", default to CC 74. For "volume swell" prefer CC 11. For "mod wheel" it's CC 1.
 
-**How to automate a synth parameter:**
-1. Read the `slots` array under each instance in `get_project_state`. Each configured slot looks like `{index: 0, name: "Filter Cutoff"}` — the index is what you target, the name tells you what it controls.
-2. Queue a `slot` fugue (single-concern) or add a `slots` lane inside a `composite`:
-   ```json
-   {"type": "slot", "slot": 0, "points": [[0,0.2],[4,1.0,"exp"],[8,0.2,"log"]]}
-   ```
-   Values are normalized `0.0–1.0` (not `0–127`). Per-point curves, lane `interpolation`, and default-curve behavior match CC lanes exactly.
-3. If `slots` is empty or doesn't list the parameter the user wants, ask them to map + rename a slot rather than guessing.
-
-**Slot vs CC:**
-- `slot` — default for synth-parameter automation in a DAW. Works with soft synths, records as real automation, slot-name survives preset changes.
-- `cc` — for external hardware targets (MIDI synth modules, CC-addressable mixers). Slots never reach the MIDI bus; only `cc` lanes do.
-
-### CC reference — for hardware / standalone use only
-
-When a `cc` fugue is the right choice (hardware target or the user explicitly wants MIDI CC output), these are the GM-standard conventions:
-
-- CC 1   — Modulation wheel  |  CC 7   — Channel volume  |  CC 10  — Pan
-- CC 11  — Expression  |  CC 64  — Sustain pedal  |  CC 71  — Filter resonance
-- CC 73  — Attack  |  CC 74  — Filter cutoff  |  CC 91  — Reverb send
-- CC 93  — Chorus send  |  CC 120 — All sound off (panic)  |  CC 123 — All notes off
-
-**Inside a DAW, these CC numbers are almost always dead MIDI.** Prefer `slot` for in-DAW automation; only fall back to these when routing to hardware.
+**Reality check:** modern soft synths (Bitwig Polysynth, Serum, Pigments, Omnisphere, Vital, …) ignore these CCs out of the box. To make CC automation audible on a soft synth, the user has to MIDI-learn it in the synth (right-click the knob → "Learn MIDI CC" → move the source). Before promising the user a "filter sweep," confirm the target is set up to receive it — CC output on an unmapped soft synth goes nowhere audible. Hardware synths and CC-learned targets work as expected.
 
 ## Musical defaults that actually sound good
 - **Always loop by default** (`loop_mode: "forever"`). Write short (2–8 bar) fugues and replace them via tag swap as the piece evolves. Only use one-shots for stings, fills, and accents.

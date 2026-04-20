@@ -1,12 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import './DawLayout.css';
-import type { ProjectLayout, TrackContext, Device, DrumPad } from '../types';
-
-// MIDI number → pitch notation. Mirrors the backend `midi_to_name`
-// helper so what we render on the UI matches the MCP-visible view.
-// DAW convention: C3 = middle C = MIDI 60 (Bitwig/Ableton/Logic/Reaper).
-const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-const midiToName = (midi: number) => `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 2}`;
+import type { ProjectLayout, TrackContext, PrimaryDevice, PadSummary } from '../types';
 
 interface DawLayoutProps {
   layout: ProjectLayout | null;
@@ -16,29 +10,24 @@ interface DawLayoutProps {
 
 /**
  * DAW tab — visualizes the last-known project layout pushed by the host
- * controller extension (Bitwig / Ableton / ...). The goal is end-to-end
- * verification: you should be able to rename a track or swap a sample in
- * the DAW and see it reflected here without polling.
+ * controller extension (Bitwig / Ableton / ...). End-to-end verification:
+ * rename a track or swap a sample in the DAW, see it reflected here without
+ * polling.
  *
- * When no layout is available (`hostConnected=false`), the UI explains what
- * the tab WOULD show and how to bring it online — matches the graceful
- * degradation the MCP tools already do for the LLM.
+ * The wire format carries a single `primary_device` per track (instrument or
+ * drum machine) rather than a full device chain — matches what
+ * `get_project_state` surfaces to the LLM.
  */
 const DawLayout: React.FC<DawLayoutProps> = ({ layout, lastUpdatedAt, hostConnected }) => {
   const [showRawJson, setShowRawJson] = React.useState(false);
 
-  // Only show tracks that actually have devices. Natively filters out
-  // Bitwig's master/FX/return tracks and any empty audio/MIDI tracks —
-  // the user wants to see what's on the project, not an inventory.
+  // Only show tracks with a primary sound source — filters out Bitwig's
+  // master/FX/return tracks and empty audio/MIDI tracks.
   const visibleTracks = React.useMemo(
-    () => (layout?.tracks ?? []).filter((t) => t.devices.length > 0),
+    () => (layout?.tracks ?? []).filter((t) => t.primary_device != null),
     [layout],
   );
 
-  // Raw JSON view is always available for debugging, even when no layout
-  // has arrived — seeing `null` vs an empty `{tracks:[]}` tells the user
-  // whether the frontend just hasn't received anything, or received an
-  // empty push.
   const rawToggle = (
     <button
       className="daw-raw-toggle"
@@ -156,21 +145,19 @@ const TrackCard: React.FC<{ track: TrackContext }> = ({ track }) => {
           </span>
         )}
       </div>
-      {track.devices.length === 0 ? (
-        <div className="daw-track-empty">No devices</div>
-      ) : (
+      {track.primary_device ? (
         <div className="daw-device-chain">
-          {track.devices.map((device, idx) => (
-            <DeviceCell key={idx} device={device} />
-          ))}
+          <PrimaryDeviceCell device={track.primary_device} />
         </div>
+      ) : (
+        <div className="daw-track-empty">No primary device</div>
       )}
     </div>
   );
 };
 
-/** One device in a chain. Drum machines expand into a pad grid inline. */
-const DeviceCell: React.FC<{ device: Device }> = ({ device }) => {
+/** Render the track's primary device — an instrument or a drum machine. */
+const PrimaryDeviceCell: React.FC<{ device: PrimaryDevice }> = ({ device }) => {
   switch (device.type) {
     case 'instrument':
       return (
@@ -178,44 +165,16 @@ const DeviceCell: React.FC<{ device: Device }> = ({ device }) => {
           <div className="daw-device-type">Instrument</div>
           <div className="daw-device-name">{device.name}</div>
           {device.preset_name && <div className="daw-device-preset">{device.preset_name}</div>}
-          {device.sample_name && <div className="daw-device-sample">♪ {device.sample_name}</div>}
-          {device.vendor && <div className="daw-device-vendor">{device.vendor}</div>}
-        </div>
-      );
-    case 'effect':
-      return (
-        <div className="daw-device daw-device--effect">
-          <div className="daw-device-type">Effect</div>
-          <div className="daw-device-name">{device.name}</div>
-          {device.preset_name && <div className="daw-device-preset">{device.preset_name}</div>}
           {device.vendor && <div className="daw-device-vendor">{device.vendor}</div>}
         </div>
       );
     case 'drum_machine':
       return <DrumMachineCell name={device.name} pads={device.pads} />;
-    case 'container':
-      return (
-        <div className="daw-device daw-device--container">
-          <div className="daw-device-type">{device.kind}</div>
-          <div className="daw-device-name">{device.name}</div>
-          <div className="daw-device-vendor">
-            {device.chains.length} chain{device.chains.length === 1 ? '' : 's'}
-          </div>
-        </div>
-      );
-    case 'unknown':
-      return (
-        <div className="daw-device daw-device--unknown">
-          <div className="daw-device-type">?</div>
-          <div className="daw-device-name">{device.name}</div>
-          {device.vendor && <div className="daw-device-vendor">{device.vendor}</div>}
-        </div>
-      );
   }
 };
 
 /** Inline pad grid for a Drum Machine. Shows note, pad name, sample. */
-const DrumMachineCell: React.FC<{ name: string; pads: DrumPad[] }> = ({ name, pads }) => {
+const DrumMachineCell: React.FC<{ name: string; pads: PadSummary[] }> = ({ name, pads }) => {
   return (
     <div className="daw-device daw-device--drum-machine">
       <div className="daw-device-type">Drum Machine</div>
@@ -233,18 +192,11 @@ const DrumMachineCell: React.FC<{ name: string; pads: DrumPad[] }> = ({ name, pa
   );
 };
 
-const PadCell: React.FC<{ pad: DrumPad }> = ({ pad }) => {
-  // Prefer a sample_name from a nested Sampler, fall back to preset, then
-  // to the pad's own name. Mirrors what `get_project_state` surfaces at
-  // tier 1 so the UI matches what the LLM sees.
-  const sampleFromSampler = pad.devices.find(
-    (d): d is Extract<Device, { type: 'instrument' }> =>
-      d.type === 'instrument' && !!d.sample_name,
-  );
-  const display = sampleFromSampler?.sample_name ?? pad.devices[0]?.name ?? pad.name;
+const PadCell: React.FC<{ pad: PadSummary }> = ({ pad }) => {
+  const display = pad.sample_name ?? pad.name;
   return (
-    <div className="daw-pad" title={`${midiToName(pad.note)} — ${pad.name}`}>
-      <div className="daw-pad-note">{midiToName(pad.note)}</div>
+    <div className="daw-pad" title={`${pad.note} — ${pad.name}`}>
+      <div className="daw-pad-note">{pad.note}</div>
       <div className="daw-pad-name">{pad.name}</div>
       <div className="daw-pad-sample">{display}</div>
     </div>

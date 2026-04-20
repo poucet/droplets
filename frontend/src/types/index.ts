@@ -24,5 +24,5 @@ export type { TransportState } from './TransportState';
 // DAW project layout (pushed from host controller extension)
 export type { ProjectLayout } from './ProjectLayout';
 export type { TrackContext } from './TrackContext';
-export type { Device } from './Device';
-export type { DrumPad } from './DrumPad';
+export type { PrimaryDevice } from './PrimaryDevice';
+export type { PadSummary } from './PadSummary';

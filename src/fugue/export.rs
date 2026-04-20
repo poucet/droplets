@@ -129,10 +129,6 @@ fn fugue_event_to_midi(event: &FugueEvent) -> Option<TrackEventKind<'static>> {
                 },
             })
         }
-        // Slot events have no MIDI equivalent — they target the plugin's
-        // host-param surface, not the MIDI stream. Silently drop from MIDI
-        // export; the file still captures notes + CC + per-note expression.
-        FugueEvent::Slot { .. } => None,
         FugueEvent::PerNotePressure { channel, note, pressure } => {
             // Convert to polyphonic aftertouch (per-note pressure)
             let value = (pressure * 127.0).clamp(0.0, 127.0) as u8;
