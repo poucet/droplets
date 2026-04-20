@@ -486,14 +486,21 @@ const App: React.FC = () => {
                 onExport={handleExportFugue}
               />
 
-              {selectedFugue && (
-                <FugueViewer
-                  fugue={selectedFugue}
-                  info={selectedInfo}
-                  instance={selectedInstance}
-                  tempoBpm={transport.tempo}
-                />
-              )}
+              {/* Render every active fugue expanded. Previously only the
+                  selected one showed its grid; users found the click-to-expand
+                  workflow annoying when they just want to see what's playing. */}
+              {fugueInfos.map(info => {
+                const def = fugueDefinitions.get(info.id);
+                return def ? (
+                  <FugueViewer
+                    key={info.id}
+                    fugue={def}
+                    info={info}
+                    instance={selectedInstance}
+                    tempoBpm={transport.tempo}
+                  />
+                ) : null;
+              })}
             </div>
           </div>
         ) : activeTab === 'midi' ? (
