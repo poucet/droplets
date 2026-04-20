@@ -33,6 +33,9 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [ ] | P2 | 8 | Migrate UI from React/HTTP to egui (in-process) | XL | Correctness — removes transport skew |
 | [ ] | P3 | 9 | Evaluate stateful MCP mode for server→client push | S | Medium — unlocks event notifications (fugue-finished, instance-changed) |
 | [ ] | P2 | 10 | Audio-thread ramps for per-note expression (pitch bend, pressure) | M | Quality — sample-accurate per-note curves instead of server-side discrete-event expansion |
+| [ ] | P1 | 15 | Native drag-out of fugues → DAW clip (`.mid` file) | M | High — lets users hand AI-generated patterns to the DAW's piano roll for editing; removes the need for an in-app editor |
+| [ ] | P2 | 16 | Native drag-in of `.mid` → new fugue on an instance | M | Medium — round-trip workflow: edit in the DAW, drop back as a fugue |
+| [ ] | P2 | 17 | MCP tool: `get_fugue(id)` returning current FugueDefinition | S | Medium — closes the round-trip loop: LLM can read back user-edited fugues and reason about what changed |
 
 ---
 
@@ -254,6 +257,60 @@ See [TASKS.md](TASKS.md) for the detailed task breakdown and resolved design dec
 
 ---
 
+#### Feature 15: Native drag-out of fugues → DAW clip (`.mid`)
+
+**Problem:** Without drag-out, a user who wants to edit an AI-generated pattern has to either (a) rebuild it by hand in the DAW's piano roll, or (b) use an in-app editor we don't want to maintain. The previous "sequencer tab" in the frontend tried to be an editor and was broken; it was removed. We need a path from "fugues are playing in Droplets" to "this pattern is a clip in the DAW" so the DAW's native editor takes over.
+
+**Solution:** Webview-initiated native OS drag. On `mousedown` over a drag zone the frontend sends an IPC message to the Rust side; the Rust side materializes a `.mid` file to the OS temp dir and calls the `drag` crate (v2.1, cross-platform wrapper around `NSFilePromiseProvider` / Windows `IDropSource` / XDND) using the wry webview's raw window handle as the drag source. Bitwig / Ableton / Finder / Logic all accept the drop. Exporter reuses [src/fugue/export.rs](../../../src/fugue/export.rs) (single-fugue MIDI writer already shipped); new code path merges all active fugues on an instance for the "drag all active" affordance.
+
+**Scope breakdown:**
+- **15.1 — Exporter: merge active fugues.** Extend [src/fugue/export.rs](../../../src/fugue/export.rs) to take `Vec<FugueDefinition>`, merge events per channel, optionally convert each slot/CC lane to a single CC track in the file. ~2 hours.
+- **15.2 — `drag` crate + IPC wiring.** Add `drag = "2.1"` dependency, new IPC handler in [src/gui/webview.rs](../../../src/gui/webview.rs) that writes a temp `.mid` and calls `drag::start_drag(window_handle, path)`. Temp file cleaned up via drag-result callback. ~2 hours.
+- **15.3 — Drag zones in UI.** Drag handle per-fugue in [FugueViewer.tsx](../../../frontend/src/components/FugueViewer.tsx); "Drag all active" button in [FugueList.tsx](../../../frontend/src/components/FugueList.tsx). Hook `dragstart` / `mousedown` → IPC. ~1 hour.
+- **15.4 — HTTP endpoints for LLM/scripted use.** `GET /api/export/fugue/:id?instance=` and `GET /api/export/active?instance=` return `.mid` blobs directly — useful for MCP-driven flows ("give me a file I can email") and as a test harness. ~1 hour.
+
+**Non-goals:** automation in the exported file is notes + CC only. Slot / host-param automation doesn't have a portable MIDI representation. Documented — to capture slot automation, arm automation lanes in the DAW and replay the fugue (the plugin emits `ParamValueEvent` so the DAW records it natively).
+
+**Files:** [src/fugue/export.rs](../../../src/fugue/export.rs), [src/gui/webview.rs](../../../src/gui/webview.rs), [src/gui/routes.rs](../../../src/gui/routes.rs), [frontend/src/components/FugueViewer.tsx](../../../frontend/src/components/FugueViewer.tsx), [frontend/src/components/FugueList.tsx](../../../frontend/src/components/FugueList.tsx), `Cargo.toml` (add `drag = "2.1"`).
+
+---
+
+#### Feature 16: Native drag-in of `.mid` → fugue on an instance
+
+**Problem:** After dragging out + editing in the DAW, there's no way back. Round-trip workflows (LLM sketches → user refines in piano roll → import back as the new canonical version) require drop-to-import.
+
+**Solution:** Accept dropped `.mid` files on a drop zone in the per-instance UI. Frontend reads the file as `ArrayBuffer`, POSTs to `POST /api/import/fugue?instance=` (binary body, `audio/midi`). Rust side parses with [`midly`](https://crates.io/crates/midly) (already a dependency via the exporter), converts MIDI tracks to `FugueDefinition` events (inverse of `fugue_event_to_midi` in [src/fugue/export.rs](../../../src/fugue/export.rs)), and queues via `FugueBridge::queue`. Time resolution: use the `.mid`'s PPQ to convert ticks → beats at parse time.
+
+**Scope breakdown:**
+- **16.1 — MIDI → FugueEvent parser.** Inverse of [src/fugue/export.rs:92-143](../../../src/fugue/export.rs#L92-L143). Handle Note On / Off pairing (emit note events with duration), CC events (straight mapping). Skip per-note expression (not in MIDI 1.0). ~2 hours.
+- **16.2 — HTTP endpoint.** `POST /api/import/fugue?instance=&tag=&loop_mode=&quantize=` body = `audio/midi`. Returns queued fugue ID. ~30 min.
+- **16.3 — Drop zone in UI.** Per-instance area accepts `.mid` drop, uploads, refreshes fugue list. ~30 min.
+- **16.4 — MCP tool.** `import_fugue(instance, base64_mid)` for LLM-initiated imports. ~30 min.
+
+**Non-goals:** bidirectional fidelity — the exported `.mid` from Feature 15 isn't guaranteed to re-import exactly. DAW-edited clips in particular may differ (quantized grid, different curves). Good enough.
+
+**Files:** [src/mcp/requests.rs](../../../src/mcp/requests.rs) (new `ImportRequest`), [src/fugue/import.rs](../../../src/fugue/import.rs) (new), [src/gui/routes.rs](../../../src/gui/routes.rs), frontend drop zone component.
+
+---
+
+#### Feature 17: MCP tool `get_fugue(id)` — read back a FugueDefinition
+
+**Problem:** `list_fugues` today returns `FugueInfo` (id, tag, loop progress, timing) but not the actual event content. Once drag-in (Feature 16) exists, the LLM has no way to see what the user edited. Composing a "verse 2" that picks up where the user left their edited "verse 1" requires reading the notes, CC points, and curves back.
+
+**Solution:** New MCP tool `get_fugue(instance, fugue_id)` returning the full `FugueDefinition` — or an error when the id isn't active on that instance. The scheduler already keeps definitions alive for the duration a fugue is queued/playing ([src/fugue/bridge.rs](../../../src/fugue/bridge.rs) `get_definitions`), so this is a thin wrapper: look up by id, serialize through the same path the UI uses.
+
+**LLM-facing format:** same compact schema as `queue_fugue` accepts on input — notes as `[beat, note, duration?, velocity?, channel?]` arrays, CC / per-note lanes as `[beat, value, curve]` point lists. Symmetry with the input side means the LLM can read a fugue, mutate it, and re-queue it without schema translation.
+
+**Scope breakdown:**
+- **17.1 — Internal:** add `FugueBridge::get_definition(instance, id) -> Option<FugueDefinition>` beside the existing `get_definitions`. ~15 min.
+- **17.2 — MCP tool:** new `#[tool]` fn in [src/mcp/server.rs](../../../src/mcp/server.rs) with the thin lookup + serde_json render. ~30 min.
+- **17.3 — Compact-schema serializer:** add a `FugueDefinition → CompactFugue` converter that mirrors the inverse of the parser path — flatten `TimedFugueEvent` streams back into `FugueContent::Composite { notes, cc, pitch_bends, pressures }`. Groups NoteOn/NoteOff pairs by matching beat+note+channel. ~2 hours — non-trivial because the internal representation is event-stream, not lane-grouped. For v1 we can ship the raw `FugueDefinition` and add the compact view only if the LLM actually struggles with the event stream.
+- **17.4 — Docs:** update `instructions.md` with "read-modify-write" pattern.
+
+**Files:** [src/fugue/bridge.rs](../../../src/fugue/bridge.rs) (new getter), [src/mcp/server.rs](../../../src/mcp/server.rs) (tool), [src/mcp/requests.rs](../../../src/mcp/requests.rs) (optional compact serializer), [src/mcp/instructions.md](../../../src/mcp/instructions.md).
+
+---
+
 ## Implementation Order
 
 ```
@@ -285,6 +342,9 @@ Phase 01:
   2026-04-21: DEMO
   ↓
 Phase 02: 8 (egui migration) + 9 (stateful MCP) + 10 (audio-thread per-note ramps)
+          15 (drag-out) → 16 (drag-in) → 17 (get_fugue MCP read-back)
+          ↑ 15 first, then 16+17 together — 16 and 17 both close the
+          round-trip loop (user edits → LLM sees the edits).
 ```
 
 ---
