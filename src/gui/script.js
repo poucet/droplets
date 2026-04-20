@@ -82,18 +82,21 @@
     }
   };
 
-  // Convenience: Push transport update
-  window.simplyvst._pushTransport = function(transport) {
+  // Convenience: Push transport update. Tagged with instance_id so a
+  // single UI subscription handles every instance running in the process.
+  window.simplyvst._pushTransport = function(instanceId, transport) {
     window.simplyvst._onRealtimeMessage({
       type: 'transport',
+      instance_id: instanceId,
       transport: transport
     });
   };
 
-  // Convenience: Push fugues update
-  window.simplyvst._pushFugues = function(infos, definitions) {
+  // Convenience: Push fugues update. Tagged with instance_id (see above).
+  window.simplyvst._pushFugues = function(instanceId, infos, definitions) {
     window.simplyvst._onRealtimeMessage({
       type: 'fugues',
+      instance_id: instanceId,
       infos: infos,
       definitions: definitions
     });

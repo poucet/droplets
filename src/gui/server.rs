@@ -83,14 +83,26 @@ fn default_instance() -> String {
     "default".to_string()
 }
 
-/// WebSocket message types sent to the frontend
+/// WebSocket message types sent to the frontend.
+///
+/// Transport + fugue updates are tagged with `instance_id` so a single WS
+/// subscription covers every connected instance. The frontend keeps a
+/// per-instance map and renders whichever one the user has selected —
+/// no reconnect needed when the instance dropdown changes.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WsMessage {
     /// Transport state update (sent frequently for smooth playhead)
-    Transport(api::TransportResponse),
+    Transport {
+        instance_id: String,
+        transport: crate::fugue::TransportState,
+    },
     /// Fugue list update (sent when fugues change)
-    Fugues(api::FuguesResponse),
+    Fugues {
+        instance_id: String,
+        infos: Vec<crate::fugue::FugueInfo>,
+        definitions: Vec<crate::fugue::FugueDefinition>,
+    },
     /// Project layout update from the host controller extension. Pushed
     /// immediately on every `POST /api/project_layout` — no polling, so
     /// the UI reflects DAW changes in ~one WebSocket round-trip.
@@ -379,79 +391,77 @@ fn error_response(status: StatusCode, error: &str) -> (StatusCode, [(header::Hea
 // WebSocket handler
 // =============================================================================
 
-/// Query params for WebSocket connection
-#[derive(Debug, Deserialize)]
-pub struct WsQuery {
-    #[serde(default = "default_instance")]
-    instance: String,
+async fn ws_handler(ws: WebSocketUpgrade) -> impl IntoResponse {
+    log::info!("GUI WebSocket: New connection request (all instances)");
+    ws.on_upgrade(handle_socket)
 }
 
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    Query(query): Query<WsQuery>,
-) -> impl IntoResponse {
-    log::info!("GUI WebSocket: New connection request for instance '{}'", query.instance);
-    ws.on_upgrade(move |socket| handle_socket(socket, query.instance))
-}
-
-async fn handle_socket(socket: WebSocket, instance: String) {
-    log::info!("GUI WebSocket: Connection established for instance '{}'", instance);
+async fn handle_socket(socket: WebSocket) {
+    log::info!("GUI WebSocket: Connection established (all instances)");
 
     let (mut sender, mut receiver) = socket.split();
 
-    // Spawn task to send updates to the client
-    let instance_for_send = instance.clone();
+    // Spawn task to send updates to the client.
+    //
+    // One WS subscription covers every connected instance — each push is
+    // tagged with its `instance_id`, and the frontend decides which one to
+    // render. This lets the user switch instances instantly without a
+    // reconnect (previously every selector change dropped and reopened
+    // the WS, which was both janky and error-prone).
     let send_task = tokio::spawn(async move {
         let mut transport_interval = tokio::time::interval(TRANSPORT_UPDATE_INTERVAL);
         let mut fugue_interval = tokio::time::interval(FUGUE_UPDATE_INTERVAL);
-        // Subscribe to project-layout pushes so the UI reflects DAW
-        // changes immediately — no polling.
         let mut layout_rx = project_layout_tx().subscribe();
 
-        let mut last_transport: Option<TransportState> = None;
-        let mut last_fugue_ids: Vec<u64> = Vec::new();
-        let mut last_waiting_states: Vec<bool> = Vec::new();
+        // Per-instance caches so we only push on actual change. Keyed by
+        // stable instance ID, which survives rename.
+        use std::collections::HashMap;
+        let mut last_transport: HashMap<String, TransportState> = HashMap::new();
+        let mut last_fugues: HashMap<String, (Vec<u64>, Vec<bool>)> = HashMap::new();
 
         loop {
             tokio::select! {
                 _ = transport_interval.tick() => {
-                    if let Ok(transport) = FugueBridge::get_transport(&instance_for_send) {
+                    for (id, _name) in CcBridge::list_instances() {
+                        let Ok(transport) = FugueBridge::get_transport(&id) else { continue };
                         let should_send = last_transport
-                            .map(|last| {
+                            .get(&id)
+                            .map(|last: &TransportState| {
                                 (transport.beat - last.beat).abs() > 0.001
                                     || transport.playing != last.playing
                                     || transport.tempo != last.tempo
                             })
                             .unwrap_or(true);
+                        if !should_send { continue; }
 
-                        if should_send {
-                            let msg = WsMessage::Transport(api::TransportResponse { transport });
-                            if let Ok(json) = serde_json::to_string(&msg) {
-                                if sender.send(Message::Text(json)).await.is_err() {
-                                    break;
-                                }
-                            }
-                            last_transport = Some(transport);
-                        }
+                        let msg = WsMessage::Transport {
+                            instance_id: id.clone(),
+                            transport,
+                        };
+                        let Ok(json) = serde_json::to_string(&msg) else { continue };
+                        if sender.send(Message::Text(json)).await.is_err() { return; }
+                        last_transport.insert(id, transport);
                     }
                 }
                 _ = fugue_interval.tick() => {
-                    let response = api::get_fugues(&instance_for_send);
+                    for (id, _name) in CcBridge::list_instances() {
+                        let response = api::get_fugues(&id);
+                        let current_ids: Vec<u64> = response.infos.iter().map(|f| f.id).collect();
+                        let current_waiting: Vec<bool> = response.infos.iter().map(|f| f.is_waiting).collect();
+                        let changed = last_fugues
+                            .get(&id)
+                            .map(|(ids, waiting)| *ids != current_ids || *waiting != current_waiting)
+                            .unwrap_or(true);
+                        if !changed { continue; }
 
-                    // Check if fugue list changed (IDs or waiting states)
-                    let current_ids: Vec<u64> = response.infos.iter().map(|f| f.id).collect();
-                    let current_waiting: Vec<bool> = response.infos.iter().map(|f| f.is_waiting).collect();
-                    let changed = current_ids != last_fugue_ids || current_waiting != last_waiting_states;
-
-                    if changed {
-                        let msg = WsMessage::Fugues(response.clone());
-                        if let Ok(json) = serde_json::to_string(&msg) {
-                            if sender.send(Message::Text(json)).await.is_err() {
-                                break;
-                            }
-                        }
-                        last_fugue_ids = current_ids;
-                        last_waiting_states = current_waiting;
+                        let msg = WsMessage::Fugues {
+                            instance_id: id.clone(),
+                            infos: response.infos,
+                            definitions: response.definitions,
+                        };
+                        let Ok(json) = serde_json::to_string(&msg) else { continue };
+                        if sender.send(Message::Text(json)).await.is_err() { return; }
+                        last_fugues.insert(id, (current_ids, current_waiting));
                     }
                 }
                 layout_update = layout_rx.recv() => {
@@ -465,8 +475,6 @@ async fn handle_socket(socket: WebSocket, instance: String) {
                             }
                         }
                         Err(broadcast::error::RecvError::Lagged(n)) => {
-                            // Dropped old layouts under load — fine, we only
-                            // care about the latest. Resync next push.
                             log::debug!("GUI WS: dropped {} stale layouts", n);
                         }
                         Err(broadcast::error::RecvError::Closed) => break,
@@ -496,7 +504,7 @@ async fn handle_socket(socket: WebSocket, instance: String) {
         _ = recv_task => {},
     }
 
-    log::info!("GUI WebSocket: Connection closed for instance '{}'", instance);
+    log::info!("GUI WebSocket: Connection closed");
 }
 
 /// Check if the GUI server has been started

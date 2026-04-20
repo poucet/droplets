@@ -156,17 +156,21 @@ impl<'a> PluginMainThread<'a, DropletShared<'a>> for DropletMainThread<'a> {
         // Drain any old IPC messages (no longer used, but prevents queue buildup)
         while self.shared.ipc_receiver.try_recv().is_ok() {}
 
-        // Push realtime updates to webview if GUI is active
+        // Push realtime updates to webview if GUI is active.
+        //
+        // Iterate ALL connected instances — each plugin's UI shows data
+        // for every instance via the dropdown, not just its own. The push
+        // methods are per-instance change-cached so this is cheap even
+        // when nothing's moving.
         if self.gui.is_active() {
-            // Get transport state from FugueBridge cache
-            if let Ok(transport) = FugueBridge::get_transport(&self.shared.instance_id) {
-                self.gui.push_transport(&transport);
-            }
-
-            // Get fugue info from FugueBridge cache
-            if let Ok(infos) = FugueBridge::get_fugue_info(&self.shared.instance_id) {
-                if let Ok(definitions) = FugueBridge::get_definitions(&self.shared.instance_id) {
-                    self.gui.push_fugues(&infos, &definitions);
+            for (id, _name) in mcp::CcBridge::list_instances() {
+                if let Ok(transport) = FugueBridge::get_transport(&id) {
+                    self.gui.push_transport(&id, &transport);
+                }
+                if let Ok(infos) = FugueBridge::get_fugue_info(&id) {
+                    if let Ok(definitions) = FugueBridge::get_definitions(&id) {
+                        self.gui.push_fugues(&id, &infos, &definitions);
+                    }
                 }
             }
 

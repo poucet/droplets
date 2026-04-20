@@ -25,7 +25,15 @@ import type {
   ActivityEventDto,
   InstanceInfo,
   ProjectLayout,
+  TransportState,
 } from './types';
+
+// Stable empty references — returned by the per-instance lookup when the
+// selected instance hasn't reported yet. Using module-level constants keeps
+// `fugueInfos`/`fugueDefinitions` reference-stable, so memo'd children don't
+// thrash on every render.
+const EMPTY_INFOS: FugueInfo[] = [];
+const EMPTY_DEFS: Map<string, FugueDefinition> = new Map();
 import { FugueList, FugueViewer, FugueComposer, Settings, DawLayout } from './components';
 import type { ComposerFugue } from './components';
 import { useTransport, useTimingSync } from './timing';
@@ -50,12 +58,28 @@ const App: React.FC = () => {
   const [selfId, setSelfId] = useState<string | null>(null);
   const [editingInstanceName, setEditingInstanceName] = useState<string | null>(null);
 
-  // Fugue state
-  const [fugueInfos, setFugueInfos] = useState<FugueInfo[]>([]);
-  const [fugueDefinitions, setFugueDefinitions] = useState<Map<string, FugueDefinition>>(new Map());
+  // Fugue state — per-instance. One WebSocket subscription feeds every
+  // instance's data, tagged by instance_id; the UI looks up the selected
+  // instance's entry here. Switching the dropdown is then instant (no
+  // WS reconnect, no REST round-trip).
+  const [fuguesByInstance, setFuguesByInstance] = useState<Map<string, { infos: FugueInfo[]; definitions: Map<string, FugueDefinition> }>>(new Map());
   const [selectedFugueId, setSelectedFugueId] = useState<string | undefined>();
   const [showComposer, setShowComposer] = useState(false);
   const [editingFugue, setEditingFugue] = useState<FugueDefinition | null>(null);
+
+  // Per-instance transport cache — used to re-sync the timing manager on
+  // instance switch without a refetch. Effect below runs the re-sync; it
+  // lives after `syncTiming` is declared so TS can see the ordering.
+  const transportByInstanceRef = useRef<Map<string, TransportState>>(new Map());
+
+  // Ref to the currently-selected instance so the WS closures (set up
+  // once on mount) always see the latest selection without remounting.
+  const selectedInstanceRef = useRef(selectedInstance);
+
+  // Derived view of the selected instance's fugues.
+  const selectedFugues = fuguesByInstance.get(selectedInstance);
+  const fugueInfos = selectedFugues?.infos ?? EMPTY_INFOS;
+  const fugueDefinitions = selectedFugues?.definitions ?? EMPTY_DEFS;
 
   // Tab navigation
   const [activeTab, setActiveTab] = useState<TabView>('sequencer');
@@ -69,6 +93,17 @@ const App: React.FC = () => {
   // Client-side interpolated transport (smooth animation)
   const transport = useTransport();
   const syncTiming = useTimingSync();
+
+  // Keep selectedInstanceRef fresh, and re-seed the timing manager from
+  // the cached transport when the user switches instances so the playhead
+  // doesn't freeze while we wait for the next WS tick.
+  useEffect(() => {
+    selectedInstanceRef.current = selectedInstance;
+    const cached = transportByInstanceRef.current.get(selectedInstance);
+    if (cached) {
+      syncTiming(cached);
+    }
+  }, [selectedInstance, syncTiming]);
 
   const realtimeRef = useRef<RealtimeConnection | null>(null);
 
@@ -103,14 +138,14 @@ const App: React.FC = () => {
 
   const fetchSlots = useCallback(async () => {
     try {
-      const response = await getSlots();
+      const response = await getSlots(selectedInstance);
       setSlots(response.slots);
       setServerStatus('connected');
     } catch (e) {
       console.error('Failed to fetch slots:', e);
       setServerStatus('error');
     }
-  }, []);
+  }, [selectedInstance]);
 
   const fetchActivity = useCallback(async () => {
     try {
@@ -123,26 +158,30 @@ const App: React.FC = () => {
 
   const fetchFugues = useCallback(async () => {
     try {
-      const response = await getFugues();
-      setFugueInfos(response.infos);
+      const response = await getFugues(selectedInstance);
       const defMap = new Map<string, FugueDefinition>();
       for (const def of response.definitions) {
         defMap.set(def.id, def);
       }
-      setFugueDefinitions(defMap);
+      setFuguesByInstance(prev => {
+        const next = new Map(prev);
+        next.set(selectedInstance, { infos: response.infos, definitions: defMap });
+        return next;
+      });
     } catch (e) {
       console.error('Failed to fetch fugues:', e);
     }
-  }, []);
+  }, [selectedInstance]);
 
   const fetchTransport = useCallback(async () => {
     try {
-      const response = await getTransport();
+      const response = await getTransport(selectedInstance);
+      transportByInstanceRef.current.set(selectedInstance, response.transport);
       syncTiming(response.transport);
     } catch (e) {
       console.error('Failed to fetch transport:', e);
     }
-  }, [syncTiming]);
+  }, [selectedInstance, syncTiming]);
 
   const handleWiggle = useCallback(async (slotIndex: number) => {
     if (wigglingSlot !== null) return;
@@ -184,7 +223,7 @@ const App: React.FC = () => {
 
   const handleCancelFugue = useCallback(async (id: string) => {
     try {
-      await cancelFugue(id);
+      await cancelFugue(id, selectedInstance);
       // Clear selection if we cancelled the selected fugue
       if (selectedFugueId === id) {
         setSelectedFugueId(undefined);
@@ -194,11 +233,11 @@ const App: React.FC = () => {
     } catch (e) {
       console.error('Failed to cancel fugue:', e);
     }
-  }, [selectedFugueId, fetchFugues]);
+  }, [selectedInstance, selectedFugueId, fetchFugues]);
 
   const handleQueueFugue = useCallback(async (fugue: ComposerFugue) => {
     try {
-      await queueFugue(fugue);
+      await queueFugue(fugue, selectedInstance);
       setShowComposer(false);
       setEditingFugue(null);
       // Refresh fugue list
@@ -206,7 +245,7 @@ const App: React.FC = () => {
     } catch (e) {
       console.error('Failed to queue fugue:', e);
     }
-  }, [fetchFugues]);
+  }, [selectedInstance, fetchFugues]);
 
   const handleEditFugue = useCallback((fugue: FugueDefinition) => {
     setEditingFugue(fugue);
@@ -215,7 +254,7 @@ const App: React.FC = () => {
 
   const handleExportFugue = useCallback(async (id: string) => {
     try {
-      const response = await exportFugue(id, transport.tempo);
+      const response = await exportFugue(id, transport.tempo, selectedInstance);
       if (response.ok) {
         console.log('Exported fugue to:', response.path);
       } else {
@@ -224,16 +263,19 @@ const App: React.FC = () => {
     } catch (e) {
       console.error('Failed to export fugue:', e);
     }
-  }, [transport.tempo]);
+  }, [selectedInstance, transport.tempo]);
 
   // Handle realtime updates
-  const handleFuguesUpdate = useCallback((response: FuguesResponse) => {
-    setFugueInfos(response.infos);
+  const handleFuguesUpdate = useCallback((instanceId: string, response: FuguesResponse) => {
     const defMap = new Map<string, FugueDefinition>();
     for (const def of response.definitions) {
       defMap.set(def.id, def);
     }
-    setFugueDefinitions(defMap);
+    setFuguesByInstance(prev => {
+      const next = new Map(prev);
+      next.set(instanceId, { infos: response.infos, definitions: defMap });
+      return next;
+    });
   }, []);
 
   // Handle instance rename
@@ -252,22 +294,33 @@ const App: React.FC = () => {
     setEditingInstanceName(null);
   }, [selectedInstance, fetchInstances]);
 
+  // Hold stable refs to the fetchers so the mount-once effect below
+  // doesn't re-run (reconnecting the WS!) every time selectedInstance
+  // changes. The fetchers themselves still close over the latest value.
+  const fetchSlotsRef = useRef(fetchSlots);
+  const fetchActivityRef = useRef(fetchActivity);
+  fetchSlotsRef.current = fetchSlots;
+  fetchActivityRef.current = fetchActivity;
+
+  // Mount-once effect: WS + polling + one-shot initial fetches.
   useEffect(() => {
     getSelf().then(r => {
       setSelfId(r.id);
       setSelectedInstance(r.id);
     }).catch(() => {});
-    // Initial fetch
     fetchInstances();
-    fetchSlots();
-    fetchActivity();
-    fetchFugues();
-    fetchTransport();
     fetchProjectLayout();
 
-    // Setup realtime connection for transport/fugue updates
     const realtime = new RealtimeConnection({
-      onTransport: syncTiming,
+      onTransport: (instanceId, transport) => {
+        // Cache every instance's transport. Only drive the timing manager
+        // when the currently-selected instance reports, so playhead
+        // animation doesn't flicker between DAWs.
+        transportByInstanceRef.current.set(instanceId, transport);
+        if (instanceId === selectedInstanceRef.current) {
+          syncTiming(transport);
+        }
+      },
       onFugues: handleFuguesUpdate,
       onProjectLayout: (layout) => {
         setProjectLayout(layout);
@@ -280,17 +333,28 @@ const App: React.FC = () => {
     realtime.connect();
     realtimeRef.current = realtime;
 
-    // Fallback polling for slots/activity (these don't have realtime yet)
+    // Fallback polling for slots/activity (no realtime yet).
+    // Goes through refs so fetcher identity changes (on instance switch)
+    // don't thrash the WS.
     const interval = setInterval(() => {
-      fetchSlots();
-      fetchActivity();
+      fetchSlotsRef.current();
+      fetchActivityRef.current();
     }, 100);
 
     return () => {
       clearInterval(interval);
       realtime.disconnect();
     };
-  }, [fetchInstances, fetchSlots, fetchActivity, fetchFugues, fetchTransport, fetchProjectLayout, handleFuguesUpdate, syncTiming]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // On instance change: refill caches for the new selection so the UI
+  // shows data immediately (the WS will keep them fresh afterward).
+  useEffect(() => {
+    fetchSlots();
+    fetchFugues();
+    fetchTransport();
+  }, [selectedInstance, fetchSlots, fetchFugues, fetchTransport]);
 
   const formatTimestamp = (ts: bigint) => {
     const date = new Date(Number(ts));

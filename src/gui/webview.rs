@@ -16,6 +16,32 @@ const APP_PROTOCOL: &str = "droplets";
 /// The origin URL for the app (enables secure context)
 const APP_ORIGIN: &str = "droplets://localhost";
 
+/// Decode a percent-encoded query-string value. Minimal implementation —
+/// we only use this to parse `?instance=…` where the values are
+/// `droplets-xxxxxxxx` (no special chars) or user-chosen track names
+/// (encodeURIComponent'd, commonly containing `%20`). Not a full URL
+/// decoder — good enough and avoids pulling in `percent-encoding` as a
+/// direct dep.
+fn simple_percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = &s[i + 1..i + 3];
+            if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        // `+` is not URL-encoded by encodeURIComponent, so we leave it.
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 /// Configuration for creating a WebView
 pub struct WebViewConfig {
     /// Whether to enable devtools (usually debug builds only)
@@ -78,11 +104,24 @@ pub fn configure_webview<'a>(
             APP_PROTOCOL.to_string(),
             move |_webview_id, request, responder| {
                 let params = Arc::clone(&params_for_protocol);
-                let instance_id = instance_id_for_protocol.clone();
+                let own_instance_id = instance_id_for_protocol.clone();
                 let uri = request.uri();
                 let path = uri.path();
                 let method = request.method().as_str();
                 let body = request.body();
+
+                // Parse ?instance=... from the query string. The frontend
+                // sends this on every API call so the UI can target any
+                // connected instance (not just the webview's owner).
+                // Falls back to the webview's own instance when missing.
+                let instance_id = uri
+                    .query()
+                    .and_then(|q| {
+                        q.split('&')
+                            .find_map(|pair| pair.strip_prefix("instance="))
+                    })
+                    .map(simple_percent_decode)
+                    .unwrap_or_else(|| own_instance_id.clone());
 
                 #[cfg(any(debug_assertions, feature = "dev-gui"))]
                 crate::logger::log_gui_event(

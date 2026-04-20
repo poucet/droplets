@@ -46,18 +46,22 @@ const SHOULD_RECONNECT = !isPluginMode; // Only reconnect in standalone mode
 
 // Build URL with optional instance param (standalone mode only needs it)
 const buildUrl = (path: string, instance: string): string => {
-  if (isPluginMode) {
-    return `${API_BASE}${path}`;
-  }
+  // Thread `instance` through the query string in both modes. Plugin
+  // mode previously dropped it, which meant every API call hit the
+  // webview-owner plugin instance regardless of what the UI dropdown
+  // said — so switching instance did nothing. The wry protocol handler
+  // now parses this back out.
   return `${API_BASE}${path}?instance=${encodeURIComponent(instance)}`;
 };
 
 // Build WebSocket URL with instance param
-const buildWsUrl = (instance: string): string => {
+const buildWsUrl = (): string => {
   if (isPluginMode) {
     return ''; // IPCWebSocket doesn't need a URL
   }
-  return `${WS_URL}?instance=${encodeURIComponent(instance)}`;
+  // No instance filter — one subscription covers every connected instance,
+  // tagged per message. The UI routes based on `instance_id` in each payload.
+  return WS_URL;
 };
 
 // =============================================================================
@@ -235,11 +239,13 @@ export async function exportFugue(id: string, tempo?: number, instance = 'defaul
 
 export interface WsTransportMessage {
   type: 'transport';
+  instance_id: string;
   transport: TransportState;
 }
 
 export interface WsFuguesMessage {
   type: 'fugues';
+  instance_id: string;
   infos: FuguesResponse['infos'];
   definitions: FuguesResponse['definitions'];
 }
@@ -256,9 +262,15 @@ export interface WsProjectLayoutMessage {
 
 export type WsMessage = WsTransportMessage | WsFuguesMessage | WsProjectLayoutMessage;
 
+/**
+ * Callbacks for RealtimeConnection events. Transport and fugue callbacks
+ * receive the `instance_id` so the UI can route the update to its
+ * per-instance state map — one subscription, all instances, no reconnect
+ * on instance switch.
+ */
 export interface RealtimeCallbacks {
-  onTransport?: (transport: TransportState) => void;
-  onFugues?: (response: FuguesResponse) => void;
+  onTransport?: (instanceId: string, transport: TransportState) => void;
+  onFugues?: (instanceId: string, response: FuguesResponse) => void;
   onProjectLayout?: (layout: ProjectLayout) => void;
   onConnect?: () => void;
   onDisconnect?: () => void;
@@ -272,19 +284,17 @@ export interface RealtimeCallbacks {
 export class RealtimeConnection {
   private ws: WebSocket | null = null;
   private callbacks: RealtimeCallbacks;
-  private instance: string;
   private reconnectTimer: number | null = null;
   private isDestroyed = false;
 
-  constructor(callbacks: RealtimeCallbacks, instance = 'default') {
+  constructor(callbacks: RealtimeCallbacks) {
     this.callbacks = callbacks;
-    this.instance = instance;
   }
 
   connect(): void {
     if (this.isDestroyed) return;
 
-    this.ws = new WS_CLASS(buildWsUrl(this.instance));
+    this.ws = new WS_CLASS(buildWsUrl());
 
     this.ws.onopen = () => {
       this.callbacks.onConnect?.();
@@ -294,9 +304,9 @@ export class RealtimeConnection {
       try {
         const msg = JSON.parse(event.data) as WsMessage;
         if (msg.type === 'transport') {
-          this.callbacks.onTransport?.(msg.transport);
+          this.callbacks.onTransport?.(msg.instance_id, msg.transport);
         } else if (msg.type === 'fugues') {
-          this.callbacks.onFugues?.({
+          this.callbacks.onFugues?.(msg.instance_id, {
             infos: msg.infos,
             definitions: msg.definitions,
           });
@@ -338,16 +348,6 @@ export class RealtimeConnection {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
-    }
-  }
-
-  setInstance(instance: string): void {
-    if (this.instance === instance) return;
-    this.instance = instance;
-
-    // Reconnect with new instance (standalone mode only - triggers via close)
-    if (this.ws && SHOULD_RECONNECT) {
-      this.ws.close();
     }
   }
 }

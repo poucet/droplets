@@ -2,6 +2,8 @@
 //!
 //! Contains the core GUI struct for managing webview state and IPC.
 
+use std::collections::HashMap;
+
 use wry::dpi::LogicalSize;
 
 use crate::fugue::{FugueDefinition, FugueInfo, TransportState};
@@ -15,12 +17,11 @@ pub struct DropletGui {
     pub(crate) size: LogicalSize<f64>,
     pub(crate) scale_factor: f64,
     pub(crate) web_view: Option<wry::WebView>,
-    /// Cache last transport state to avoid sending duplicate updates
-    last_transport: Option<TransportState>,
-    /// Cache last fugue IDs to detect changes
-    last_fugue_ids: Vec<u64>,
-    /// Cache last waiting states to detect changes
-    last_waiting_states: Vec<bool>,
+    /// Per-instance last transport state. Keyed by stable instance ID so
+    /// each plugin's dropdown can show live data for every instance.
+    last_transport: HashMap<String, TransportState>,
+    /// Per-instance last fugue IDs + waiting states, for change detection.
+    last_fugues: HashMap<String, (Vec<u64>, Vec<bool>)>,
     /// Cache last-pushed project-layout JSON so the main-thread poll only
     /// re-injects when the host extension actually pushed something new.
     last_project_layout_json: Option<String>,
@@ -32,18 +33,21 @@ impl DropletGui {
             size: DEFAULT_GUI_SIZE,
             scale_factor: 1.0,
             web_view: None,
-            last_transport: None,
-            last_fugue_ids: Vec::new(),
-            last_waiting_states: Vec::new(),
+            last_transport: HashMap::new(),
+            last_fugues: HashMap::new(),
             last_project_layout_json: None,
         }
     }
 
-    /// Push a transport update to the webview via IPC
-    pub fn push_transport(&mut self, transport: &TransportState) {
-        // Check if transport actually changed
-        let should_send = self.last_transport
-            .map(|last| {
+    /// Push a transport update to the webview via IPC for one instance.
+    /// Tagged with `instance_id` so the frontend routes it to its
+    /// per-instance state map. Skips redundant pushes when the state
+    /// hasn't meaningfully changed for THIS instance.
+    pub fn push_transport(&mut self, instance_id: &str, transport: &TransportState) {
+        let should_send = self
+            .last_transport
+            .get(instance_id)
+            .map(|last: &TransportState| {
                 (transport.beat - last.beat).abs() > 0.001
                     || transport.playing != last.playing
                     || transport.tempo != last.tempo
@@ -53,12 +57,12 @@ impl DropletGui {
         if !should_send {
             return;
         }
-
-        self.last_transport = Some(*transport);
+        self.last_transport.insert(instance_id.to_string(), *transport);
 
         if let Some(webview) = &self.web_view {
             let js = format!(
-                "window.simplyvst._pushTransport({{beat:{},tempo:{},playing:{},time_sig_numerator:{}}})",
+                "window.simplyvst._pushTransport({},{{beat:{},tempo:{},playing:{},time_sig_numerator:{}}})",
+                serde_json::to_string(instance_id).unwrap_or_else(|_| "\"\"".to_string()),
                 transport.beat,
                 transport.tempo,
                 transport.playing,
@@ -68,27 +72,30 @@ impl DropletGui {
         }
     }
 
-    /// Push fugue updates to the webview via IPC
-    pub fn push_fugues(&mut self, infos: &[FugueInfo], definitions: &[FugueDefinition]) {
-        // Check if fugue list changed (IDs or waiting states)
+    /// Push fugue updates to the webview via IPC for one instance.
+    /// Tagged with `instance_id`; per-instance change detection.
+    pub fn push_fugues(&mut self, instance_id: &str, infos: &[FugueInfo], definitions: &[FugueDefinition]) {
         let current_ids: Vec<u64> = infos.iter().map(|f| f.id).collect();
         let current_waiting: Vec<bool> = infos.iter().map(|f| f.is_waiting).collect();
-        let changed = current_ids != self.last_fugue_ids || current_waiting != self.last_waiting_states;
+        let changed = self
+            .last_fugues
+            .get(instance_id)
+            .map(|(ids, waiting)| *ids != current_ids || *waiting != current_waiting)
+            .unwrap_or(true);
 
         if !changed {
             return;
         }
-
-        self.last_fugue_ids = current_ids;
-        self.last_waiting_states = current_waiting;
+        self.last_fugues
+            .insert(instance_id.to_string(), (current_ids, current_waiting));
 
         if let Some(webview) = &self.web_view {
-            // Serialize to JSON
             let infos_json = serde_json::to_string(infos).unwrap_or_else(|_| "[]".to_string());
             let defs_json = serde_json::to_string(definitions).unwrap_or_else(|_| "[]".to_string());
 
             let js = format!(
-                "window.simplyvst._pushFugues({},{})",
+                "window.simplyvst._pushFugues({},{},{})",
+                serde_json::to_string(instance_id).unwrap_or_else(|_| "\"\"".to_string()),
                 infos_json,
                 defs_json
             );
