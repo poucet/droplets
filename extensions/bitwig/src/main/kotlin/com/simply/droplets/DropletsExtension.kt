@@ -53,6 +53,11 @@ class DropletsExtension(
     /** Per-device param-id → displayed-value cache. Scanned for the Droplets ID pattern. */
     private val deviceDisplays = HashMap<Device, MutableMap<String, String>>()
 
+    /** Per-track device bank, created at init. Rebuilds reuse this — creating
+     *  a fresh DeviceBank during rebuild throws "can only be called during
+     *  driver initialization". */
+    private val trackDeviceBanks = HashMap<Track, DeviceBank>()
+
     /** Per-track drum pad bank, taken from a device-matcher-filtered bank (1 drum machine per track). */
     private val trackDrumPadBanks = HashMap<Track, DrumPadBank>()
 
@@ -60,6 +65,15 @@ class DropletsExtension(
     private val padDeviceBanks = HashMap<DrumPad, DeviceBank>()
 
     private var rebuildScheduled = false
+
+    /**
+     * Mirror of `host.println` to a file so logs are visible without the
+     * Bitwig Controller Script Console (which some Bitwig versions don't
+     * expose a menu entry for). Path matches the plugin side's convention
+     * so both logs can be tailed from the same dir.
+     */
+    private val logFile: java.io.File =
+        java.io.File(System.getProperty("user.home"), "droplets_bitwig.log")
 
     override fun init() {
         client = DropletsClient(::log)
@@ -81,12 +95,19 @@ class DropletsExtension(
 
     private fun wireTrack(track: Track) {
         track.exists().markInterested()
+        // Trigger a rebuild when a track appears/disappears. Without this we
+        // only pick up tracks via their name observer firing — which for the
+        // INITIAL population of the bank can land AFTER our first scheduled
+        // rebuild, making the extension silently report "0 tracks" forever.
+        track.exists().addValueObserver(BooleanValueChangedCallback { scheduleRebuild() })
         track.position().markInterested()
         subscribeString(track.name())
 
         // Full device bank: all devices on the track. Cheap per-device observers for
         // track info + direct-parameter observers for Droplets identification.
+        // Cached for rebuilds — Bitwig only allows createDeviceBank during init().
         val devices = track.createDeviceBank(DEVICES_PER_TRACK)
+        trackDeviceBanks[track] = devices
         for (d in 0 until DEVICES_PER_TRACK) wireDevice(devices.getItemAt(d) as Device)
 
         // Drum-machine-filtered bank (1 slot per track). The filter keeps the drum pad
@@ -191,7 +212,7 @@ class DropletsExtension(
             if (!track.exists().get()) continue
             trackCount++
             val trackName: String = track.name().get()
-            val trackDevices = track.createDeviceBank(DEVICES_PER_TRACK)
+            val trackDevices = trackDeviceBanks[track] ?: continue
             val devicesJson = ArrayList<Map<String, Any?>>()
             var instanceId: String? = null
             for (d in 0 until DEVICES_PER_TRACK) {
@@ -220,11 +241,12 @@ class DropletsExtension(
 
         val hasAnyDroplets = dropletsCount > 0
         client.setWebSocketDesired(hasAnyDroplets)
+        // Log every rebuild unconditionally. Silent empty rebuilds made it
+        // impossible to tell whether the extension was running or not.
+        log("rebuild: $trackCount tracks, $dropletsCount Droplets")
         if (hasAnyDroplets) {
-            log("rebuild: $trackCount tracks, $dropletsCount Droplets — POSTing layout")
+            log("  → POSTing layout (${tracks.size} tracks)")
             client.postProjectLayout(Json.encode(mapOf("tracks" to tracks)))
-        } else if (trackCount > 0) {
-            log("rebuild: $trackCount tracks, no Droplets — staying dormant")
         }
     }
 
@@ -297,5 +319,15 @@ class DropletsExtension(
         return out
     }
 
-    private fun log(msg: String) = host.println("[droplets] $msg")
+    private fun log(msg: String) {
+        host.println("[droplets] $msg")
+        // Also tee to a file so `tail -f ~/droplets_bitwig.log` works even
+        // when the Controller Script Console isn't reachable from the menu.
+        try {
+            val ts = java.time.LocalTime.now().toString()
+            logFile.appendText("[$ts] $msg\n")
+        } catch (_: Throwable) {
+            // Best-effort — never let logging break the extension.
+        }
+    }
 }

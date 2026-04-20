@@ -21,7 +21,15 @@ import java.util.concurrent.atomic.AtomicBoolean
  * All network I/O runs on a dedicated executor — never on Bitwig's controller thread.
  */
 class DropletsClient(private val log: (String) -> Unit) {
+    // HTTP POSTs — short-lived tasks, safe to share a single worker.
     private val io = Executors.newSingleThreadExecutor { r -> Thread(r, "droplets-io").apply { isDaemon = true } }
+
+    // WebSocket — runs a BLOCKING read loop for the entire connection
+    // lifetime. Must NOT share `io`: when the read loop is blocked, no
+    // POST would ever run (queued tasks on a single-thread executor sit
+    // behind it forever). This burned us during demo debugging — look
+    // for "POSTing layout" with no "POST → 200" result to spot it.
+    @Volatile private var wsThread: Thread? = null
 
     private val wsWanted = AtomicBoolean(false)
     @Volatile private var wsSocket: Socket? = null
@@ -34,16 +42,34 @@ class DropletsClient(private val log: (String) -> Unit) {
 
     fun setWebSocketDesired(wanted: Boolean) {
         if (wanted) {
-            if (wsWanted.compareAndSet(false, true)) io.submit { openWs() }
+            if (wsWanted.compareAndSet(false, true)) startWsThread()
         } else if (wsWanted.compareAndSet(true, false)) {
             closeWs()
+            wsThread?.interrupt()
         }
     }
 
     fun shutdown() {
         wsWanted.set(false)
         closeWs()
+        wsThread?.interrupt()
         io.shutdownNow()
+    }
+
+    private fun startWsThread() {
+        val t = Thread({
+            while (wsWanted.get()) {
+                openWs()
+                // openWs returns on disconnect. Back off before retrying so
+                // we don't spin when the plugin is down.
+                if (!wsWanted.get()) return@Thread
+                val delay = wsReconnectDelayMs
+                wsReconnectDelayMs = (wsReconnectDelayMs * 2).coerceAtMost(30_000)
+                try { Thread.sleep(delay) } catch (_: InterruptedException) { return@Thread }
+            }
+        }, "droplets-ws").apply { isDaemon = true }
+        wsThread = t
+        t.start()
     }
 
     // --- HTTP POST ------------------------------------------------------
@@ -93,8 +119,7 @@ class DropletsClient(private val log: (String) -> Unit) {
 
             if (!readHandshakeResponse(input, key)) {
                 sock.close()
-                log("WS handshake failed — retrying in ${wsReconnectDelayMs}ms")
-                scheduleReconnect()
+                log("WS handshake failed — will retry in ${wsReconnectDelayMs}ms")
                 return
             }
 
@@ -105,8 +130,7 @@ class DropletsClient(private val log: (String) -> Unit) {
         } catch (e: Throwable) {
             try { sock?.close() } catch (_: Throwable) {}
             wsSocket = null
-            log("WS error: ${e.message} — retrying in ${wsReconnectDelayMs}ms")
-            scheduleReconnect()
+            log("WS error: ${e.message} — will retry in ${wsReconnectDelayMs}ms")
         }
     }
 
@@ -198,13 +222,4 @@ class DropletsClient(private val log: (String) -> Unit) {
         try { sock.close() } catch (_: Throwable) {}
     }
 
-    private fun scheduleReconnect() {
-        if (!wsWanted.get()) return
-        val delay = wsReconnectDelayMs
-        wsReconnectDelayMs = (wsReconnectDelayMs * 2).coerceAtMost(30_000)
-        io.submit {
-            try { Thread.sleep(delay) } catch (_: InterruptedException) { return@submit }
-            openWs()
-        }
-    }
 }
