@@ -2,8 +2,8 @@
 import type { PadSummary } from "./PadSummary";
 
 /**
- * A compact view of the track's primary sound source for tier 1.
- * Drum machines include pad summaries because "what's on each pad" is
- * precisely the reason tier 1 exists for drum tracks.
+ * The track's primary sound source. Either a single instrument (synth or
+ * sampler) or a drum machine whose pads we enumerate so the LLM can target
+ * the right MIDI note for each sound.
  */
-export type PrimaryDevice = { "type": "instrument", name: string, vendor: string | null, preset_name: string | null, sample_name: string | null, } | { "type": "drum_machine", name: string, pads: Array<PadSummary>, };
+export type PrimaryDevice = { "type": "instrument", name: string, vendor: string | null, preset_name: string | null, } | { "type": "drum_machine", name: string, pads: Array<PadSummary>, };

@@ -1,9 +1,6 @@
 package com.simply.droplets
 
-import com.bitwig.extension.callback.BooleanValueChangedCallback
-import com.bitwig.extension.callback.EnumValueChangedCallback
 import com.bitwig.extension.callback.StringArrayValueChangedCallback
-import com.bitwig.extension.callback.StringValueChangedCallback
 import com.bitwig.extension.controller.ControllerExtension
 import com.bitwig.extension.controller.api.ControllerHost
 import com.bitwig.extension.controller.api.CursorRemoteControlsPage
@@ -12,29 +9,32 @@ import com.bitwig.extension.controller.api.DeviceBank
 import com.bitwig.extension.controller.api.DirectParameterValueDisplayObserver
 import com.bitwig.extension.controller.api.DrumPad
 import com.bitwig.extension.controller.api.DrumPadBank
-import com.bitwig.extension.controller.api.EnumValue
 import com.bitwig.extension.controller.api.RemoteControl
-import com.bitwig.extension.controller.api.StringValue
 import com.bitwig.extension.controller.api.Track
 import com.bitwig.extension.controller.api.TrackBank
 import java.util.UUID
 
-private const val NUM_TRACKS = 32
-private const val DEVICES_PER_TRACK = 16
-// Drum machines usually hold ~16 samples, max ~32, clustered in a ~2-octave range
-// starting at the GM kick (MIDI 36 = C1 in DAW C3=60 notation: kick=36, snare=38,
-// hat=42). Allocate 32 pad slots scrolled to MIDI 36 — covers MIDI 36–67 (C1 to G3),
-// which catches every realistic kit placement. Pads outside that range won't surface.
-private const val DRUM_PADS = 32
-private const val DRUM_BANK_SCROLL = 36
-private const val DEVICES_PER_PAD = 2
-private const val REBUILD_DEBOUNCE_MS = 150L
+// Bank sizes are fixed at init — Bitwig only lets you allocate observation
+// scaffolding during driver init. Sized generously: the cost is ~a few MB of
+// JVM scaffolding and ~40k `.get()` calls per poll tick (negligible), but it
+// covers every realistic project size so we don't silently truncate the
+// layout. The polling-based rebuild means there's no per-slot callback cost.
+private const val NUM_TRACKS = 128
+private const val DEVICES_PER_TRACK = 32
 
-// Remote Controls Page 1 of the track's primary instrument exposes 8 named,
-// automation-ready parameters. We mirror those into Droplets' slot 0–7 so the
-// LLM gets a meaningful auto-mapping for any synth/preset without the user
-// hand-binding anything. Bound here = we track the names and surface them in
-// the project layout; actual value-driving happens on the plugin side.
+// Drum-kit pads: 64 slots scrolled to MIDI 36 covers C1–D#6, catching every
+// realistic kit placement and a couple octaves of headroom above.
+private const val DRUM_PADS = 64
+private const val DRUM_BANK_SCROLL = 36
+private const val DEVICES_PER_PAD = 4
+
+/// Period between project-layout rebuilds. The plugin side caches the last
+/// layout and suppresses re-pushes when unchanged, so running at a fixed
+/// cadence costs almost nothing when the project is static. 500ms is well
+/// below the threshold at which a user would notice UI lag after adding a
+/// track or swapping a preset.
+private const val REBUILD_PERIOD_MS = 500L
+
 private const val REMOTE_CONTROLS_PER_PAGE = 8
 
 // Bitwig's native Drum Machine UUID. Published in the community extension library
@@ -46,6 +46,31 @@ private val DRUM_MACHINE_UUID: UUID = UUID.fromString("8ea97e45-0255-40fd-bc7e-9
 // Cached display strings matching this shape are the Droplets instance ID.
 private val INSTANCE_ID_REGEX = Regex("^droplets-[0-9a-f]+$")
 
+private val NOTE_NAMES = arrayOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+
+/// DAW pitch notation (C3 = middle C = MIDI 60) matching Bitwig/Ableton/Logic.
+private fun midiToPitchName(note: Int): String {
+    val octave = (note / 12) - 2
+    return "${NOTE_NAMES[note % 12]}$octave"
+}
+
+/**
+ * Controller extension for Simply Droplets.
+ *
+ * Design choice: **poll, don't subscribe.**
+ *
+ * Bitwig's API requires `markInterested()` at init for any value you want to
+ * read later via `.get()` — that's unavoidable. But the classic pattern of
+ * also attaching `addValueObserver(rebuild)` on every track/device/pad field
+ * creates a large scaffolding of observers that all funnel into the same
+ * `scheduleRebuild` call with a debouncer. Switching to a fixed-period timer
+ * collapses that whole layer into a single line.
+ *
+ * What still needs an observer: `DirectParameterValueDisplayObserver` on every
+ * device, because that's the only API Bitwig exposes for reading direct
+ * parameter values — and we scan display strings for the Droplets instance-ID
+ * pattern. That observer just fills a cache; the periodic rebuild reads it.
+ */
 class DropletsExtension(
     definition: DropletsExtensionDefinition,
     private val host: ControllerHost,
@@ -61,23 +86,17 @@ class DropletsExtension(
     /** Per-device param-id → displayed-value cache. Scanned for the Droplets ID pattern. */
     private val deviceDisplays = HashMap<Device, MutableMap<String, String>>()
 
-    /** Per-track device bank, created at init. Rebuilds reuse this — creating
-     *  a fresh DeviceBank during rebuild throws "can only be called during
-     *  driver initialization". */
+    /** Per-track device bank, created at init. */
     private val trackDeviceBanks = HashMap<Track, DeviceBank>()
 
     /** Per-track drum pad bank, taken from a device-matcher-filtered bank (1 drum machine per track). */
     private val trackDrumPadBanks = HashMap<Track, DrumPadBank>()
 
-    /** Per-pad nested device bank, created at init. */
+    /** Per-pad nested device bank, created at init — used to read the loaded sample name. */
     private val padDeviceBanks = HashMap<DrumPad, DeviceBank>()
 
-    /** Per-track primary-instrument Remote Controls Page 1 cursor, created at init.
-     *  Follows the track's primary instrument automatically — when the user swaps
-     *  the preset / instrument, the page tracks it. */
+    /** Per-track primary-instrument Remote Controls Page 1 cursor, created at init. */
     private val trackRemotePages = HashMap<Track, CursorRemoteControlsPage>()
-
-    private var rebuildScheduled = false
 
     /**
      * Mirror of `host.println` to a file so logs are visible without the
@@ -94,8 +113,8 @@ class DropletsExtension(
         trackBank = host.createTrackBank(NUM_TRACKS, 0, 0)
         for (t in 0 until NUM_TRACKS) wireTrack(trackBank.getItemAt(t) as Track)
 
-        scheduleRebuild()
-        log("Droplets extension initialized — watching $NUM_TRACKS tracks")
+        scheduleNextRebuild()
+        log("Droplets extension initialized — watching $NUM_TRACKS tracks, polling every ${REBUILD_PERIOD_MS}ms")
     }
 
     override fun flush() {}
@@ -104,21 +123,13 @@ class DropletsExtension(
         client.shutdown()
     }
 
-    // --- Wiring (all done at init — Bitwig rejects observer registration afterwards) ---
+    // --- markInterested scaffolding (all at init — Bitwig requires it) ---
 
     private fun wireTrack(track: Track) {
         track.exists().markInterested()
-        // Trigger a rebuild when a track appears/disappears. Without this we
-        // only pick up tracks via their name observer firing — which for the
-        // INITIAL population of the bank can land AFTER our first scheduled
-        // rebuild, making the extension silently report "0 tracks" forever.
-        track.exists().addValueObserver(BooleanValueChangedCallback { scheduleRebuild() })
         track.position().markInterested()
-        subscribeString(track.name())
+        track.name().markInterested()
 
-        // Full device bank: all devices on the track. Cheap per-device observers for
-        // track info + direct-parameter observers for Droplets identification.
-        // Cached for rebuilds — Bitwig only allows createDeviceBank during init().
         val devices = track.createDeviceBank(DEVICES_PER_TRACK)
         trackDeviceBanks[track] = devices
         for (d in 0 until DEVICES_PER_TRACK) wireDevice(devices.getItemAt(d) as Device)
@@ -132,24 +143,21 @@ class DropletsExtension(
         drumBank.setDeviceMatcher(drumMatcher)
         val drumDev = drumBank.getItemAt(0) as Device
         drumDev.exists().markInterested()
-        drumDev.exists().addValueObserver(BooleanValueChangedCallback { scheduleRebuild() })
         val padBank = drumDev.createDrumPadBank(DRUM_PADS)
-        // Scroll to MIDI 24 so pad index + 24 == MIDI note; lets us allocate a small bank
-        // (32 slots) while still covering the full typical drum-kit range (C0–G2).
         padBank.scrollPosition().set(DRUM_BANK_SCROLL)
         trackDrumPadBanks[track] = padBank
         for (p in 0 until DRUM_PADS) wirePad(padBank.getItemAt(p) as DrumPad)
 
-        // Primary-instrument Remote Controls Page 1. Must be created at init.
-        // Bitwig re-targets the cursor when the user swaps instruments/presets,
-        // so each param's name() observer fires and we rebuild the layout.
+        // Primary-instrument Remote Controls Page 1. Follows the primary
+        // instrument automatically, so swapping the preset refreshes the names
+        // on the next poll tick.
         val remote = track.createCursorRemoteControlsPage(REMOTE_CONTROLS_PER_PAGE)
         trackRemotePages[track] = remote
         remote.pageCount().markInterested()
         for (i in 0 until REMOTE_CONTROLS_PER_PAGE) {
             val rc = remote.getParameter(i) as RemoteControl
             rc.exists().markInterested()
-            subscribeString(rc.name())
+            rc.name().markInterested()
         }
     }
 
@@ -157,16 +165,20 @@ class DropletsExtension(
         device.exists().markInterested()
         device.isPlugin().markInterested()
         device.hasDrumPads().markInterested()
-        subscribeString(device.name())
-        subscribeString(device.presetName())
-        subscribeEnum(device.deviceType())
+        device.name().markInterested()
+        device.presetName().markInterested()
+        device.deviceType().markInterested()
 
-        // Direct-parameter observers fire the display string of every parameter. We only
-        // care about the Droplets instance-ID param (display matches `droplets-[hex]+`),
-        // but we can't pre-filter by plugin identity (no CLAP device matcher exists; the
-        // VST3 UID isn't pinned on the Rust side). Pay the observer cost on all devices.
-        // Bitwig requires the ID observer to be registered BEFORE the display observer —
-        // the holder pattern resolves that circular dependency.
+        // Direct-parameter observers are the ONLY way to read direct-parameter
+        // values in the Bitwig API. We need them to find the Droplets
+        // instance-ID param (display value matches `droplets-[hex]+`). No
+        // CLAP device matcher exists; the VST3 UID isn't pinned on the Rust
+        // side. So we pay the observer cost on every device.
+        //
+        // These observers populate a cache only — the periodic poll picks up
+        // changes on its next tick. The holder pattern resolves the circular
+        // dep: Bitwig requires the ID observer to be registered BEFORE the
+        // display observer.
         deviceDisplays[device] = HashMap()
         val displayObsHolder = arrayOfNulls<DirectParameterValueDisplayObserver>(1)
 
@@ -179,53 +191,35 @@ class DropletsExtension(
         displayObsHolder[0] = device.addDirectParameterValueDisplayObserver(32) { id, value ->
             if (id != null && value != null) {
                 deviceDisplays[device]?.put(id, value)
-                if (INSTANCE_ID_REGEX.matches(value)) scheduleRebuild()
             }
         }
     }
 
     private fun wirePad(pad: DrumPad) {
         pad.exists().markInterested()
-        pad.exists().addValueObserver(BooleanValueChangedCallback { scheduleRebuild() })
         pad.name().markInterested()
-        pad.name().addValueObserver(StringValueChangedCallback { scheduleRebuild() })
         val bank = pad.createDeviceBank(DEVICES_PER_PAD)
         padDeviceBanks[pad] = bank
         for (d in 0 until DEVICES_PER_PAD) {
             val dev = bank.getItemAt(d) as Device
             dev.exists().markInterested()
-            dev.exists().addValueObserver(BooleanValueChangedCallback { scheduleRebuild() })
             dev.name().markInterested()
-            dev.name().addValueObserver(StringValueChangedCallback { scheduleRebuild() })
             dev.presetName().markInterested()
-            dev.isPlugin().markInterested()
-            dev.deviceType().markInterested()
         }
     }
 
-    private fun subscribeString(v: StringValue) {
-        v.markInterested()
-        v.addValueObserver(StringValueChangedCallback { scheduleRebuild() })
-    }
+    // --- Periodic rebuild + POST ----------------------------------------
 
-    private fun subscribeEnum(v: EnumValue) {
-        v.markInterested()
-        v.addValueObserver(EnumValueChangedCallback { scheduleRebuild() })
-    }
-
-    // --- Rebuild + POST -------------------------------------------------
-
-    private fun scheduleRebuild() {
-        if (rebuildScheduled) return
-        rebuildScheduled = true
+    private fun scheduleNextRebuild() {
         host.scheduleTask({
-            rebuildScheduled = false
             try {
                 rebuildAndPost()
             } catch (e: Throwable) {
                 log("rebuild failed: ${e.message}")
+            } finally {
+                scheduleNextRebuild()
             }
-        }, REBUILD_DEBOUNCE_MS)
+        }, REBUILD_PERIOD_MS)
     }
 
     private fun rebuildAndPost() {
@@ -238,17 +232,17 @@ class DropletsExtension(
             trackCount++
             val trackName: String = track.name().get()
             val trackDevices = trackDeviceBanks[track] ?: continue
-            val devicesJson = ArrayList<Map<String, Any?>>()
+
             var instanceId: String? = null
             for (d in 0 until DEVICES_PER_TRACK) {
                 val device = trackDevices.getItemAt(d) as Device
                 if (!device.exists().get()) continue
                 if (instanceId == null) findInstanceId(device)?.let { instanceId = it }
-                devicesJson.add(encodeDevice(device, track))
             }
+
             if (instanceId != null) {
                 dropletsCount++
-                val id = instanceId
+                val id = instanceId!!
                 if (announcedInstances.add(id)) {
                     log("detected Droplets instance '$id' on track '$trackName'")
                 }
@@ -257,10 +251,11 @@ class DropletsExtension(
                     client.postRenameInstance(id, trackName)
                 }
             }
+
             val trackJson = linkedMapOf<String, Any?>(
                 "track_name" to trackName,
                 "droplets_instance_id" to instanceId,
-                "devices" to devicesJson,
+                "primary_device" to pickPrimaryDevice(track),
             )
             if (instanceId != null) {
                 trackJson["remote_controls"] = encodeRemoteControls(track)
@@ -270,19 +265,88 @@ class DropletsExtension(
 
         val hasAnyDroplets = dropletsCount > 0
         client.setWebSocketDesired(hasAnyDroplets)
-        // Log every rebuild unconditionally. Silent empty rebuilds made it
-        // impossible to tell whether the extension was running or not.
-        log("rebuild: $trackCount tracks, $dropletsCount Droplets")
         if (hasAnyDroplets) {
-            log("  → POSTing layout (${tracks.size} tracks)")
             client.postProjectLayout(Json.encode(mapOf("tracks" to tracks)))
         }
     }
 
-    /** Snapshot the track's primary-instrument Remote Controls Page 1 as a list
-     *  of `{index, name}`. Only entries whose param exists AND has a non-blank
-     *  name are included — avoids feeding the LLM empty slots from an effects-only
-     *  track or a device without a Remote Controls page. */
+    /** Pick the track's primary sound source: drum machine if present, else
+     *  the first existing instrument on the main chain. Effects and unknown
+     *  devices are skipped. Returns null for effects-only tracks. */
+    private fun pickPrimaryDevice(track: Track): Map<String, Any?>? {
+        val drumPadBank = trackDrumPadBanks[track]
+        val drumDev = drumPadBank?.let { drumDeviceForPadBank(track) }
+        if (drumDev != null && drumDev.exists().get()) {
+            return encodeDrumMachine(drumDev.name().get(), drumPadBank)
+        }
+
+        val devices = trackDeviceBanks[track] ?: return null
+        for (d in 0 until DEVICES_PER_TRACK) {
+            val device = devices.getItemAt(d) as Device
+            if (!device.exists().get()) continue
+            if (device.deviceType().get() == "instrument") {
+                return encodeInstrument(device)
+            }
+        }
+        return null
+    }
+
+    private fun drumDeviceForPadBank(track: Track): Device? {
+        // The drum-machine-filtered bank is attached to this track via the
+        // matcher in wireTrack. We stored the pad bank but not the device
+        // itself — the device is accessible via the same bank we built the
+        // pad bank from. Simpler: walk the main device bank for a device
+        // whose hasDrumPads is true.
+        val devices = trackDeviceBanks[track] ?: return null
+        for (d in 0 until DEVICES_PER_TRACK) {
+            val device = devices.getItemAt(d) as Device
+            if (device.exists().get() && device.hasDrumPads().get()) return device
+        }
+        return null
+    }
+
+    private fun encodeInstrument(device: Device): Map<String, Any?> {
+        val out = linkedMapOf<String, Any?>(
+            "type" to "instrument",
+            "name" to device.name().get(),
+        )
+        if (!device.isPlugin().get()) out["vendor"] = "Bitwig"
+        val preset = device.presetName().get().takeIf { it.isNotBlank() }
+        if (preset != null) out["preset_name"] = preset
+        return out
+    }
+
+    private fun encodeDrumMachine(name: String, padBank: DrumPadBank): Map<String, Any?> {
+        val pads = ArrayList<Map<String, Any?>>()
+        for (p in 0 until DRUM_PADS) {
+            val pad = padBank.getItemAt(p) as DrumPad
+            if (!pad.exists().get()) continue
+            val note = DRUM_BANK_SCROLL + p
+            val padJson = linkedMapOf<String, Any?>(
+                "note" to midiToPitchName(note),
+                "name" to pad.name().get(),
+            )
+            padSampleName(pad)?.let { padJson["sample_name"] = it }
+            pads.add(padJson)
+        }
+        return linkedMapOf("type" to "drum_machine", "name" to name, "pads" to pads)
+    }
+
+    /** Pull the loaded sample / preset name from the pad's first nested device.
+     *  For Bitwig's Sampler this is the audio file name ("kick_808.wav"). */
+    private fun padSampleName(pad: DrumPad): String? {
+        val bank = padDeviceBanks[pad] ?: return null
+        for (i in 0 until DEVICES_PER_PAD) {
+            val nd = bank.getItemAt(i) as Device
+            if (!nd.exists().get()) continue
+            val preset = nd.presetName().get().takeIf { it.isNotBlank() }
+            if (preset != null) return preset
+        }
+        return null
+    }
+
+    /** Snapshot Remote Controls Page 1 as `[{index, name}]`, filtering out
+     *  slots with no existing param or no name. */
     private fun encodeRemoteControls(track: Track): List<Map<String, Any?>> {
         val remote = trackRemotePages[track] ?: return emptyList()
         val out = ArrayList<Map<String, Any?>>()
@@ -300,69 +364,6 @@ class DropletsExtension(
         val displays = deviceDisplays[device] ?: return null
         for (v in displays.values) if (INSTANCE_ID_REGEX.matches(v)) return v
         return null
-    }
-
-    private fun encodeDevice(device: Device, track: Track): Map<String, Any?> {
-        val name: String = device.name().get()
-        val preset: String? = device.presetName().get().takeIf { it.isNotBlank() }
-        val isPlugin = device.isPlugin().get()
-        val vendor = if (isPlugin) null else "Bitwig"
-
-        if (device.hasDrumPads().get()) {
-            // Pads live on the track's filtered bank (attached at init). A track with
-            // multiple drum machines only gets pads enumerated on the first one.
-            val padBank = trackDrumPadBanks[track]
-            if (padBank != null) return encodeDrumMachine(name, padBank)
-        }
-
-        val kind = when (device.deviceType().get()) {
-            "instrument" -> "instrument"
-            "audio_effect" -> "effect"
-            "note_effect" -> "effect"
-            else -> "unknown"
-        }
-        val out = linkedMapOf<String, Any?>("type" to kind, "name" to name)
-        if (vendor != null) out["vendor"] = vendor
-        if (preset != null) out["preset_name"] = preset
-        return out
-    }
-
-    private fun encodeDrumMachine(name: String, padBank: DrumPadBank): Map<String, Any?> {
-        val pads = ArrayList<Map<String, Any?>>()
-        for (p in 0 until DRUM_PADS) {
-            val pad = padBank.getItemAt(p) as DrumPad
-            if (!pad.exists().get()) continue
-            val nestedBank = padDeviceBanks[pad] ?: continue
-            val padDevices = ArrayList<Map<String, Any?>>()
-            for (i in 0 until DEVICES_PER_PAD) {
-                val nd = nestedBank.getItemAt(i) as Device
-                if (!nd.exists().get()) continue
-                padDevices.add(encodePadDevice(nd))
-            }
-            if (padDevices.isEmpty()) continue
-            pads.add(linkedMapOf(
-                "note" to (DRUM_BANK_SCROLL + p),
-                "name" to pad.name().get(),
-                "devices" to padDevices,
-            ))
-        }
-        return linkedMapOf("type" to "drum_machine", "name" to name, "pads" to pads)
-    }
-
-    private fun encodePadDevice(device: Device): Map<String, Any?> {
-        val name = device.name().get()
-        val preset = device.presetName().get().takeIf { it.isNotBlank() }
-        val isPlugin = device.isPlugin().get()
-        val kind = when (device.deviceType().get()) {
-            "instrument" -> "instrument"
-            "audio_effect" -> "effect"
-            "note_effect" -> "effect"
-            else -> "unknown"
-        }
-        val out = linkedMapOf<String, Any?>("type" to kind, "name" to name)
-        if (!isPlugin) out["vendor"] = "Bitwig"
-        if (preset != null) out["preset_name"] = preset
-        return out
     }
 
     private fun log(msg: String) {

@@ -4,16 +4,13 @@ import type { SlotHint } from "./SlotHint";
 
 export type InstanceSummary = { id: string, name: string, track_name: string | null, 
 /**
- * The first instrument/drum-machine on the track's chain, or `None`
- * when no layout data is available or the chain has only effects.
+ * The track's primary sound source, or `None` when no layout data is
+ * available or the track is effects-only.
  */
 primary_device: PrimaryDevice | null, 
 /**
- * Per-slot hints: what is each of the 16 plugin slots currently named? The
- * LLM reads this to decide which slot to target when automating a synth
- * parameter — e.g. if slot 0's name is "Filter Cutoff", a `slot` fugue
- * targeting slot 0 will drive that mapped parameter in the DAW. Only
- * non-default names are included (generic "Slot N" entries are elided to
- * keep the hint surface tight).
+ * Per-slot hints: what has the user named each of the 16 plugin slots?
+ * Only non-default names are included — generic "Slot N" entries are
+ * elided so the LLM isn't tempted to target unmapped slots.
  */
 slots: Array<SlotHint>, };

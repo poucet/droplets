@@ -1,25 +1,21 @@
-//! Project-layout types describing the host DAW's track and device tree.
+//! Project-layout types describing the host DAW's track tree.
 //!
-//! Pushed to the plugin process via `POST /project_layout` by a host
-//! controller extension (Bitwig for v1; Ableton later). The plugin exposes
-//! three tiered views to the LLM via MCP:
+//! The host controller extension (Bitwig today; Ableton later) POSTs a
+//! [`ProjectLayout`] to the plugin over `/project_layout`. The plugin exposes
+//! a single tier-1 view over MCP via `get_project_state`: per Droplets
+//! instance, the track name and the track's primary sound source — a synth or
+//! a drum machine with its pad map.
 //!
-//! - `get_project_state` — minimal per-instance summary: track name +
-//!   primary device. For drum machines, pads include note + name +
-//!   sample_name so the LLM can write a drum pattern with correct mapping.
-//! - `get_track_info` — full recursive device chain for one instance.
-//! - `get_device_parameters` — param detail for one addressed device.
-//!
-//! All three views serialize the same underlying [`ProjectLayout`] through
-//! different wrapper views. The extension sends MIDI note numbers on drum
-//! pads; we render them as DAW-convention pitch notation (`"C1"`, C3=60) on the
-//! way out so the LLM sees the same note format it already uses elsewhere.
+//! The wire format and the MCP response share the same Rust types.
+//! [`PrimaryDevice`] + [`PadSummary`] are both `Serialize + Deserialize`, with
+//! note values rendered as DAW pitch notation (`"C1"`, C3=60) on the wire so
+//! the extension does the conversion once and the plugin doesn't need to
+//! re-parse / re-format.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::bridge::CcBridge;
-use super::requests::midi_to_name;
 
 /// Project-wide snapshot pushed by the host controller extension.
 ///
@@ -32,7 +28,10 @@ pub struct ProjectLayout {
     pub tracks: Vec<TrackContext>,
 }
 
-/// One track's worth of context.
+/// One track's worth of context. The extension picks the track's primary
+/// sound source (first instrument on the chain, or a drum machine) and
+/// encodes only that — nested racks, chain selectors, effects aren't
+/// surfaced because the LLM never actually used them.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct TrackContext {
@@ -40,12 +39,13 @@ pub struct TrackContext {
     /// Instance ID of the Droplets device on this track, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub droplets_instance_id: Option<String>,
-    pub devices: Vec<Device>,
+    /// Primary sound source on this track, or `None` for effects-only tracks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_device: Option<PrimaryDevice>,
     /// Primary-instrument Remote Controls Page 1, as seen by the host controller
     /// extension. Only populated when a Droplets instance is on this track.
     /// Each entry describes one of the 8 remote-control parameters by index and
-    /// human-readable name — the plugin mirrors these onto slots 0–7 so the LLM
-    /// can automate named instrument parameters without the user hand-mapping.
+    /// human-readable name — a hint the plugin/UI can use for slot naming.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remote_controls: Vec<RemoteControlInfo>,
 }
@@ -58,27 +58,14 @@ pub struct RemoteControlInfo {
     pub name: String,
 }
 
-/// A device on a track's main chain. No recursion beyond drum-machine pads —
-/// nested racks / chain selectors / instrument layers would require the
-/// extension to walk arbitrary chain depth, which we've intentionally skipped:
-/// the LLM makes all of its decisions off the primary-device summary in
-/// `get_project_state`, not off deep chain detail.
+/// The track's primary sound source. Either a single instrument (synth or
+/// sampler) or a drum machine whose pads we enumerate so the LLM can target
+/// the right MIDI note for each sound.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum Device {
+pub enum PrimaryDevice {
     Instrument {
-        name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        vendor: Option<String>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        preset_name: Option<String>,
-        /// For samplers with a single loaded sample (Bitwig's Sampler,
-        /// Ableton's Simpler). `None` for synths.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        sample_name: Option<String>,
-    },
-    Effect {
         name: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         vendor: Option<String>,
@@ -87,30 +74,27 @@ pub enum Device {
     },
     DrumMachine {
         name: String,
-        pads: Vec<DrumPad>,
-    },
-    /// Fallback for device types the extension doesn't recognize.
-    Unknown {
-        name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        vendor: Option<String>,
+        pads: Vec<PadSummary>,
     },
 }
 
-/// One pad in a drum machine.
-///
-/// `note` is a raw MIDI number on the wire (what the extension can easily
-/// read). Outgoing serializations to the LLM convert to pitch notation.
+/// One pad on a drum machine. `note` is DAW pitch notation (`"C1"`, C3=60)
+/// — the extension renders it so the LLM reads the same format it already
+/// uses in fugue notes.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
-pub struct DrumPad {
-    pub note: u8,
+pub struct PadSummary {
+    pub note: String,
     pub name: String,
-    pub devices: Vec<Device>,
+    /// Preset / sample name surfaced from the pad's nested instrument when
+    /// available. For Bitwig's Sampler this is the loaded audio file name,
+    /// so the LLM sees `kick_808.wav` next to `C1 — Kick`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_name: Option<String>,
 }
 
 // =============================================================================
-// Tier 1 — `get_project_state`: minimal "what's loaded" per instance.
+// `get_project_state` response
 // =============================================================================
 
 /// Result of `get_project_state`. Instances listed in registration order.
@@ -133,16 +117,13 @@ pub struct InstanceSummary {
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub track_name: Option<String>,
-    /// The first instrument/drum-machine on the track's chain, or `None`
-    /// when no layout data is available or the chain has only effects.
+    /// The track's primary sound source, or `None` when no layout data is
+    /// available or the track is effects-only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_device: Option<PrimaryDevice>,
-    /// Per-slot hints: what is each of the 16 plugin slots currently named? The
-    /// LLM reads this to decide which slot to target when automating a synth
-    /// parameter — e.g. if slot 0's name is "Filter Cutoff", a `slot` fugue
-    /// targeting slot 0 will drive that mapped parameter in the DAW. Only
-    /// non-default names are included (generic "Slot N" entries are elided to
-    /// keep the hint surface tight).
+    /// Per-slot hints: what has the user named each of the 16 plugin slots?
+    /// Only non-default names are included — generic "Slot N" entries are
+    /// elided so the LLM isn't tempted to target unmapped slots.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub slots: Vec<SlotHint>,
 }
@@ -160,44 +141,6 @@ pub struct SlotHint {
     pub cc: Option<u8>,
 }
 
-/// A compact view of the track's primary sound source for tier 1.
-/// Drum machines include pad summaries because "what's on each pad" is
-/// precisely the reason tier 1 exists for drum tracks.
-#[derive(Debug, Clone, Serialize, TS)]
-#[ts(export)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum PrimaryDevice {
-    Instrument {
-        name: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        vendor: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        preset_name: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        sample_name: Option<String>,
-    },
-    DrumMachine {
-        name: String,
-        pads: Vec<PadSummary>,
-    },
-}
-
-/// Tier 1 view of a drum pad — just what the LLM needs to pick the right
-/// note. Note rendered as DAW pitch notation (`"C1"`, C3=60) not an integer.
-#[derive(Debug, Clone, Serialize, TS)]
-#[ts(export)]
-pub struct PadSummary {
-    /// Pitch notation — `"C1"`, `"F#2"` (DAW convention, C3=60). Comes from converting the raw MIDI
-    /// number in [`DrumPad::note`].
-    pub note: String,
-    pub name: String,
-    /// If a single sampler is loaded on the pad, its sample file name.
-    /// Surfaced at tier 1 because the whole point of tier 1 for drums is
-    /// "which sample sits on which note."
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sample_name: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export)]
 pub struct OtherTrackSummary {
@@ -205,13 +148,9 @@ pub struct OtherTrackSummary {
 }
 
 impl ProjectState {
-    /// Build tier 1 from a layout + the live instance registry. The
-    /// registry provides `(id, name)` pairs; the layout provides
-    /// per-track device info keyed by instance ID.
-    ///
-    /// `registered_instances` should be the full list from
-    /// `CcBridge::list_instances()` so we still report instances even when
-    /// the extension hasn't sent a layout yet.
+    /// Build the response from a layout + the live instance registry. The
+    /// registry provides `(id, name)` pairs; the layout provides per-track
+    /// info keyed by instance ID.
     pub fn build(
         layout: Option<&ProjectLayout>,
         registered_instances: &[(String, String)],
@@ -226,12 +165,6 @@ impl ProjectState {
                 let track = layout.tracks.iter().find(|t| {
                     t.droplets_instance_id.as_deref() == Some(id.as_str())
                 });
-                // Slot hints come from the running plugin instance's slot
-                // store (per-instance — each Droplets has its own 16 slots,
-                // names, CC mappings). Filter out slots still on the generic
-                // default "Slot N" name: until the user or extension has set
-                // a meaningful label, there's nothing useful to hint to the
-                // LLM and the noise would drown the real hints.
                 let slots = CcBridge::get_slots(id)
                     .map(|slot_infos| {
                         slot_infos
@@ -249,7 +182,7 @@ impl ProjectState {
                     id: id.clone(),
                     name: name.clone(),
                     track_name: track.map(|t| t.track_name.clone()),
-                    primary_device: track.and_then(|t| pick_primary_device(&t.devices)),
+                    primary_device: track.and_then(|t| t.primary_device.clone()),
                     slots,
                 }
             })
@@ -266,58 +199,12 @@ impl ProjectState {
     }
 }
 
-/// Is this slot still on its factory default name? Used to hide unconfigured
-/// slots from `get_project_state` — the defaults advertise standard-CC names
-/// ("Filter Cutoff", "Mod Wheel") that don't actually control anything until
-/// the user maps the slot, so surfacing them as hints would mislead the LLM.
-/// Once the user renames a slot (directly via `rename_slot` MCP tool, the
-/// plugin UI, or the Bitwig extension mirroring a Remote Controls Page 1
-/// name), this returns false and the hint becomes visible.
+/// Factory default slot names are generic hints that don't correspond to any
+/// real mapping until the user configures them. Surfacing them would mislead
+/// the LLM into targeting slots that go nowhere.
 fn is_default_slot_name(index: usize, name: &str) -> bool {
     let (_, default_name) = crate::params::default_cc_config(index);
     name == default_name
-}
-
-/// Pick the primary sound source on a chain: first instrument or drum
-/// machine, ignoring effects. `None` when the chain is effects-only.
-fn pick_primary_device(devices: &[Device]) -> Option<PrimaryDevice> {
-    for device in devices {
-        match device {
-            Device::Instrument { name, vendor, preset_name, sample_name, .. } => {
-                return Some(PrimaryDevice::Instrument {
-                    name: name.clone(),
-                    vendor: vendor.clone(),
-                    preset_name: preset_name.clone(),
-                    sample_name: sample_name.clone(),
-                });
-            }
-            Device::DrumMachine { name, pads } => {
-                return Some(PrimaryDevice::DrumMachine {
-                    name: name.clone(),
-                    pads: pads.iter().map(summarize_pad).collect(),
-                });
-            }
-            Device::Effect { .. } | Device::Unknown { .. } => {
-                continue;
-            }
-        }
-    }
-    None
-}
-
-fn summarize_pad(pad: &DrumPad) -> PadSummary {
-    // A pad typically wraps a single Sampler/Simpler in practice. Pull its
-    // sample_name up to the pad summary so the LLM sees `kick_808.wav` on
-    // `C2` without having to recurse.
-    let sample_name = pad.devices.iter().find_map(|d| match d {
-        Device::Instrument { sample_name, .. } => sample_name.clone(),
-        _ => None,
-    });
-    PadSummary {
-        note: midi_to_name(pad.note),
-        name: pad.name.clone(),
-        sample_name,
-    }
 }
 
 // =============================================================================
@@ -348,59 +235,37 @@ mod tests {
                     track_name: "Drums".into(),
                     droplets_instance_id: Some("droplets-aaaa".into()),
                     remote_controls: vec![],
-                    devices: vec![Device::DrumMachine {
+                    primary_device: Some(PrimaryDevice::DrumMachine {
                         name: "Drum Machine".into(),
                         pads: vec![
-                            DrumPad {
-                                note: 36, // C1 (DAW convention; C3=60)
+                            PadSummary {
+                                note: "C1".into(),
                                 name: "Kick".into(),
-                                devices: vec![Device::Instrument {
-                                    name: "Sampler".into(),
-                                    vendor: Some("Bitwig".into()),
-                                    preset_name: None,
-                                    sample_name: Some("kick_808.wav".into()),
-                                }],
+                                sample_name: Some("kick_808.wav".into()),
                             },
-                            DrumPad {
-                                note: 38, // D1 (DAW convention; C3=60)
+                            PadSummary {
+                                note: "D1".into(),
                                 name: "Snare".into(),
-                                devices: vec![Device::Instrument {
-                                    name: "Sampler".into(),
-                                    vendor: Some("Bitwig".into()),
-                                    preset_name: None,
-                                    sample_name: Some("snare.wav".into()),
-                                }],
+                                sample_name: Some("snare.wav".into()),
                             },
                         ],
-                    }],
+                    }),
                 },
                 TrackContext {
                     track_name: "Bass".into(),
                     droplets_instance_id: Some("droplets-bbbb".into()),
                     remote_controls: vec![],
-                    devices: vec![
-                        Device::Instrument {
-                            name: "Serum".into(),
-                            vendor: Some("Xfer".into()),
-                            preset_name: Some("LD Screamer".into()),
-                            sample_name: None,
-                        },
-                        Device::Effect {
-                            name: "Delay".into(),
-                            vendor: Some("Bitwig".into()),
-                            preset_name: None,
-                        },
-                    ],
+                    primary_device: Some(PrimaryDevice::Instrument {
+                        name: "Serum".into(),
+                        vendor: Some("Xfer".into()),
+                        preset_name: Some("LD Screamer".into()),
+                    }),
                 },
                 TrackContext {
                     track_name: "Vocals".into(),
                     droplets_instance_id: None,
                     remote_controls: vec![],
-                    devices: vec![Device::Effect {
-                        name: "Reverb".into(),
-                        vendor: None,
-                        preset_name: None,
-                    }],
+                    primary_device: None,
                 },
             ],
         }
@@ -414,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn tier1_produces_pitch_notation_notes() {
+    fn drum_primary_flows_pads_through() {
         let layout = sample_layout();
         let state = ProjectState::build(Some(&layout), &sample_instances());
         let drums = &state.instances[0];
@@ -428,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn tier1_picks_instrument_for_synth_track() {
+    fn instrument_primary_carries_preset() {
         let layout = sample_layout();
         let state = ProjectState::build(Some(&layout), &sample_instances());
         let bass = &state.instances[1];
@@ -440,7 +305,7 @@ mod tests {
     }
 
     #[test]
-    fn tier1_includes_other_tracks() {
+    fn includes_tracks_without_droplets() {
         let layout = sample_layout();
         let state = ProjectState::build(Some(&layout), &sample_instances());
         assert_eq!(state.other_tracks.len(), 1);
@@ -448,7 +313,7 @@ mod tests {
     }
 
     #[test]
-    fn tier1_without_layout_still_lists_instances() {
+    fn without_layout_still_lists_instances() {
         let state = ProjectState::build(None, &sample_instances());
         assert!(!state.layout_available);
         assert_eq!(state.instances.len(), 2);
