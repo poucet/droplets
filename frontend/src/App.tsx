@@ -1,27 +1,20 @@
 import React, { useEffect, useState, useCallback, useRef } from 'react';
 import './App.css';
 import {
-  getSlots,
-  getActivity,
   getFugues,
   getTransport,
   getInstances,
   getSelf,
   getProjectLayout,
   renameInstance,
-  noteOn,
-  noteOff,
-  wiggleSlot,
   cancelFugue,
   exportFugue,
   RealtimeConnection,
 } from './api';
 import type {
-  SlotInfo,
   FugueInfo,
   FugueDefinition,
   FuguesResponse,
-  ActivityEventDto,
   InstanceInfo,
   ProjectLayout,
   TransportState,
@@ -36,19 +29,10 @@ const EMPTY_DEFS: Map<string, FugueDefinition> = new Map();
 import { FugueList, FugueViewer, Settings, DawLayout } from './components';
 import { useTransport, useTimingSync } from './timing';
 
-// Note names for display. DAW convention: C3 = middle C = MIDI 60
-// (Bitwig/Ableton/Logic/Reaper/Studio One).
-const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-const getNoteName = (midi: number) => `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 2}`;
-
-type TabView = 'sequencer' | 'monitor' | 'daw' | 'settings';
+type TabView = 'sequencer' | 'daw' | 'settings';
 
 const App: React.FC = () => {
-  const [slots, setSlots] = useState<SlotInfo[]>([]);
-  const [activity, setActivity] = useState<ActivityEventDto[]>([]);
   const [serverStatus, setServerStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
-  const [wigglingSlot, setWigglingSlot] = useState<number | null>(null);
-  const [activeNotes, setActiveNotes] = useState<Set<number>>(new Set());
 
   // Instance state
   const [instances, setInstances] = useState<InstanceInfo[]>([]);
@@ -132,26 +116,6 @@ const App: React.FC = () => {
     }
   }, []);
 
-  const fetchSlots = useCallback(async () => {
-    try {
-      const response = await getSlots(selectedInstance);
-      setSlots(response.slots);
-      setServerStatus('connected');
-    } catch (e) {
-      console.error('Failed to fetch slots:', e);
-      setServerStatus('error');
-    }
-  }, [selectedInstance]);
-
-  const fetchActivity = useCallback(async () => {
-    try {
-      const response = await getActivity();
-      setActivity(response.events);
-    } catch (e) {
-      console.error('Failed to fetch activity:', e);
-    }
-  }, []);
-
   const fetchFugues = useCallback(async () => {
     try {
       const response = await getFugues(selectedInstance);
@@ -178,39 +142,6 @@ const App: React.FC = () => {
       console.error('Failed to fetch transport:', e);
     }
   }, [selectedInstance, syncTiming]);
-
-  const handleWiggle = useCallback(async (slotIndex: number) => {
-    if (wigglingSlot !== null) return;
-    setWigglingSlot(slotIndex);
-    try {
-      await wiggleSlot(slotIndex);
-    } catch (e) {
-      console.error('Failed to wiggle:', e);
-    }
-    setTimeout(() => setWigglingSlot(null), 1100);
-  }, [wigglingSlot]);
-
-  const handleNoteOn = useCallback(async (note: number) => {
-    setActiveNotes(prev => new Set(prev).add(note));
-    try {
-      await noteOn(note, 100);
-    } catch (e) {
-      console.error('Failed to send note on:', e);
-    }
-  }, []);
-
-  const handleNoteOff = useCallback(async (note: number) => {
-    setActiveNotes(prev => {
-      const next = new Set(prev);
-      next.delete(note);
-      return next;
-    });
-    try {
-      await noteOff(note);
-    } catch (e) {
-      console.error('Failed to send note off:', e);
-    }
-  }, []);
 
   // Fugue handlers
   const handleSelectFugue = useCallback((id: string) => {
@@ -273,15 +204,7 @@ const App: React.FC = () => {
     setEditingInstanceName(null);
   }, [selectedInstance, fetchInstances]);
 
-  // Hold stable refs to the fetchers so the mount-once effect below
-  // doesn't re-run (reconnecting the WS!) every time selectedInstance
-  // changes. The fetchers themselves still close over the latest value.
-  const fetchSlotsRef = useRef(fetchSlots);
-  const fetchActivityRef = useRef(fetchActivity);
-  fetchSlotsRef.current = fetchSlots;
-  fetchActivityRef.current = fetchActivity;
-
-  // Mount-once effect: WS + polling + one-shot initial fetches.
+  // Mount-once effect: WS + one-shot initial fetches.
   useEffect(() => {
     getSelf().then(r => {
       setSelfId(r.id);
@@ -312,16 +235,7 @@ const App: React.FC = () => {
     realtime.connect();
     realtimeRef.current = realtime;
 
-    // Fallback polling for slots/activity (no realtime yet).
-    // Goes through refs so fetcher identity changes (on instance switch)
-    // don't thrash the WS.
-    const interval = setInterval(() => {
-      fetchSlotsRef.current();
-      fetchActivityRef.current();
-    }, 100);
-
     return () => {
-      clearInterval(interval);
       realtime.disconnect();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -330,20 +244,9 @@ const App: React.FC = () => {
   // On instance change: refill caches for the new selection so the UI
   // shows data immediately (the WS will keep them fresh afterward).
   useEffect(() => {
-    fetchSlots();
     fetchFugues();
     fetchTransport();
-  }, [selectedInstance, fetchSlots, fetchFugues, fetchTransport]);
-
-  const formatTimestamp = (ts: bigint) => {
-    const date = new Date(Number(ts));
-    return date.toLocaleTimeString('en-US', {
-      hour12: false,
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit'
-    });
-  };
+  }, [selectedInstance, fetchFugues, fetchTransport]);
 
   // Get selected fugue definition
   const selectedFugue = selectedFugueId ? fugueDefinitions.get(selectedFugueId) : undefined;
@@ -362,12 +265,6 @@ const App: React.FC = () => {
             onClick={() => setActiveTab('sequencer')}
           >
             Sequencer
-          </button>
-          <button
-            className={`tab-btn ${activeTab === 'monitor' ? 'active' : ''}`}
-            onClick={() => setActiveTab('monitor')}
-          >
-            Monitor
           </button>
           <button
             className={`tab-btn ${activeTab === 'daw' ? 'active' : ''}`}
@@ -462,89 +359,6 @@ const App: React.FC = () => {
               )}
             </div>
           </div>
-        ) : activeTab === 'monitor' ? (
-          /* Monitor Tab */
-          <div className="monitor-view">
-            <div className="monitor-columns">
-              <section className="slots-section">
-                <h2>Automatable Parameters</h2>
-                <div className="slots-list">
-                  {slots.length === 0 ? (
-                    <div className="no-slots">
-                      <p>Loading parameter slots...</p>
-                    </div>
-                  ) : (
-                    slots.map((slot) => (
-                      <div key={slot.index} className={`slot-item ${wigglingSlot === slot.index ? 'wiggling' : ''}`}>
-                        <span className="slot-index">{slot.index}</span>
-                        <span className="slot-name">{slot.name}</span>
-                        <span className="slot-cc">{slot.cc !== null ? `CC${slot.cc}` : '—'}</span>
-                        <div className="slot-bar-container">
-                          <div
-                            className="slot-bar"
-                            style={{ width: `${slot.value * 100}%` }}
-                          />
-                        </div>
-                        <span className="slot-value">{Math.round(slot.value * 100)}%</span>
-                        <button
-                          className="wiggle-btn"
-                          onClick={() => handleWiggle(slot.index)}
-                          disabled={slot.cc === null || wigglingSlot !== null}
-                          title={slot.cc === null ? 'Map a CC first' : 'Wiggle CC to identify knob'}
-                        >
-                          {wigglingSlot === slot.index ? '~' : '↔'}
-                        </button>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </section>
-
-              <section className="activity-section">
-                <h2>Recent AI Activity</h2>
-                <div className="activity-list">
-                  {activity.length === 0 ? (
-                    <div className="no-activity">
-                      <p>No recent activity</p>
-                      <p className="hint">Activity appears when AI sets parameter values</p>
-                    </div>
-                  ) : (
-                    activity.slice(-20).reverse().map((event, idx) => (
-                      <div key={`${event.timestamp}-${idx}`} className="activity-item">
-                        <span className="activity-time">{formatTimestamp(event.timestamp)}</span>
-                        <span className="activity-instance">{event.instance}</span>
-                        <span className="activity-cc">{event.cc !== null ? `CC${event.cc}` : '—'}</span>
-                        <span className="activity-value">{event.value}</span>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </section>
-            </div>
-
-            <section className="note-grid-section">
-              <h2>Note Test Grid</h2>
-              <div className="note-grid">
-                {Array.from({ length: 24 }, (_, i) => 48 + i).map(note => {
-                  const isBlack = [1, 3, 6, 8, 10].includes(note % 12);
-                  const isActive = activeNotes.has(note);
-                  return (
-                    <button
-                      key={note}
-                      className={`note-key ${isBlack ? 'black' : 'white'} ${isActive ? 'active' : ''}`}
-                      onMouseDown={() => handleNoteOn(note)}
-                      onMouseUp={() => handleNoteOff(note)}
-                      onMouseLeave={() => isActive && handleNoteOff(note)}
-                      title={getNoteName(note)}
-                    >
-                      {!isBlack && <span className="note-label">{getNoteName(note)}</span>}
-                    </button>
-                  );
-                })}
-              </div>
-              <p className="note-hint">Click and hold to play notes. Tests MIDI output routing.</p>
-            </section>
-          </div>
         ) : activeTab === 'daw' ? (
           /* DAW Tab — live view of what the host controller extension has pushed */
           <DawLayout
@@ -554,7 +368,7 @@ const App: React.FC = () => {
           />
         ) : activeTab === 'settings' ? (
           /* Settings Tab */
-          <Settings />
+          <Settings instance={selectedInstance} />
         ) : null}
       </main>
     </div>
