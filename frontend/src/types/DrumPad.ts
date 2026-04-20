@@ -5,7 +5,6 @@ import type { Device } from "./Device";
  * One pad in a drum machine.
  *
  * `note` is a raw MIDI number on the wire (what the extension can easily
- * read). Outgoing serializations rendered for the LLM convert to pitch
- * notation via [`PadView`].
+ * read). Outgoing serializations to the LLM convert to pitch notation.
  */
 export type DrumPad = { note: number, name: string, devices: Array<Device>, };

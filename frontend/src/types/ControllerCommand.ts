@@ -2,11 +2,8 @@
 
 /**
  * Command the plugin emits to the host controller extension over
- * `/ws/controller`. v1 defines no variants beyond a no-op keepalive; when
- * MCP tools start enqueuing real commands (MIDI map changes etc.), add
- * variants here without changing the wire framing.
- *
- * Serialized with `#[serde(tag = "type")]` so variants appear as
- * `{"type": "...", ...}` on the wire.
+ * `/ws/controller`. No variants beyond a no-op keepalive yet; when MCP tools
+ * start enqueuing real commands, add variants here without changing the
+ * wire framing.
  */
 export type ControllerCommand = { "type": "noop" };

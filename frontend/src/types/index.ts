@@ -26,5 +26,3 @@ export type { ProjectLayout } from './ProjectLayout';
 export type { TrackContext } from './TrackContext';
 export type { Device } from './Device';
 export type { DrumPad } from './DrumPad';
-export type { Chain } from './Chain';
-export type { ParameterInfo } from './ParameterInfo';
