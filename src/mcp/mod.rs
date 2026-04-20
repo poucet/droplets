@@ -141,6 +141,11 @@ async fn run_server(port: u16) {
         // Treated as trusted local traffic — no auth because the server binds
         // only to 127.0.0.1.
         .route("/project_layout", axum::routing::post(handle_project_layout))
+        // Extensions also POST /rename_instance on first sight of a Droplets
+        // device so the plugin instance name matches the DAW track name.
+        // Same semantics as the GUI server's /api/rename_instance — just
+        // mirrored here so the extension only needs to know port 9999.
+        .route("/rename_instance", axum::routing::post(handle_rename_instance))
         // WebSocket stream of ControllerCommands for the host extension.
         // v1 emits nothing; the endpoint exists so the extension can
         // establish its side of the pipe and so future MCP tools can enqueue
@@ -235,6 +240,34 @@ async fn controller_ws_loop(mut socket: WebSocket) {
 /// Body is a JSON [`project::ProjectLayout`]. Replies 200 on success, 400 on
 /// parse error. Failures are logged rather than surfaced to the extension
 /// beyond a status code — the extension should retry on error with backoff.
+/// `POST /rename_instance` — mirror of the GUI-server route on the MCP
+/// port. Extensions POST `{ instance, name }`; we look up and rename via
+/// `CcBridge::rename` (same code path as the `set_instance_name` MCP tool).
+async fn handle_rename_instance(body: axum::body::Bytes) -> impl IntoResponse {
+    #[derive(serde::Deserialize)]
+    struct Req {
+        instance: String,
+        name: String,
+    }
+    let Ok(req) = serde_json::from_slice::<Req>(&body) else {
+        log::warn!("rename_instance: invalid body");
+        return (StatusCode::BAD_REQUEST, "invalid body").into_response();
+    };
+    match CcBridge::rename(&req.instance, &req.name) {
+        Ok(old) => {
+            log::info!(
+                "rename_instance: '{}' -> '{}' (was '{}')",
+                req.instance, req.name, old
+            );
+            (StatusCode::OK, "ok").into_response()
+        }
+        Err(e) => {
+            log::warn!("rename_instance {}: {}", req.instance, e);
+            (StatusCode::NOT_FOUND, e).into_response()
+        }
+    }
+}
+
 async fn handle_project_layout(
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
