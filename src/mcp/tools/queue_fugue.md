@@ -20,7 +20,14 @@ Curves: `linear` (default), `exp` (ease-in), `log` (ease-out), `none` (step). Pe
 
 ## Notes
 
-Accept names (preferred) or numbers: `"C4"` (middle C = 60), `"F#3"`, `"Bb5"`, `"C-1"` (lowest), or `0`–`127`.
+**Note shorthand — prefer the array form for ~4x fewer tokens.** Each entry in a `notes` lane accepts either:
+
+- **Array (preferred):** `[beat, note, duration?, velocity?, channel?]` — e.g. `[0, "C1", 0.75, 120]`
+- **Object:** `{beat, note, duration, velocity?, channel?}` — more readable but much longer
+
+Defaults: `duration = 1`, `velocity = 100`, `channel = fugue default`. Omit trailing fields you don't need. Use `null` to skip a middle field (e.g. `[0, "C3", 1, null, 5]` to set channel only).
+
+Note values accept names (preferred) or numbers: `"C3"` (middle C = 60, DAW convention matching Bitwig/Ableton/Logic), `"F#2"`, `"Bb4"`, `"C-2"` (lowest), or `0`–`127`.
 
 ## Shared top-level fields
 
@@ -44,19 +51,19 @@ Update one part without disturbing others: `tag:"melody"` + `cancel_mode:"tag:me
       "cancel_mode": "tag:pad-moment",
       "type": "composite",
       "notes": [
-        {"beat": 0, "note": "C2", "duration": 16},
-        {"beat": 0, "note": "G3", "duration": 8},
-        {"beat": 8, "note": "F3", "duration": 8}
+        [0, "C1", 16],
+        [0, "G2", 8],
+        [8, "F2", 8]
       ],
       "cc": [
         {"cc": 74, "points": [[0,30], [8,100,"exp"], [16,40,"log"]]},
         {"cc": 11, "points": [[0,50], [16,115]], "interpolation": "exp"}
       ],
       "pitch_bends": [
-        {"note": "G3", "points": [[0,0], [4,2,"exp"], [8,0,"log"]]}
+        {"note": "G2", "points": [[0,0], [4,2,"exp"], [8,0,"log"]]}
       ],
       "pressures": [
-        {"note": "C2", "points": [[0,0], [8,0.8,"exp"], [16,0,"log"]]}
+        {"note": "C1", "points": [[0,0], [8,0.8,"exp"], [16,0,"log"]]}
       ]
     }
   ]

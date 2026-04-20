@@ -12,7 +12,7 @@
 //!
 //! All three views serialize the same underlying [`ProjectLayout`] through
 //! different wrapper views. The extension sends MIDI note numbers on drum
-//! pads; we render them as scientific-pitch-notation strings (`"C2"`) on the
+//! pads; we render them as DAW-convention pitch notation (`"C1"`, C3=60) on the
 //! way out so the LLM sees the same note format it already uses elsewhere.
 
 use serde::{Deserialize, Serialize};
@@ -183,11 +183,11 @@ pub enum PrimaryDevice {
 }
 
 /// Tier 1 view of a drum pad — just what the LLM needs to pick the right
-/// note. Note rendered as pitch notation (`"C2"`) not an integer.
+/// note. Note rendered as DAW pitch notation (`"C1"`, C3=60) not an integer.
 #[derive(Debug, Clone, Serialize, TS)]
 #[ts(export)]
 pub struct PadSummary {
-    /// Pitch notation — `"C2"`, `"F#3"`. Comes from converting the raw MIDI
+    /// Pitch notation — `"C1"`, `"F#2"` (DAW convention, C3=60). Comes from converting the raw MIDI
     /// number in [`DrumPad::note`].
     pub note: String,
     pub name: String,
@@ -586,7 +586,7 @@ mod tests {
                         name: "Drum Machine".into(),
                         pads: vec![
                             DrumPad {
-                                note: 36, // C2
+                                note: 36, // C1 (DAW convention; C3=60)
                                 name: "Kick".into(),
                                 devices: vec![Device::Instrument {
                                     name: "Sampler".into(),
@@ -597,7 +597,7 @@ mod tests {
                                 }],
                             },
                             DrumPad {
-                                note: 38, // D2
+                                note: 38, // D1 (DAW convention; C3=60)
                                 name: "Snare".into(),
                                 devices: vec![Device::Instrument {
                                     name: "Sampler".into(),
@@ -667,9 +667,9 @@ mod tests {
         let Some(PrimaryDevice::DrumMachine { pads, .. }) = &drums.primary_device else {
             panic!("expected drum machine primary");
         };
-        assert_eq!(pads[0].note, "C2");
+        assert_eq!(pads[0].note, "C1");
         assert_eq!(pads[0].sample_name.as_deref(), Some("kick_808.wav"));
-        assert_eq!(pads[1].note, "D2");
+        assert_eq!(pads[1].note, "D1");
     }
 
     #[test]
@@ -722,7 +722,7 @@ mod tests {
         let DeviceTier2::DrumMachine { pads, .. } = &info.devices[0] else {
             panic!("expected drum machine");
         };
-        assert_eq!(pads[0].note, "C2");
+        assert_eq!(pads[0].note, "C1");
     }
 
     #[test]

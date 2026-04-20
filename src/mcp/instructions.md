@@ -45,19 +45,21 @@ See the `queue_fugue` tool description for a full worked example.
 ## MIDI reference
 
 ### Notes — always accept name OR number
-Every `note` field accepts either scientific pitch notation (`"C4"`, `"F#3"`, `"Bb5"`, `"C-1"` for the lowest MIDI note) or an integer 0–127. **Prefer names** — they're clearer for both you and the user reading the output. Letter case doesn't matter (`c4` = `C4`), `#` = sharp, `b` or `B` after the letter = flat.
+Every `note` field accepts either DAW pitch notation (`"C3"`, `"F#2"`, `"Bb4"`, `"C-2"` for the lowest MIDI note) or an integer 0–127. **Prefer names** — they're clearer for both you and the user reading the output. Letter case doesn't matter (`c3` = `C3`), `#` = sharp, `b` or `B` after the letter = flat.
+
+**Octave convention:** `C3 = middle C = MIDI 60`, matching Bitwig/Ableton/Logic/Reaper/Studio One. This is NOT scientific pitch notation (which would put middle C at C4). Use the DAW convention so your note labels match what the user sees in their DAW.
 
 Reference (when you need to think in numbers):
-- C0 = 12,  C1 = 24,  C2 = 36,  C3 = 48,  C4 = 60 (middle C),  C5 = 72,  C6 = 84,  C7 = 96
+- C-1 = 12,  C0 = 24,  C1 = 36,  C2 = 48,  C3 = 60 (middle C),  C4 = 72,  C5 = 84,  C6 = 96
 - Within an octave: C, C#, D, D#, E, F, F#, G, G#, A, A#, B → offsets 0..11
-- So D4 = 62, G4 = 67, A4 = 69 (concert pitch), Bb3 = 58, etc.
+- So D3 = 62, G3 = 67, A3 = 69 (concert pitch), Bb2 = 58, etc.
 
 ### Typical musical ranges
-- Kick / sub-bass:        24–36  (C1–C2)
-- Bass line:              36–55  (C2–G3)
-- Chords / pad:           48–72  (C3–C5)
-- Melody / lead:          60–84  (C4–C6)
-- Lead / top-line hooks:  72–96  (C5–C7)
+- Kick / sub-bass:        24–36  (C0–C1)
+- Bass line:              36–55  (C1–G2)
+- Chords / pad:           48–72  (C2–C4)
+- Melody / lead:          60–84  (C3–C5)
+- Lead / top-line hooks:  72–96  (C4–C6)
 
 ### Common CC numbers (widely supported, but individual synths may remap)
 - CC 1   — Modulation wheel (typically adds vibrato / depth)
@@ -90,20 +92,34 @@ When the user asks for a "filter sweep", default to CC 74. For "volume swell" pr
 - Triplet eighth = 1/3 beat ≈ 0.333.
 - Beat 0 is the downbeat; beats 1, 2, 3 are the "and" positions of a bar.
 
+## Note shorthand — use array form
+
+Every `note` entry in a `notes` lane accepts two forms. **Prefer the array form** — it's ~4x fewer tokens on large patterns:
+
+- **Array (preferred):** `[beat, note, duration?, velocity?, channel?]`
+- **Object:** `{beat, note, duration, velocity?, channel?}`
+
+Defaults: `duration = 1` (one beat), `velocity = 100`, `channel = fugue default`. Omit trailing fields you don't need. Use `null` to skip a middle field (e.g. `[0, "C3", 1, null, 5]` to set channel without overriding velocity).
+
+Same note, both forms:
+```
+{beat: 0, note: "C1", duration: 0.75, velocity: 120}  ← verbose
+[0, "C1", 0.75, 120]                                  ← preferred
+```
+
 ## Pattern cookbook (compact)
 
 ### Four-on-the-floor kick
-Fugue `type:"notes"`, channel mapped to a drum: kick on C2 every beat.
+Fugue `type:"notes"`, channel mapped to a drum. **Use the kick's actual pad note from `get_project_state`** — the note below is just a placeholder.
 ```
-notes: [{beat:0,note:"C2",duration:0.2},{beat:1,note:"C2",duration:0.2},
-        {beat:2,note:"C2",duration:0.2},{beat:3,note:"C2",duration:0.2}]
+notes: [[0,"C1",0.2],[1,"C1",0.2],[2,"C1",0.2],[3,"C1",0.2]]
 ```
 
 ### Held drone + breath-like pressure swell
 Two fugues on the same channel/note. Pressure is per-segment exp/log for a breath shape.
 ```
-{type:"notes", notes:[{beat:0,note:"C4",duration:4,velocity:70}]}
-{type:"per_note_pressure", note:"C4",
+{type:"notes", notes:[[0,"C3",4,70]]}
+{type:"per_note_pressure", note:"C3",
  points:[[0,0.0],[2,1.0,"exp"],[4,0.0,"log"]]}
 ```
 
@@ -116,10 +132,8 @@ CC 74 ramping 30→110→30 over a bar, with exp curve.
 ### 16th-note arp, velocity tapering
 Ascending triad with each step softer — classic plucked-arp feel.
 ```
-notes:[{beat:0.00,note:"C3",duration:0.2,velocity:100},
-       {beat:0.25,note:"E3",duration:0.2,velocity:90},
-       {beat:0.50,note:"G3",duration:0.2,velocity:80},
-       {beat:0.75,note:"C4",duration:0.2,velocity:70}]
+notes:[[0.00,"C2",0.2,100],[0.25,"E2",0.2,90],
+       [0.50,"G2",0.2,80],[0.75,"C3",0.2,70]]
 ```
 
 ## Other tools
