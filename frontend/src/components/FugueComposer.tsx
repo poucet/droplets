@@ -31,7 +31,7 @@ export interface ComposerFugue {
 }
 
 const DEFAULT_DURATION = 4;
-const DEFAULT_NOTE_RANGE = { min: 48, max: 72 }; // C3 to C5
+const DEFAULT_NOTE_RANGE = { min: 48, max: 72 }; // C2 to C4 (DAW convention, C3=60)
 const MIDI_CHANNELS = Array.from({ length: 16 }, (_, i) => i); // 0-15
 
 // Helper to extract loop times from LoopMode

@@ -13,9 +13,10 @@ import { NoteLayer, NoteCell } from './NoteLayer';
 import { getTimingManager } from '../timing';
 import './FugueGrid.css';
 
-// Note names for display
+// Note names for display. DAW convention: C3 = middle C = MIDI 60
+// (Bitwig/Ableton/Logic/Reaper/Studio One).
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-const getNoteName = (midi: number) => `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`;
+const getNoteName = (midi: number) => `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 2}`;
 const isBlackKey = (midi: number) => [1, 3, 6, 8, 10].includes(midi % 12);
 
 export interface FugueGridProps {
