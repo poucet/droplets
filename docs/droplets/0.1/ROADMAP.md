@@ -33,8 +33,8 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [ ] | P2 | 8 | Migrate UI from React/HTTP to egui (in-process) | XL | Correctness — removes transport skew |
 | [ ] | P3 | 9 | Evaluate stateful MCP mode for server→client push | S | Medium — unlocks event notifications (fugue-finished, instance-changed) |
 | [ ] | P2 | 10 | Audio-thread ramps for per-note expression (pitch bend, pressure) | M | Quality — sample-accurate per-note curves instead of server-side discrete-event expansion |
+| [ ] | P1 | 17 | MCP tool: `get_fugue(id)` returning current FugueDefinition | S | High — small surface, immediately unlocks LLM read-modify-write; ships before the drag features because it's independent and its compact serializer is reusable downstream |
 | [ ] | P1 | 15 | Native drag-out of fugues → DAW clip (`.mid` file) | M | High — lets users hand AI-generated patterns to the DAW's piano roll for editing; removes the need for an in-app editor |
-| [ ] | P1 | 17 | MCP tool: `get_fugue(id)` returning current FugueDefinition | S | High — small surface, immediately unlocks LLM read-modify-write; prereq for round-trip and standalone valuable even without drag-in |
 | [ ] | P2 | 16 | Native drag-in of `.mid` → new fugue on an instance | M | Medium — round-trip workflow: edit in the DAW, drop back as a fugue |
 
 ---
@@ -344,10 +344,11 @@ Phase 01:
   2026-04-21: DEMO
   ↓
 Phase 02: 8 (egui migration) + 9 (stateful MCP) + 10 (audio-thread per-note ramps)
-          15 (drag-out) → 17 (get_fugue) → 16 (drag-in)
-          ↑ 15 first; then 17 (small, unlocks LLM read-modify-write on its
-            own — useful even without drag-in); 16 last to close the full
-            round-trip (user edits a clip → drops back → LLM reads via 17).
+          17 (get_fugue) → 15 (drag-out) → 16 (drag-in)
+          ↑ 17 first — tiny surface, independent of drag plumbing, and its
+            compact read-back serializer gets reused by 15 when bundling
+            multiple fugues into a .mid. 15 then lands the primary hand-off
+            flow. 16 closes the full round-trip last.
 ```
 
 ---
