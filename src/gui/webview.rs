@@ -9,6 +9,7 @@ use wry::WebViewBuilder;
 
 use crate::params::DropletParams;
 
+use super::drag::{self, DragState};
 use super::routes;
 
 /// The custom protocol scheme for serving app content
@@ -52,6 +53,10 @@ pub struct WebViewConfig {
     pub ipc_sender: Option<Sender<serde_json::Value>>,
     /// Instance ID of this plugin window (used by /self endpoint)
     pub instance_id: String,
+    /// Parent-window handle slot used by native drag-out (Feature 15).
+    /// `None` in standalone mode (we don't own the surrounding window
+    /// and drag-out isn't wired up there yet).
+    pub drag_state: Option<DragState>,
 }
 
 impl WebViewConfig {
@@ -62,16 +67,22 @@ impl WebViewConfig {
             dev_mode: cfg!(debug_assertions) || cfg!(feature = "dev-gui"),
             ipc_sender: None,
             instance_id: instance_id.into(),
+            drag_state: None,
         }
     }
 
     /// Create config for plugin mode with IPC sender
-    pub fn plugin(ipc_sender: Sender<serde_json::Value>, instance_id: impl Into<String>) -> Self {
+    pub fn plugin(
+        ipc_sender: Sender<serde_json::Value>,
+        instance_id: impl Into<String>,
+        drag_state: DragState,
+    ) -> Self {
         Self {
             enable_devtools: cfg!(debug_assertions) || cfg!(feature = "dev-gui"),
             dev_mode: cfg!(debug_assertions) || cfg!(feature = "dev-gui"),
             ipc_sender: Some(ipc_sender),
             instance_id: instance_id.into(),
+            drag_state: Some(drag_state),
         }
     }
 }
@@ -159,14 +170,37 @@ pub fn configure_webview<'a>(
         // Load content via custom protocol for secure context
         .with_url(APP_ORIGIN);
 
-    // Add IPC handler if sender provided
+    // Add IPC handler if sender provided.
+    //
+    // Drag-start messages get special treatment: they run **synchronously**
+    // on this thread (the WebView's UI thread on macOS/Windows), because
+    // `drag::start_drag` has to be called during the same mouse-down
+    // gesture that triggered the IPC. Every other message keeps the
+    // original thread-spawn + channel-send path.
+    let drag_state = config.drag_state.clone();
+    let instance_id_for_ipc = config.instance_id.clone();
     let builder = if let Some(sender) = config.ipc_sender {
         builder.with_ipc_handler(move |request: wry::http::Request<String>| {
-            let sender = sender.clone();
             let message = request.body().clone();
+
+            #[cfg(any(debug_assertions, feature = "dev-gui"))]
+            crate::logger::log_ipc_message_received(&message);
+
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&message) {
+                // Route drag-start inline; everything else goes through
+                // the channel so the existing consumer logic sees it.
+                if parsed.get("type").and_then(|v| v.as_str()) == Some("start_drag") {
+                    if let Some(state) = &drag_state {
+                        handle_start_drag(state, &instance_id_for_ipc, &parsed);
+                    } else {
+                        log::warn!("start_drag IPC received without drag_state configured");
+                    }
+                    return;
+                }
+            }
+
+            let sender = sender.clone();
             std::thread::spawn(move || {
-                #[cfg(any(debug_assertions, feature = "dev-gui"))]
-                crate::logger::log_ipc_message_received(&message);
                 if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&message) {
                     let _ = sender.send(parsed);
                 }
@@ -189,6 +223,131 @@ pub fn configure_webview<'a>(
             true
         }
     })
+}
+
+/// Handle a `start_drag` IPC message from the frontend. Expected shape:
+///
+/// ```json
+/// { "type": "start_drag",
+///   "instance": "<id or name>",      // optional — defaults to own instance
+///   "fugue_ids": ["123", "456"],     // optional — pick specific fugues
+///   "active": true,                  // optional — export all active fugues
+///   "tempo_bpm": 120 }               // optional — override session tempo
+/// ```
+///
+/// Resolves the active fugues, writes a `.mid` file to the OS temp dir,
+/// starts a native OS drag with that file. On Linux (drag unsupported) or
+/// drag failure, reveals the file in the user's file manager so the user
+/// can drag it from there (Feature 15b.5 fallback).
+fn handle_start_drag(
+    drag_state: &DragState,
+    own_instance_id: &str,
+    payload: &serde_json::Value,
+) {
+    use crate::fugue::{export, FugueBridge};
+
+    // Which instance to export from? Defaults to the webview's own.
+    let instance = payload
+        .get("instance")
+        .and_then(|v| v.as_str())
+        .unwrap_or(own_instance_id);
+
+    // Pick the fugue set: explicit ids > active = true > nothing.
+    let definitions: Vec<_> = match FugueBridge::get_definitions(instance) {
+        Ok(defs) => defs,
+        Err(e) => {
+            log::warn!("start_drag: get_definitions('{}') failed: {}", instance, e);
+            return;
+        }
+    };
+
+    let selected: Vec<_> = if let Some(ids) = payload.get("fugue_ids").and_then(|v| v.as_array()) {
+        let wanted: std::collections::HashSet<u64> = ids
+            .iter()
+            .filter_map(|v| v.as_str())
+            .filter_map(|s| s.parse::<u64>().ok())
+            .collect();
+        definitions
+            .into_iter()
+            .filter(|d| wanted.contains(&d.id))
+            .collect()
+    } else {
+        // "active: true" or anything else → everything currently queued.
+        definitions
+    };
+
+    if selected.is_empty() {
+        log::warn!("start_drag: nothing to export on instance '{}'", instance);
+        return;
+    }
+
+    // Tempo: payload override if present, else default 120. Future
+    // improvement: ask the FugueBridge for the current transport tempo.
+    let tempo_bpm = payload
+        .get("tempo_bpm")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(120.0);
+
+    let bytes = export::fugues_to_smf(&selected, tempo_bpm);
+
+    // Materialize in the OS temp dir so the DAW can copy it before we
+    // clean up. Filename includes a timestamp so concurrent drags don't
+    // collide.
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let path = std::env::temp_dir().join(format!("droplets-{}.mid", ts));
+    if let Err(e) = std::fs::write(&path, &bytes) {
+        log::warn!("start_drag: failed to write temp .mid {}: {}", path.display(), e);
+        return;
+    }
+
+    log::info!(
+        "start_drag: wrote {} fugues ({} bytes) to {}",
+        selected.len(),
+        bytes.len(),
+        path.display()
+    );
+
+    // Drag, with file-manager reveal as fallback.
+    match drag::start_file_drag(drag_state, path.clone()) {
+        drag::DragStart::Started => {
+            log::info!("start_drag: native drag started for {}", path.display());
+        }
+        drag::DragStart::Unsupported => {
+            log::info!(
+                "start_drag: native drag unsupported on this platform — revealing {} in file manager",
+                path.display()
+            );
+            drag::reveal_fallback(&path);
+        }
+        drag::DragStart::NoWindow => {
+            log::warn!(
+                "start_drag: no parent window stashed — revealing {} in file manager as fallback",
+                path.display()
+            );
+            drag::reveal_fallback(&path);
+        }
+        drag::DragStart::Failed(e) => {
+            log::warn!(
+                "start_drag: drag crate returned error '{}' — revealing {} in file manager as fallback",
+                e,
+                path.display()
+            );
+            drag::reveal_fallback(&path);
+        }
+    }
+
+    // Temp file cleanup: spawn a detached thread that deletes after 60s.
+    // Gives the DAW time to copy the file into its own storage before we
+    // pull the rug out. Best-effort; a missing file at cleanup time is
+    // fine (the user might have moved it).
+    let cleanup_path = path;
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        let _ = std::fs::remove_file(&cleanup_path);
+    });
 }
 
 /// Get HTML content (from filesystem in dev mode, bundled otherwise)

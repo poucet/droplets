@@ -1,4 +1,5 @@
 pub mod api;
+pub mod drag;
 mod dpi;
 mod gui;
 mod plugin;

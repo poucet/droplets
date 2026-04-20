@@ -72,11 +72,11 @@ See [ROADMAP.md §Feature 15](ROADMAP.md#feature-15-native-drag-out-of-fugues--d
 
 | Done | # | Task | Notes |
 |------|---|------|-------|
-| [ ] | 15b.1 | Add `drag = "2.1"` to Cargo.toml | Cross-platform wrapper around `NSFilePromiseProvider` / `IDropSource` / XDND. Small crate (~900 LOC, no heavyweight deps). |
-| [ ] | 15b.2 | New wry IPC handler `start_drag` in [src/gui/webview.rs](../../../src/gui/webview.rs) | Receives `{ instance, fugue_ids?: string[], active?: bool }`. `fugue_ids` = specific fugues; `active` = "all currently playing." Writes `.mid` to `std::env::temp_dir()/droplets-<timestamp>.mid`. |
-| [ ] | 15b.3 | Start native drag from the wry window handle | `drag::start_drag(window_handle, DragItem::Files(vec![path]), Image::Raw(...), on_result, options)`. Place-holder image (simple MIDI icon) acceptable for v1. |
-| [ ] | 15b.4 | Temp file cleanup | Spawn a thread on drag-result callback to delete the file after 60s — gives the DAW time to copy/index. Alternative: use `tempfile::NamedTempFile` with manual drop-delay. |
-| [ ] | 15b.5 | Fallback when drag isn't supported | If `drag::start_drag` errors (rare — mostly Linux distro mismatches), fall back to `open::that(&path)` to reveal in the file manager. Return the path to the frontend so it can show a toast with it. |
+| [x] | 15b.1 | Add `drag = "2.1"` to Cargo.toml | Done. |
+| [x] | 15b.2 | New wry IPC handler `start_drag` in [src/gui/webview.rs](../../../src/gui/webview.rs) | `handle_start_drag` inline in `configure_webview`'s IPC closure. Runs synchronously on the WebView thread (drag must start during the same gesture). Accepts `{type: "start_drag", instance?, fugue_ids?, active?, tempo_bpm?}`. Pulls fugue definitions via `FugueBridge::get_definitions`, exports via `fugues_to_smf` (Phase 15a), writes to `env::temp_dir()/droplets-<timestamp_ms>.mid`. |
+| [x] | 15b.3 | Start native drag from the wry window handle | New [src/gui/drag.rs](../../../src/gui/drag.rs) with `DragWindow` (wraps `RawWindowHandle`, impls `HasWindowHandle`) + shared `DragState` slot. [src/gui/plugin.rs](../../../src/gui/plugin.rs) `set_parent` stashes the handle; the IPC handler reads it when a drag is requested. `drag::start_drag` called with empty preview image (DAWs draw their own drag ghost). |
+| [x] | 15b.4 | Temp file cleanup | Detached thread sleeps 60s then `remove_file`. Best-effort — a missing file at cleanup time is fine (user may have moved it). |
+| [x] | 15b.5 | Fallback when drag isn't supported | `DragStart` enum with variants `Started / Unsupported / NoWindow / Failed`. Unsupported (Linux — drag crate wants a GTK window we don't have inside a CLAP plugin) falls through to `reveal_fallback` which uses `open::that(&path)` to open the file manager. NoWindow / Failed do the same. Standalone binary gets `NoWindow` (no DAW parent handle), so drag requests there reveal-to-file-manager. |
 
 ### Phase 15c — Drag zones in UI
 

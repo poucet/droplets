@@ -41,6 +41,9 @@ clap-wrapper = { git = "https://github.com/blepfx/clap-wrapper-rs" }
 # GUI dependencies
 wry = "0.51.2"
 open = "5.3.2"
+# Native OS drag-out of generated files (MIDI export → DAW clip).
+# Wraps NSFilePromiseProvider / Win32 IDropSource / XDND behind one call.
+drag = "2.1"
 
 # Additional dependencies
 serde = { version = "1.0", features = ["derive"] }

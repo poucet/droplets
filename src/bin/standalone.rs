@@ -316,8 +316,14 @@ fn main() {
         }
     };
 
-    // Build webview with shared configuration (same as plugin GUI)
-    let config = WebViewConfig::plugin(ipc_sender, instance_id);
+    // Build webview with shared configuration (same as plugin GUI).
+    // Drag-out is disabled in standalone for now — populating the state
+    // with `None` means drag IPC messages hit the `NoWindow` fallback
+    // (reveal-in-file-manager) rather than attempting a native drag
+    // against a window handle we don't control cleanly here.
+    let drag_state: simply_droplets::gui::drag::DragState =
+        Arc::new(Mutex::new(None));
+    let config = WebViewConfig::plugin(ipc_sender, instance_id, drag_state);
     let builder = configure_webview(WebViewBuilder::new(), Arc::clone(&params_inst), config);
 
     let webview = match builder.build(&window) {

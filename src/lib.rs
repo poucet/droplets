@@ -113,6 +113,7 @@ impl DefaultPluginFactory for DropletPlugin {
             midi_consumer: Mutex::new(Some(midi_consumer)),
             fugue_consumer: Mutex::new(Some(fugue_consumer)),
             fugue_info_handle: Mutex::new(Some(fugue_info_handle)),
+            drag_state: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -141,6 +142,10 @@ pub struct DropletShared<'a> {
     pub fugue_consumer: Mutex<Option<Consumer<fugue::FugueCommand>>>,
     /// Fugue info handle for lock-free updates from audio thread
     pub fugue_info_handle: Mutex<Option<FugueInfoHandle>>,
+    /// Parent-window handle for native drag-out (Feature 15). Populated
+    /// by the CLAP GUI extension's `set_parent` hook; read by the IPC
+    /// handler when a drag gesture starts.
+    pub drag_state: gui::drag::DragState,
 }
 
 impl<'a> PluginShared<'a> for DropletShared<'a> {}

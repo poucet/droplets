@@ -97,27 +97,40 @@ impl<'a> PluginGuiImpl for DropletMainThread<'a> {
     fn set_parent(&mut self, parent: Window) -> Result<(), PluginError> {
         crate::logger::log_gui_event("set_parent", "Setting parent window");
 
-        // Convert CLAP window to WindowHandle expected by wry
-        let parent_handle = unsafe {
-            WindowHandle::borrow_raw(if cfg!(target_os = "macos") {
-                RawWindowHandle::AppKit(AppKitWindowHandle::new(
-                    NonNull::new(parent.as_cocoa_nsview().unwrap()).unwrap(),
-                ))
-            } else if cfg!(target_os = "windows") {
-                RawWindowHandle::Win32(Win32WindowHandle::new(
-                    NonZeroIsize::new(parent.as_win32_hwnd().unwrap() as isize).unwrap(),
-                ))
-            } else {
-                RawWindowHandle::Xcb(XcbWindowHandle::new(
-                    NonZeroU32::new(parent.as_x11_handle().unwrap() as u32).unwrap(),
-                ))
-            })
+        // Convert CLAP window to a raw handle we can reuse. Two consumers:
+        // (1) wry's `build_as_child`, which takes a `WindowHandle<'_>`,
+        // (2) `drag::start_drag` (Feature 15), which needs the handle to
+        // stay accessible across IPC message processing.
+        let raw_handle = if cfg!(target_os = "macos") {
+            RawWindowHandle::AppKit(AppKitWindowHandle::new(
+                NonNull::new(parent.as_cocoa_nsview().unwrap()).unwrap(),
+            ))
+        } else if cfg!(target_os = "windows") {
+            RawWindowHandle::Win32(Win32WindowHandle::new(
+                NonZeroIsize::new(parent.as_win32_hwnd().unwrap() as isize).unwrap(),
+            ))
+        } else {
+            RawWindowHandle::Xcb(XcbWindowHandle::new(
+                NonZeroU32::new(parent.as_x11_handle().unwrap() as u32).unwrap(),
+            ))
         };
+        // Stash for drag-out. The DAW owns the parent window for the
+        // lifetime of the plugin, so the raw handle stays valid across
+        // set_parent → drag → destroy.
+        *self.shared.drag_state.lock().unwrap() = Some(super::drag::DragWindow::new(raw_handle));
+
+        let parent_handle = unsafe { WindowHandle::borrow_raw(raw_handle) };
 
         crate::logger::log_gui_event("webview_building", "Starting WebView creation");
 
-        // Use shared WebView configuration
-        let config = WebViewConfig::plugin(self.shared.ipc_sender.clone(), self.shared.instance_id.clone());
+        // Use shared WebView configuration. Drag state shared with the
+        // plugin-wide shared slot so the IPC handler inside the webview
+        // can reach the parent window when a drag message comes in.
+        let config = WebViewConfig::plugin(
+            self.shared.ipc_sender.clone(),
+            self.shared.instance_id.clone(),
+            std::sync::Arc::clone(&self.shared.drag_state),
+        );
         let builder = configure_webview(
             WebViewBuilder::new(),
             Arc::clone(&self.shared.params),
