@@ -296,6 +296,43 @@ Use CSS modules or a consistent naming convention:
 7. **FugueComposer** (controls + draft state)
 8. **Integration** into main App
 
+## Drag-out / drag-in (Features 15 + 16)
+
+The sequencer supports both directions of the round-trip between
+Droplets and the DAW:
+
+- **Drag-out.** Press and drag on any fugue row (or the viewer header)
+  to start a native OS drag carrying a `.mid` file. Drop onto a DAW
+  arranger track, the Finder/Explorer, or any app that accepts file
+  drops. The `⇣ Drag all <N>` header button bundles every active fugue
+  on the instance into one multi-track SMF; tag groups with different
+  loop lengths are LCM-stretched so the clip loops cleanly in the DAW.
+- **Drag-in.** Drop a `.mid` (or `.midi`) anywhere on the sequencer
+  panel. The panel highlights with a dashed outline while the drag is
+  over it. Each track in the file becomes one fugue queued on the
+  currently-selected instance. Tags come from the SMF `TrackName`
+  meta; tracks without names get synthetic `imported-N` labels.
+
+### Platform caveats
+
+- **macOS Gatekeeper first-drag.** The drag-out writes its temp
+  `.mid` under `$TMPDIR/droplets-<ts>.mid`. On a fresh macOS install
+  the first time you drop that file onto a DAW track, Gatekeeper may
+  ask you to confirm opening a file "from an unidentified developer."
+  This is a one-time prompt — subsequent drags of files from the
+  same session go through without dialog. Dropping onto Bitwig
+  always works for us; Logic and Live pre-11 occasionally bounce the
+  first drop silently if Gatekeeper quarantined the temp file.
+- **Linux.** `drag` crate doesn't support GTK-less windows (what CLAP
+  plugins live inside), so the plugin falls back to revealing the
+  `.mid` in the user's file manager. The user then drags from there.
+- **Bitwig launcher clips.** Bitwig refuses to export clip-launcher
+  clips as `.mid` — its only clip-launcher export is "Save Launcher
+  Clip to Library" which writes a proprietary `.bwclip`. To round-
+  trip a launcher clip today, drag it into the Bitwig arranger
+  timeline first; arranger clips drag out as `.mid` normally.
+  Native `.bwclip` support is tracked as Feature 23 post-demo.
+
 ## Future Enhancements
 
 - Zoom controls for grid
@@ -304,4 +341,3 @@ Use CSS modules or a consistent naming convention:
 - Copy/paste fugues
 - Save/load fugue presets
 - Multi-fugue view (stacked)
-- MIDI file import/export

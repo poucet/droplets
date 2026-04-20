@@ -85,7 +85,7 @@ See [ROADMAP.md §Feature 15](ROADMAP.md#feature-15-native-drag-out-of-fugues--d
 | [x] | 15c.1 | Whole-container drag source (scope widened) | Entire `.fugue-list-item` row and the `.viewer-header` in [FugueViewer.tsx](../../../frontend/src/components/FugueViewer.tsx) are drag sources, not small icon buttons — matches user's UX expectation ("why can't I drag the whole fugue"). Movement-threshold pattern (4px) on mousedown distinguishes click-to-select from press-and-drag: a global mousemove listener fires `startDrag` only once the cursor has actually moved; pure clicks still fire `onSelect`. Uses `mousedown` as the gesture anchor (not `click`) because macOS/Windows need the drag to start during the initial press. |
 | [x] | 15c.2 | "Drag all active" affordance in [FugueList.tsx](../../../frontend/src/components/FugueList.tsx) | `⇣ Drag all <N>` button in the list header. IPC `start_drag` with `{ instance, active: true }`. Only rendered when 2+ fugues are live (dragging a single fugue is redundant with the row drag). |
 | [x] | 15c.3 | Visual feedback | Cursor changes to `grab` on rows and the drag-all button, `grabbing` while pressed. Drag-all button shows live count. Further visual tweaks (drag-preview image, row highlight while drag is in-flight) deferred — drag-crate's v1 draws no preview; DAWs show their own drag ghost anyway. |
-| [ ] | 15c.4 | Platform caveats doc | Short note in [FUGUE_UI.md](../../FUGUE_UI.md) about macOS Gatekeeper: first-time drag may require a quarantine-bypass dialog for the temp file. Users drop onto a Bitwig clip and it works. |
+| [x] | 15c.4 | Platform caveats doc | New "Drag-out / drag-in" + "Platform caveats" sections in [FUGUE_UI.md](../../FUGUE_UI.md) covering macOS Gatekeeper first-drag prompt, Linux fallback (reveal-in-file-manager), and Bitwig launcher-clip limitation (Bitwig won't emit `.mid` from clip-launcher clips — must drag through arranger timeline first, tracked as Feature 23 for native `.bwclip` support). |
 
 ### ~~Phase 15d — HTTP endpoints for LLM / scripted use~~ (dropped)
 
@@ -99,7 +99,7 @@ Dropped — overlap with existing affordances made this mostly redundant:
 
 | Done | # | Task | Notes |
 |------|---|------|-------|
-| [ ] | 15e.2 | Update [instructions.md](../../../src/mcp/instructions.md) | Tell the LLM that drag-out is the user-facing hand-off path. |
+| [x] | 15e.2 | Update [instructions.md](../../../src/mcp/instructions.md) | Added "Drag round-trip with the DAW" section covering both drag-out and drag-in / `import_fugue` so the LLM frames DAW-edit workflows correctly. Also added `import_fugue` to the Other tools list. |
 
 ---
 

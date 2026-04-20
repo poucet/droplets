@@ -152,8 +152,15 @@ notes:[[0.00,"C2",0.2,100],[0.25,"E2",0.2,90],
 ## Other tools
 - `get_transport` — current {beat, tempo, playing, time_sig, loop bounds}; use before scheduling if you need to know where the playhead is.
 - `list_fugues` / `get_fugue` / `cancel_fugue` / `cancel_fugues_by_tag` / `clear_fugues`
+- `import_fugue` — queue fugues from a base64-encoded `.mid` the user edited in their DAW (see "Drag round-trip" below).
 - `list_slots` — parameter-slot listing
 - `get_activity` — recent MIDI event log (debugging)
+
+## Drag round-trip with the DAW
+The user has two non-MCP paths for handing patterns between Droplets and their DAW — you should **mention them when relevant** rather than trying to rebuild the same workflow through tools.
+
+- **Drag-out (`.mid`)** — the Droplets UI lets the user press-and-drag any fugue (or "Drag all active" for every live fugue on the instance) straight onto a DAW arranger track as a `.mid` clip. This is the primary user-facing hand-off: "want to edit this bass line in your piano roll? Drag it out of the Droplets row." Use this framing when a user asks to tweak output by ear. Tag-grouped fugues with different lengths are LCM-stretched so the clip loops cleanly.
+- **Drag-in / `import_fugue`** — after the user edits the `.mid` in their DAW, they can drop it back onto the Droplets sequencer panel (or hand it to you and you call `import_fugue(instance, base64_mid)`). Each MIDI track becomes one fugue; the track name becomes the tag. Notes and CC round-trip exactly. **Pitch bend and polyphonic aftertouch are dropped** because MIDI 1.0 can't carry a per-note target — if expression matters, ask the user to keep it on Droplets' side (per-note expression in fugues) rather than round-tripping through the DAW.
 
 ### Read-modify-write with `get_fugue`
 `list_fugues` returns fugue IDs + high-level timing. `get_fugue(instance, id)` returns the full content in the same **compact lane-grouped shape** you write to `queue_fugue` — `notes`, `cc`, `pitch_bends`, `pressures`, plus `tag` / `duration_beats` / `loop_mode` / `quantize`. That means the read-modify-write loop is: read a fugue, mutate one lane in your response buffer, re-queue with the same `tag` + `cancel_mode: "tag:<name>"` — you replace just that part without disturbing the others.

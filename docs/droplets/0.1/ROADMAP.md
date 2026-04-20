@@ -34,13 +34,14 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [ ] | P3 | 9 | Evaluate stateful MCP mode for server→client push | S | Medium — unlocks event notifications (fugue-finished, instance-changed) |
 | [ ] | P2 | 10 | Audio-thread ramps for per-note expression (pitch bend, pressure) | M | Quality — sample-accurate per-note curves instead of server-side discrete-event expansion |
 | [x] | P1 | 17 | MCP tool: `get_fugue(id)` returning current FugueDefinition | S | High — small surface, immediately unlocks LLM read-modify-write; ships before the drag features because it's independent and its compact serializer is reusable downstream |
-| [ ] | P1 | 15 | Native drag-out of fugues → DAW clip (`.mid` file) | M | High — lets users hand AI-generated patterns to the DAW's piano roll for editing; removes the need for an in-app editor |
+| [x] | P1 | 15 | Native drag-out of fugues → DAW clip (`.mid` file) | M | High — lets users hand AI-generated patterns to the DAW's piano roll for editing; removes the need for an in-app editor |
 | [x] | P2 | 16 | Native drag-in of `.mid` → new fugue on an instance | M | Medium — round-trip workflow: edit in the DAW, drop back as a fugue |
 | [ ] | P3 | 18 | Pause instead of delete on tag replacement | M | Medium — lets the user walk back to a prior version of a part instead of losing it forever when the LLM queues a new fugue with the same tag |
 | [ ] | P2 | 19 | Unify GUI + MCP on a single port with three top-level paths | S | Medium — halves port consumption per plugin process; simpler firewall / sandbox story. Primary port stays **9999** (agents already configured). Top-level layout collapses to just `/api` (HTTP calls), `/mcp` (MCP protocol), and `/ws` (WebSocket upgrade). Extension POSTs move under `/api/*`; the MCP-side bare `/project_layout` + `/rename_instance` go away. |
 | [ ] | P2 | 20 | Dynamic port selection on bind conflict | S | Medium — plugin currently dies if :9998/:9999 are in use. Walk a range, bind the first free port, surface the chosen port to the extension + UI |
 | [ ] | P3 | 21 | MPE round-trip for per-note expression in drag-out/drag-in | L | Medium — today Features 15/16 drop pitch bend + pressure because MIDI 1.0 SMF has no per-note target. MPE (channel-per-note encoding) is understood by Logic, Bitwig, Live 12+, Cubase, so a `.mid` emitted in MPE shape round-trips the full expressivity. Cost: dynamic channel allocation on export, channel→note attribution on import |
 | [ ] | P4 | 22 | Adopt MIDI 2.0 / SMF2 for native per-note support | L | Low (today) — SMF2 has true per-note bend/pressure in the format itself. DAW support is inconsistent as of 2026; revisit once Logic / Bitwig / Live all read SMF2 natively. Supersedes Feature 21 when that happens |
+| [ ] | P3 | 23 | `.bwclip` (dawproject) export/import alongside `.mid` | M | Medium (Bitwig-only) — lets users round-trip launcher clips via Bitwig's "Save Launcher Clip to Library" (which Bitwig refuses to emit as `.mid`). Preserves per-note expression, tag, color, and timing metadata that MIDI 1.0 drops. Format is Bitwig's open dawproject spec (XML in a zip). Settings toggle chooses `.mid` vs `.bwclip` for drag-out |
 
 ---
 
@@ -416,6 +417,27 @@ The MCP-side bare `/project_layout` and `/rename_instance` routes go away — bo
 **Tracking:** watch `midly`, DAW release notes, and the AMEI / MIDI Association's SMF2 adoption tracker for a signal to move.
 
 **Files:** TBD when picked up.
+
+---
+
+#### Feature 23: `.bwclip` (dawproject) export/import alongside `.mid`
+
+**Problem:** Bitwig's clip launcher refuses to emit `.mid` when the user drags a clip — the only export it exposes for launcher clips is "Save Launcher Clip to Library", which produces a `.bwclip` file (Bitwig's proprietary container from the open dawproject spec). So the most natural "edit in Bitwig → hand back to the LLM" flow *inside Bitwig* is currently blocked for launcher clips. Users have to bounce to the arranger timeline first, which disrupts the improvisation loop the launcher is designed for.
+
+`.bwclip` also preserves things MIDI 1.0 drops: per-note pitch bend and pressure (losslessly, unlike MPE's channel-encoding), clip name, clip color, launcher slot, time signature, scene metadata. For a Bitwig-centric workflow that fidelity matters.
+
+**Solution:** Add a `.bwclip` encoder and decoder alongside the existing `.mid` ones. Settings gains an export-format toggle (`Mid` default, `BwClip` opt-in). Drag-out produces the chosen format; drag-in sniffs the file type (zip magic → bwclip, "MThd" → mid) and routes to the right parser.
+
+- **Format reference:** dawproject spec at https://github.com/bitwig/dawproject (open-source, Java reference impl). `.bwclip` is the clip-level subset of the full dawproject format.
+- **Rust libraries:** `zip` for the container, `quick-xml` (serde) for the XML body. Both are widely used and small.
+- **Scope of the XML we write/read:** Notes (with per-note bend + pressure as native dawproject elements), CC lanes, clip name, clip length, loop/launch metadata. Skip automation envelopes for parameters outside our schema — export as no-ops.
+- **Settings UI:** add `export_format: "mid" | "bwclip"` to the settings pane. Import auto-detects; export defers to the toggle.
+
+**Non-goals:** full dawproject round-trip (mixer, effects, automation). This is strictly clip-level. Also: no other-DAW support from this work — `.bwclip` is Bitwig-only by design; Logic's `.alc` / Ableton's `.alc` would each be separate features.
+
+**Tradeoff vs. Feature 21 (MPE):** both address the same "per-note expression loss" symptom. MPE is portable (every modern DAW reads it as `.mid`); `.bwclip` is richer but Bitwig-only. Ship MPE first for cross-DAW reach, ship `.bwclip` second for Bitwig-specific fidelity. The two don't compete — users pick the format their DAW workflow rewards.
+
+**Files:** new `src/fugue/bwclip.rs` (encoder + decoder), [src/gui/api.rs](../../../src/gui/api.rs) (format routing in import_fugue + export_fugue), [src/fugue/settings.rs](../../../src/fugue/settings.rs) (new `export_format` field), [frontend/src/components/Settings.tsx](../../../frontend/src/components/Settings.tsx) (UI toggle), `Cargo.toml` (`zip`, `quick-xml`).
 
 ---
 
