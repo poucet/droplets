@@ -136,10 +136,10 @@ See [ROADMAP.md §Feature 17](ROADMAP.md#feature-17-mcp-tool-get_fugueid--read-b
 
 | Done | # | Task | Notes |
 |------|---|------|-------|
-| [ ] | 17.1 | `FugueBridge::get_definition(instance, id) -> Option<FugueDefinition>` | Thin lookup beside existing `get_definitions` (plural). ~15 min. |
-| [ ] | 17.2 | New MCP tool `get_fugue` | `#[tool]` fn in [src/mcp/server.rs](../../../src/mcp/server.rs). Takes `{ instance, fugue_id }`, returns the raw `FugueDefinition` serialized as JSON. |
-| [ ] | 17.3 | Compact-schema response (stretch) | Group NoteOn/NoteOff pairs back into `{beat, note, duration, velocity?, channel?}` tuples, collapse CC events into `{cc, points: [[beat, value]]}` lanes. Returns the same `FugueContent::Composite` shape the LLM accepts on input — symmetric read/modify/write. ~2 hours; not blocking 17.2. |
-| [ ] | 17.4 | Docs: read-modify-write pattern | Paragraph in [instructions.md](../../../src/mcp/instructions.md): "To evolve a user-edited pattern, call `get_fugue`, mutate, then re-queue with the same `tag + cancel_mode: 'tag:…'`." |
+| [x] | 17.1 | `FugueBridge::get_definition(instance, id) -> Option<FugueDefinition>` | Already shipped in [src/fugue/bridge.rs:231](../../../src/fugue/bridge.rs#L231). Thin wrapper around the existing plural `get_definitions`. |
+| [x] | 17.2 | New MCP tool `get_fugue` | `#[tool]` fn in [src/mcp/server.rs](../../../src/mcp/server.rs). Takes `GetFugueRequest { instance, id, compact }`. Default `compact: true` returns the LLM-friendly shape; `compact: false` returns the raw `FugueDefinition` for debugging. Request type wired via [src/mcp/requests.rs](../../../src/mcp/requests.rs). |
+| [x] | 17.3 | Compact-schema response | `compact_fugue_view(&FugueDefinition) -> serde_json::Value` in server.rs. Pairs NoteOn/NoteOff by `(channel, note)` FIFO (handles re-triggers), dangling-on closes at `duration_beats`. Groups CC by `(channel, cc)` preserving first-seen lane order. Per-note expression lanes come back as the dense server-expanded points (anchors not recovered) — doc'd in instructions.md as a caveat. Returns `type: "composite"` shape so round-tripping through `queue_fugue` works by construction. 5 unit tests cover note pairing, dangling notes, CC bucketing, metadata fields, empty-lane shape. |
+| [x] | 17.4 | Docs: read-modify-write pattern | Added "Other tools" list + a dedicated "Read-modify-write with `get_fugue`" paragraph in [instructions.md](../../../src/mcp/instructions.md) explaining the tag-swap replacement workflow and the per-note expression caveat. |
 
 ---
 

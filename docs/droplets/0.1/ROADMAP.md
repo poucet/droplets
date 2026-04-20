@@ -33,7 +33,7 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [ ] | P2 | 8 | Migrate UI from React/HTTP to egui (in-process) | XL | Correctness — removes transport skew |
 | [ ] | P3 | 9 | Evaluate stateful MCP mode for server→client push | S | Medium — unlocks event notifications (fugue-finished, instance-changed) |
 | [ ] | P2 | 10 | Audio-thread ramps for per-note expression (pitch bend, pressure) | M | Quality — sample-accurate per-note curves instead of server-side discrete-event expansion |
-| [ ] | P1 | 17 | MCP tool: `get_fugue(id)` returning current FugueDefinition | S | High — small surface, immediately unlocks LLM read-modify-write; ships before the drag features because it's independent and its compact serializer is reusable downstream |
+| [x] | P1 | 17 | MCP tool: `get_fugue(id)` returning current FugueDefinition | S | High — small surface, immediately unlocks LLM read-modify-write; ships before the drag features because it's independent and its compact serializer is reusable downstream |
 | [ ] | P1 | 15 | Native drag-out of fugues → DAW clip (`.mid` file) | M | High — lets users hand AI-generated patterns to the DAW's piano roll for editing; removes the need for an in-app editor |
 | [ ] | P2 | 16 | Native drag-in of `.mid` → new fugue on an instance | M | Medium — round-trip workflow: edit in the DAW, drop back as a fugue |
 

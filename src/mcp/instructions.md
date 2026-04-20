@@ -151,9 +151,14 @@ notes:[[0.00,"C2",0.2,100],[0.25,"E2",0.2,90],
 
 ## Other tools
 - `get_transport` — current {beat, tempo, playing, time_sig, loop bounds}; use before scheduling if you need to know where the playhead is.
-- `list_fugues` / `cancel_fugue` / `cancel_fugues_by_tag` / `clear_fugues`
-- `set_param` / `rename_slot` / `list_slots` — parameter-slot automation
+- `list_fugues` / `get_fugue` / `cancel_fugue` / `cancel_fugues_by_tag` / `clear_fugues`
+- `list_slots` — parameter-slot listing
 - `get_activity` — recent MIDI event log (debugging)
+
+### Read-modify-write with `get_fugue`
+`list_fugues` returns fugue IDs + high-level timing. `get_fugue(instance, id)` returns the full content in the same **compact lane-grouped shape** you write to `queue_fugue` — `notes`, `cc`, `pitch_bends`, `pressures`, plus `tag` / `duration_beats` / `loop_mode` / `quantize`. That means the read-modify-write loop is: read a fugue, mutate one lane in your response buffer, re-queue with the same `tag` + `cancel_mode: "tag:<name>"` — you replace just that part without disturbing the others.
+
+Caveat: per-note pitch bend and pressure lanes come back as the dense server-side-expanded event stream (~32 events/beat), not the sparse anchors you originally wrote. Notes and CC lanes round-trip cleanly; if you need to rewrite an expression curve, replace the lane rather than incrementally editing the dense points.
 
 ## Gotchas
 - Fugues do not play while transport is stopped (check with `get_transport`).

@@ -15,15 +15,17 @@ use rmcp::{
     service::RequestContext,
 };
 
+use std::collections::HashMap;
+
 use super::bridge::CcBridge;
 use super::requests::{
-    CancelFugueRequest, CancelFuguesByTagRequest, FugueContent, GetSlotsRequest,
+    CancelFugueRequest, CancelFuguesByTagRequest, FugueContent, GetFugueRequest, GetSlotsRequest,
     QueueFugueRequest, RenameInstanceRequest,
     emit_cc_lane, emit_notes, emit_per_note_pitch_bend, emit_per_note_pressure,
     parse_interpolation_mode,
 };
 use crate::fugue::{
-    CancelMode, FugueBridge, FugueDefinition, InterpolationMode, LoopMode, QuantizeMode,
+    CancelMode, FugueBridge, FugueDefinition, FugueEvent, InterpolationMode, LoopMode, QuantizeMode,
     TimedFugueEvent,
 };
 
@@ -321,6 +323,29 @@ impl DropletsMcp {
         Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
+    /// Fetch one fugue's current definition — notes, CC lanes, per-note
+    /// expression lanes, loop/tag/quantize metadata. Enables a read-modify-write
+    /// pattern: read a fugue, mutate one lane, re-queue with the same tag.
+    #[tool(description = "Fetch a single fugue's full content by ID. Returns the same compact lane-grouped shape the LLM writes to queue_fugue (notes + cc + pitch_bends + pressures), so you can read a fugue, mutate a lane, and re-queue with the same tag + cancel_mode:'tag:...' to replace it. Use `compact: false` to get the raw event stream instead (useful for debugging or inspecting server-side expansion of per-note expression).")]
+    fn get_fugue(&self, Parameters(req): Parameters<GetFugueRequest>) -> Result<CallToolResult, McpError> {
+        let result = match FugueBridge::get_definition(&req.instance, req.data.id) {
+            Ok(Some(def)) => {
+                let body = if req.data.compact {
+                    serde_json::to_string_pretty(&compact_fugue_view(&def))
+                } else {
+                    serde_json::to_string_pretty(&def)
+                };
+                body.unwrap_or_else(|_| "error serializing fugue".to_string())
+            }
+            Ok(None) => format!(
+                "No fugue with id {} on instance '{}'. Call list_fugues to see active IDs.",
+                req.data.id, req.instance
+            ),
+            Err(e) => format!("Error: {}", e),
+        };
+        Ok(CallToolResult::success(vec![Content::text(result)]))
+    }
+
     /// Cancel a specific fugue by ID.
     #[tool(description = "Cancel a specific fugue by its ID. Sends note-offs for any active notes and stops playback. Use the fugue_id returned by queue_fugue.")]
     fn cancel_fugue(&self, Parameters(req): Parameters<CancelFugueRequest>) -> Result<CallToolResult, McpError> {
@@ -443,5 +468,237 @@ impl ServerHandler for DropletsMcp {
         log::info!("MCP: call_tool '{}' with args: {:?}", request.name, request.arguments);
         let tool_context = ToolCallContext::new(self, request, context);
         self.tool_router.call(tool_context).await
+    }
+}
+
+// =============================================================================
+// Compact read-back view for get_fugue
+// =============================================================================
+
+/// Serialize an interpolation mode using its serde tag so round-tripping
+/// through queue_fugue hits the same parser. `InterpolationMode` derives
+/// snake_case serde, which matches what the LLM writes on input.
+fn interp_tag(mode: InterpolationMode) -> &'static str {
+    match mode {
+        InterpolationMode::Linear => "linear",
+        InterpolationMode::Exp => "exp",
+        InterpolationMode::Log => "log",
+        InterpolationMode::None => "none",
+    }
+}
+
+/// Render a point tuple with the curve tag optional — matches the
+/// `[beat, value]` / `[beat, value, curve]` form the input side accepts.
+/// `curve` is only emitted when present AND not the fugue-level default,
+/// keeping the serialization compact on typical ramps.
+fn point_json(beat: f64, value: serde_json::Value, curve: Option<InterpolationMode>, lane_default: InterpolationMode) -> serde_json::Value {
+    match curve {
+        Some(c) if c != lane_default => serde_json::json!([beat, value, interp_tag(c)]),
+        _ => serde_json::json!([beat, value]),
+    }
+}
+
+/// Fold a FugueDefinition's event stream back into the compact lane-grouped
+/// shape the LLM wrote on input to queue_fugue. Notes are paired by
+/// (channel, note) matching the next NoteOff; CC events bucket by
+/// (channel, cc); per-note expression lanes bucket by (channel, note).
+///
+/// Lossy on per-note expression: the original input used sparse anchors
+/// (2–4 points), but the fugue scheduler expands them server-side to ~32
+/// events/beat. The dense stream is what shows up here. That's fine for
+/// the "what is this fugue currently doing" use case; not a full round-trip
+/// of the LLM's original input.
+fn compact_fugue_view(def: &FugueDefinition) -> serde_json::Value {
+    use std::collections::VecDeque;
+
+    // Pair NoteOn with the next NoteOff on the same (channel, note). A FIFO
+    // per key handles re-triggers cleanly. Any notes still held at the end
+    // of the fugue get duration = duration_beats - on_beat (fugue boundary).
+    let mut open_notes: HashMap<(u8, u8), VecDeque<(f64, u8)>> = HashMap::new();
+    let mut notes: Vec<serde_json::Value> = Vec::new();
+    let mut cc_lanes: HashMap<(u8, u8), Vec<serde_json::Value>> = HashMap::new();
+    let mut bend_lanes: HashMap<(u8, u8), Vec<serde_json::Value>> = HashMap::new();
+    let mut pressure_lanes: HashMap<(u8, u8), Vec<serde_json::Value>> = HashMap::new();
+    // Keep insertion order of lanes stable — matches the order they first
+    // appeared in the event stream, which is deterministic across reads.
+    let mut cc_order: Vec<(u8, u8)> = Vec::new();
+    let mut bend_order: Vec<(u8, u8)> = Vec::new();
+    let mut pressure_order: Vec<(u8, u8)> = Vec::new();
+
+    let emit_note = |on_beat: f64, off_beat: f64, channel: u8, note: u8, velocity: u8| -> serde_json::Value {
+        serde_json::json!({
+            "beat": on_beat,
+            "note": note,
+            "duration": (off_beat - on_beat).max(0.0),
+            "velocity": velocity,
+            // 1-indexed to match the LLM input schema (channel 1..=16).
+            "channel": channel.saturating_add(1).min(16),
+        })
+    };
+
+    for timed in &def.events {
+        let beat = timed.beat_offset;
+        match timed.event {
+            FugueEvent::NoteOn { channel, note, velocity } => {
+                open_notes.entry((channel, note)).or_default().push_back((beat, velocity));
+            }
+            FugueEvent::NoteOff { channel, note } => {
+                if let Some(q) = open_notes.get_mut(&(channel, note)) {
+                    if let Some((on_beat, vel)) = q.pop_front() {
+                        notes.push(emit_note(on_beat, beat, channel, note, vel));
+                    }
+                }
+            }
+            FugueEvent::Cc { channel, cc, value, curve } => {
+                let key = (channel, cc);
+                if !cc_lanes.contains_key(&key) {
+                    cc_order.push(key);
+                }
+                cc_lanes.entry(key).or_default().push(
+                    point_json(beat, serde_json::json!(value), curve, def.cc_interpolation),
+                );
+            }
+            FugueEvent::PerNotePitchBend { channel, note, semitones } => {
+                let key = (channel, note);
+                if !bend_lanes.contains_key(&key) {
+                    bend_order.push(key);
+                }
+                bend_lanes.entry(key).or_default().push(
+                    serde_json::json!([beat, semitones]),
+                );
+            }
+            FugueEvent::PerNotePressure { channel, note, pressure } => {
+                let key = (channel, note);
+                if !pressure_lanes.contains_key(&key) {
+                    pressure_order.push(key);
+                }
+                pressure_lanes.entry(key).or_default().push(
+                    serde_json::json!([beat, pressure]),
+                );
+            }
+        }
+    }
+
+    // Flush dangling note-ons against the fugue's end.
+    for ((channel, note), q) in open_notes {
+        for (on_beat, vel) in q {
+            notes.push(emit_note(on_beat, def.duration_beats, channel, note, vel));
+        }
+    }
+
+    let cc: Vec<serde_json::Value> = cc_order.into_iter().map(|(channel, cc)| {
+        serde_json::json!({
+            "cc": cc,
+            "channel": channel.saturating_add(1).min(16),
+            "points": cc_lanes.remove(&(channel, cc)).unwrap_or_default(),
+        })
+    }).collect();
+
+    let pitch_bends: Vec<serde_json::Value> = bend_order.into_iter().map(|(channel, note)| {
+        serde_json::json!({
+            "note": note,
+            "channel": channel.saturating_add(1).min(16),
+            "points": bend_lanes.remove(&(channel, note)).unwrap_or_default(),
+        })
+    }).collect();
+
+    let pressures: Vec<serde_json::Value> = pressure_order.into_iter().map(|(channel, note)| {
+        serde_json::json!({
+            "note": note,
+            "channel": channel.saturating_add(1).min(16),
+            "points": pressure_lanes.remove(&(channel, note)).unwrap_or_default(),
+        })
+    }).collect();
+
+    let mut out = serde_json::Map::new();
+    out.insert("id".into(), serde_json::json!(def.id.to_string()));
+    if let Some(tag) = &def.tag {
+        out.insert("tag".into(), serde_json::json!(tag));
+    }
+    out.insert("duration_beats".into(), serde_json::json!(def.duration_beats));
+    out.insert("loop_mode".into(), serde_json::to_value(def.loop_mode).unwrap_or(serde_json::Value::Null));
+    out.insert("quantize".into(), serde_json::to_value(def.quantize).unwrap_or(serde_json::Value::Null));
+    out.insert("cancel_mode".into(), serde_json::to_value(&def.cancel_mode).unwrap_or(serde_json::Value::Null));
+    if def.cc_interpolation != InterpolationMode::Linear {
+        out.insert("cc_interpolation".into(), serde_json::json!(interp_tag(def.cc_interpolation)));
+    }
+    out.insert("type".into(), serde_json::json!("composite"));
+    out.insert("notes".into(), serde_json::Value::Array(notes));
+    out.insert("cc".into(), serde_json::Value::Array(cc));
+    out.insert("pitch_bends".into(), serde_json::Value::Array(pitch_bends));
+    out.insert("pressures".into(), serde_json::Value::Array(pressures));
+    serde_json::Value::Object(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fugue::FugueDefinition;
+
+    fn def_with_events(events: Vec<TimedFugueEvent>, duration: f64) -> FugueDefinition {
+        FugueDefinition::new(events, duration).with_tag("test")
+    }
+
+    #[test]
+    fn compact_view_pairs_note_on_off() {
+        let events = vec![
+            TimedFugueEvent::note_on(0.0, 0, 60, 100),
+            TimedFugueEvent::note_off(1.0, 0, 60),
+        ];
+        let v = compact_fugue_view(&def_with_events(events, 4.0));
+        let notes = v.get("notes").and_then(|n| n.as_array()).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].get("note").and_then(|n| n.as_u64()), Some(60));
+        assert_eq!(notes[0].get("duration").and_then(|n| n.as_f64()), Some(1.0));
+        assert_eq!(notes[0].get("velocity").and_then(|n| n.as_u64()), Some(100));
+        // 0-indexed internally → 1-indexed on wire.
+        assert_eq!(notes[0].get("channel").and_then(|n| n.as_u64()), Some(1));
+    }
+
+    #[test]
+    fn compact_view_closes_dangling_note_at_fugue_end() {
+        // A note-on with no matching note-off — duration runs to the fugue's
+        // declared end. Covers notes that happen to be still held when the
+        // fugue finishes its cycle.
+        let events = vec![TimedFugueEvent::note_on(0.0, 0, 60, 100)];
+        let v = compact_fugue_view(&def_with_events(events, 4.0));
+        let notes = v.get("notes").and_then(|n| n.as_array()).unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].get("duration").and_then(|n| n.as_f64()), Some(4.0));
+    }
+
+    #[test]
+    fn compact_view_buckets_cc_by_channel_and_cc() {
+        let events = vec![
+            TimedFugueEvent::cc(0.0, 0, 74, 30),
+            TimedFugueEvent::cc(2.0, 0, 74, 110),
+            TimedFugueEvent::cc(0.0, 0, 1, 0),
+            TimedFugueEvent::cc(2.0, 0, 1, 127),
+        ];
+        let v = compact_fugue_view(&def_with_events(events, 4.0));
+        let cc_lanes = v.get("cc").and_then(|n| n.as_array()).unwrap();
+        assert_eq!(cc_lanes.len(), 2);
+        // Lane order matches first-seen order in the event stream.
+        assert_eq!(cc_lanes[0].get("cc").and_then(|c| c.as_u64()), Some(74));
+        assert_eq!(cc_lanes[1].get("cc").and_then(|c| c.as_u64()), Some(1));
+        let pts74 = cc_lanes[0].get("points").and_then(|p| p.as_array()).unwrap();
+        assert_eq!(pts74.len(), 2);
+    }
+
+    #[test]
+    fn compact_view_includes_tag_and_duration() {
+        let v = compact_fugue_view(&def_with_events(vec![], 8.0));
+        assert_eq!(v.get("tag").and_then(|t| t.as_str()), Some("test"));
+        assert_eq!(v.get("duration_beats").and_then(|d| d.as_f64()), Some(8.0));
+        assert_eq!(v.get("type").and_then(|t| t.as_str()), Some("composite"));
+    }
+
+    #[test]
+    fn compact_view_reports_empty_lanes_as_empty_arrays() {
+        let v = compact_fugue_view(&def_with_events(vec![], 4.0));
+        for field in ["notes", "cc", "pitch_bends", "pressures"] {
+            let arr = v.get(field).and_then(|a| a.as_array()).unwrap_or_else(|| panic!("{} missing", field));
+            assert!(arr.is_empty(), "{} should be empty", field);
+        }
     }
 }

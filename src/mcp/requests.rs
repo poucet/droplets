@@ -666,6 +666,25 @@ pub struct CancelFuguesByTagData {
     pub tag: String,
 }
 
+/// Request to fetch one fugue's full definition by ID.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct GetFugueData {
+    /// Fugue ID to fetch (returned by queue_fugue / list_fugues).
+    #[schemars(description = "Fugue ID to fetch (the same id list_fugues and queue_fugue return).")]
+    pub id: u64,
+
+    /// When true (default), return the compact lane-grouped view — same
+    /// shape the LLM writes on input to `queue_fugue`. When false, return
+    /// the raw event stream for debugging.
+    #[serde(default = "default_compact")]
+    #[schemars(description = "Return compact lane-grouped view (default true). Set false to get raw event stream for debugging.")]
+    pub compact: bool,
+}
+
+fn default_compact() -> bool {
+    true
+}
+
 // =============================================================================
 // Instance management types (these don't use the wrapper since instance is the subject)
 // =============================================================================
@@ -702,6 +721,7 @@ pub type RenameSlotRequest = InstanceRequest<RenameSlotData>;
 pub type QueueFugueRequest = InstanceRequest<QueueFugueData>;
 pub type CancelFugueRequest = InstanceRequest<CancelFugueData>;
 pub type CancelFuguesByTagRequest = InstanceRequest<CancelFuguesByTagData>;
+pub type GetFugueRequest = InstanceRequest<GetFugueData>;
 
 // =============================================================================
 // Default value functions
