@@ -1,3 +1,10 @@
+[env]
+# ts-rs writes generated TypeScript bindings here. Without this, plain
+# `cargo test` would dump them into `<crate>/bindings/` (ts-rs's default),
+# diverging from what `cargo xtask gen_types` uses. Keep both paths in sync
+# so the frontend always sees the latest types regardless of how tests ran.
+TS_RS_EXPORT_DIR = { value = "frontend/src/types", relative = true }
+
 [alias]
 # Build and bundle commands
 xtask = "run --package xtask --"

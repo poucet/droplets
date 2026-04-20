@@ -1,6 +1,11 @@
 /target
 Cargo.lock
 /target/*
+# ts-rs default output — we write to frontend/src/types via .cargo/config.toml
+/bindings/
+# Bitwig extension build artifacts (compiled classes, jar outputs, API jar)
+/extensions/bitwig/build/
+/extensions/bitwig/libs/
 /.vscode
 /.vscode/*
 /frontend/dist/
