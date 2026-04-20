@@ -6,6 +6,7 @@ import {
   getInstances,
   getSelf,
   getProjectLayout,
+  getSettings,
   renameInstance,
   cancelFugue,
   exportFugue,
@@ -26,13 +27,17 @@ import type {
 // thrash on every render.
 const EMPTY_INFOS: FugueInfo[] = [];
 const EMPTY_DEFS: Map<string, FugueDefinition> = new Map();
-import { FugueList, FugueViewer, Settings, DawLayout } from './components';
+import { FugueList, FugueViewer, MidiMapping, Settings, DawLayout } from './components';
 import { useTransport, useTimingSync } from './timing';
 
-type TabView = 'sequencer' | 'daw' | 'settings';
+type TabView = 'sequencer' | 'midi' | 'settings' | 'daw';
 
 const App: React.FC = () => {
   const [serverStatus, setServerStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
+  // MCP server URL — fetched once at mount, shown in the header as a copy
+  // affordance. Doesn't need to update live; the URL is static per-install.
+  const [mcpUrl, setMcpUrl] = useState<string>('');
+  const [mcpCopied, setMcpCopied] = useState(false);
 
   // Instance state
   const [instances, setInstances] = useState<InstanceInfo[]>([]);
@@ -68,7 +73,20 @@ const App: React.FC = () => {
   // GUI WebSocket. `null` until the first push; rendered as a "no extension
   // running" empty state.
   const [projectLayout, setProjectLayout] = useState<ProjectLayout | null>(null);
+  // DAW tab only makes sense when a host controller extension has actually
+  // pushed a layout. Hide it entirely when empty.
+  const dawTabVisible = projectLayout !== null && projectLayout.tracks.length > 0;
   const [layoutUpdatedAt, setLayoutUpdatedAt] = useState<number | null>(null);
+
+  // If the DAW layout disappears while the user is on the DAW tab, bounce
+  // them back to Sequencer so they don't get stuck on a tab that's no
+  // longer in the nav.
+  useEffect(() => {
+    if (activeTab === 'daw' && !dawTabVisible) {
+      setActiveTab('sequencer');
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dawTabVisible]);
 
   // Client-side interpolated transport (smooth animation)
   const transport = useTransport();
@@ -210,6 +228,7 @@ const App: React.FC = () => {
       setSelfId(r.id);
       setSelectedInstance(r.id);
     }).catch(() => {});
+    getSettings().then(s => setMcpUrl(s.mcp_url)).catch(() => {});
     fetchInstances();
     fetchProjectLayout();
 
@@ -256,7 +275,10 @@ const App: React.FC = () => {
     <div className="app">
       <header className="app-header">
         <div className="header-left">
-          <h1>Simply Droplets</h1>
+          <h1>
+            Simply Droplets
+            <span className="app-version">0.1.0</span>
+          </h1>
           <span className="subtitle">AI Parameter Bridge</span>
         </div>
         <nav className="tab-nav">
@@ -267,10 +289,10 @@ const App: React.FC = () => {
             Sequencer
           </button>
           <button
-            className={`tab-btn ${activeTab === 'daw' ? 'active' : ''}`}
-            onClick={() => setActiveTab('daw')}
+            className={`tab-btn ${activeTab === 'midi' ? 'active' : ''}`}
+            onClick={() => setActiveTab('midi')}
           >
-            DAW
+            MIDI Mapping
           </button>
           <button
             className={`tab-btn ${activeTab === 'settings' ? 'active' : ''}`}
@@ -278,6 +300,14 @@ const App: React.FC = () => {
           >
             Settings
           </button>
+          {dawTabVisible && (
+            <button
+              className={`tab-btn ${activeTab === 'daw' ? 'active' : ''}`}
+              onClick={() => setActiveTab('daw')}
+            >
+              DAW
+            </button>
+          )}
         </nav>
         <div className="instance-selector">
           {instances.length > 1 && (
@@ -320,16 +350,37 @@ const App: React.FC = () => {
           )}
         </div>
         <div className="header-right">
-          <div className="transport-info">
-            <span className="transport-beat">{transport.beat.toFixed(2)}</span>
-            <span className="transport-tempo">{transport.tempo.toFixed(0)} BPM</span>
-            <span className={`transport-status ${transport.playing ? 'playing' : 'stopped'}`}>
-              {transport.playing ? '▶' : '■'}
-            </span>
+          <div className="header-right-top">
+            <div className="transport-info">
+              <span className="transport-beat">{transport.beat.toFixed(2)}</span>
+              <span className="transport-tempo">{transport.tempo.toFixed(0)} BPM</span>
+              <span className={`transport-status ${transport.playing ? 'playing' : 'stopped'}`}>
+                {transport.playing ? '▶' : '■'}
+              </span>
+            </div>
+            <div className="server-status">
+              <span className={`status-dot ${serverStatus}`}></span>
+            </div>
           </div>
-          <div className="server-status">
-            <span className={`status-dot ${serverStatus}`}></span>
-          </div>
+          {mcpUrl && (
+            <button
+              className={`mcp-url ${mcpCopied ? 'copied' : ''}`}
+              title="Click to copy MCP server URL"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(mcpUrl);
+                  setMcpCopied(true);
+                  setTimeout(() => setMcpCopied(false), 1500);
+                } catch {
+                  // Clipboard API can fail in non-secure contexts; best-effort
+                }
+              }}
+            >
+              <span className="mcp-url-label">MCP</span>
+              <code className="mcp-url-value">{mcpUrl}</code>
+              {mcpCopied && <span className="mcp-url-status">copied</span>}
+            </button>
+          )}
         </div>
       </header>
 
@@ -359,6 +410,9 @@ const App: React.FC = () => {
               )}
             </div>
           </div>
+        ) : activeTab === 'midi' ? (
+          /* MIDI Mapping Tab — per-instance CC slot editor */
+          <MidiMapping instance={selectedInstance} />
         ) : activeTab === 'daw' ? (
           /* DAW Tab — live view of what the host controller extension has pushed */
           <DawLayout
@@ -368,7 +422,7 @@ const App: React.FC = () => {
           />
         ) : activeTab === 'settings' ? (
           /* Settings Tab */
-          <Settings instance={selectedInstance} />
+          <Settings />
         ) : null}
       </main>
     </div>

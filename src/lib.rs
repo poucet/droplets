@@ -214,10 +214,12 @@ impl<'a> PluginStateImpl for DropletMainThread<'a> {
             .collect();
 
         let instance_name = mcp::CcBridge::get_name(id);
+        let custom_instructions = fugue::settings::get_settings().custom_instructions;
 
         let state = serde_json::json!({
             "slots": slots,
             "instance_name": instance_name,
+            "custom_instructions": custom_instructions,
         });
 
         let json = serde_json::to_vec(&state).map_err(|_| PluginError::Message("serialize failed"))?;
@@ -269,6 +271,19 @@ impl<'a> PluginStateImpl for DropletMainThread<'a> {
 
         if let Some(name) = state.get("instance_name").and_then(|v| v.as_str()) {
             let _ = mcp::CcBridge::rename(&id, name);
+        }
+
+        // Restore custom instructions (per-project LLM context). These live
+        // in the global settings singleton — the MCP server reads them at
+        // session start and merges them into the system prompt. If multiple
+        // Droplets instances exist in the project, last-loaded wins; that's
+        // fine since instructions are session-scoped, not instance-scoped.
+        if let Some(custom) = state.get("custom_instructions").and_then(|v| v.as_str()) {
+            let mut settings = fugue::settings::get_settings();
+            if settings.custom_instructions != custom {
+                settings.custom_instructions = custom.to_string();
+                let _ = fugue::settings::update_settings(settings);
+            }
         }
 
         // Intentionally ignore any persisted `fugues` array. Fugues are live

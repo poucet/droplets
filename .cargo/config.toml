@@ -18,9 +18,12 @@ bundle-vst3-debug = "run --package xtask -- build --profile debug --format vst3"
 bundle-clap-release = "run --package xtask -- build --profile release --format clap"
 bundle-vst3-release = "run --package xtask -- build --profile release --format vst3"
 
-# Run standalone binary
-standalone = "run --bin droplets-standalone --features=standalone"
-standalone-release = "run --bin droplets-standalone --release --features=standalone"
+# Run standalone binary — routes through xtask so the frontend is rebuilt
+# (gen_types + npm build) before launching, matching what `cargo xtask build`
+# does on the plugin side. Use `cargo standalone -- <extra args>` to forward
+# args to the binary itself.
+standalone = "run --package xtask -- standalone"
+standalone-release = "run --package xtask -- standalone --profile release"
 
 # Quick development aliases
 dev = "build"

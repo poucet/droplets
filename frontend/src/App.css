@@ -27,6 +27,15 @@
   gap: 2px;
 }
 
+.app-version {
+  font-size: 0.65rem;
+  font-weight: 400;
+  color: #888;
+  margin-left: 6px;
+  vertical-align: middle;
+  letter-spacing: 0.03em;
+}
+
 .app-header h1 {
   font-size: 1.4rem;
   margin: 0;
@@ -42,8 +51,60 @@
 
 .header-right {
   display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.header-right-top {
+  display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.mcp-url {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+  color: #ccc;
+  padding: 2px 6px;
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.mcp-url:hover {
+  background: rgba(0, 0, 0, 0.5);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+.mcp-url.copied {
+  border-color: rgba(100, 180, 255, 0.5);
+  color: #fff;
+}
+
+.mcp-url-label {
+  color: #888;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.mcp-url-value {
+  font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+  font-size: 0.7rem;
+  color: inherit;
+  background: none;
+  padding: 0;
+}
+
+.mcp-url-status {
+  font-size: 0.65rem;
+  color: rgba(100, 180, 255, 0.9);
 }
 
 /* Tab Navigation */
@@ -179,6 +240,8 @@
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Sequencer View */

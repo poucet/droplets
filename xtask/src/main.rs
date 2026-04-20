@@ -49,6 +49,19 @@ enum Commands {
     },
     /// Generate TypeScript types from Rust structs
     GenTypes,
+    /// Run the standalone binary with the frontend rebuilt first. This is the
+    /// `cargo standalone` entry point — mirrors what `cargo xtask build` does
+    /// on the plugin side (gen_types + npm build) so UI changes show up
+    /// without needing a separate manual step.
+    Standalone {
+        /// Build profile to use
+        #[arg(long, short, default_value = "debug")]
+        profile: Profile,
+
+        /// Extra args forwarded to the standalone binary after `--`.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        extra: Vec<String>,
+    },
 }
 
 #[derive(ValueEnum, Clone, Copy)]
@@ -255,9 +268,41 @@ fn main() -> anyhow::Result<()> {
         Commands::GenTypes => {
             gen_types()?;
         }
+        Commands::Standalone { profile, extra } => {
+            standalone(profile, extra)?;
+        }
     }
 
     Ok(())
+}
+
+/// Rebuild frontend types + bundle, then run the standalone binary. Mirrors
+/// the `cargo xtask build` preamble so `cargo standalone` picks up UI edits
+/// without a manual `npm run build`.
+fn standalone(profile: Profile, extra: Vec<String>) -> anyhow::Result<()> {
+    gen_types()?;
+    build_frontend()?;
+
+    let mut cmd = Command::new(cargo_cmd());
+    cmd.arg("run")
+        .args(["--bin", "droplets-standalone"])
+        .args(["--features", "standalone"]);
+    if matches!(profile, Profile::Release) {
+        cmd.arg("--release");
+    }
+    if !extra.is_empty() {
+        cmd.arg("--");
+        cmd.args(&extra);
+    }
+    let status = cmd.status()?;
+    if !status.success() {
+        return Err(anyhow::anyhow!("standalone binary exited with non-zero status"));
+    }
+    Ok(())
+}
+
+fn cargo_cmd() -> String {
+    env::var("CARGO").unwrap_or_else(|_| "cargo".to_string())
 }
 
 // ---------------------------------------------------------------------------
