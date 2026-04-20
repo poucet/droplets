@@ -18,6 +18,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use super::bridge::CcBridge;
 use super::requests::midi_to_name;
 
 /// Project-wide snapshot pushed by the host controller extension.
@@ -173,6 +174,27 @@ pub struct InstanceSummary {
     /// when no layout data is available or the chain has only effects.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub primary_device: Option<PrimaryDevice>,
+    /// Per-slot hints: what is each of the 16 plugin slots currently named? The
+    /// LLM reads this to decide which slot to target when automating a synth
+    /// parameter — e.g. if slot 0's name is "Filter Cutoff", a `slot` fugue
+    /// targeting slot 0 will drive that mapped parameter in the DAW. Only
+    /// non-default names are included (generic "Slot N" entries are elided to
+    /// keep the hint surface tight).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub slots: Vec<SlotHint>,
+}
+
+/// One slot's name hint for the LLM. `cc` lists the slot's backing MIDI CC
+/// number, kept for parity with the standalone hardware path — for host-param
+/// automation in a DAW, the LLM should use a `slot` fugue lane keyed by
+/// `index`, not emit raw CC.
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
+pub struct SlotHint {
+    pub index: u8,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cc: Option<u8>,
 }
 
 /// A compact view of the track's primary sound source for tier 1.
@@ -241,11 +263,31 @@ impl ProjectState {
                 let track = layout.tracks.iter().find(|t| {
                     t.droplets_instance_id.as_deref() == Some(id.as_str())
                 });
+                // Slot hints come from the running plugin instance's slot
+                // store (per-instance — each Droplets has its own 16 slots,
+                // names, CC mappings). Filter out slots still on the generic
+                // default "Slot N" name: until the user or extension has set
+                // a meaningful label, there's nothing useful to hint to the
+                // LLM and the noise would drown the real hints.
+                let slots = CcBridge::get_slots(id)
+                    .map(|slot_infos| {
+                        slot_infos
+                            .into_iter()
+                            .filter(|s| !is_default_slot_name(s.index, &s.name))
+                            .map(|s| SlotHint {
+                                index: s.index as u8,
+                                name: s.name,
+                                cc: s.cc,
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
                 InstanceSummary {
                     id: id.clone(),
                     name: name.clone(),
                     track_name: track.map(|t| t.track_name.clone()),
                     primary_device: track.and_then(|t| pick_primary_device(&t.devices)),
+                    slots,
                 }
             })
             .collect();
@@ -259,6 +301,18 @@ impl ProjectState {
 
         Self { instances, other_tracks, layout_available }
     }
+}
+
+/// Is this slot still on its factory default name? Used to hide unconfigured
+/// slots from `get_project_state` — the defaults advertise standard-CC names
+/// ("Filter Cutoff", "Mod Wheel") that don't actually control anything until
+/// the user maps the slot, so surfacing them as hints would mislead the LLM.
+/// Once the user renames a slot (directly via `rename_slot` MCP tool, the
+/// plugin UI, or the Bitwig extension mirroring a Remote Controls Page 1
+/// name), this returns false and the hint becomes visible.
+fn is_default_slot_name(index: usize, name: &str) -> bool {
+    let (_, default_name) = crate::params::default_cc_config(index);
+    name == default_name
 }
 
 /// Pick the primary sound source on a chain: first instrument or drum

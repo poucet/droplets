@@ -46,7 +46,7 @@ pub struct CcSlot {
     pub learning: AtomicBool,
 }
 
-fn default_cc_config(index: usize) -> (u8, String) {
+pub fn default_cc_config(index: usize) -> (u8, String) {
     match index {
         0 => (1, "Mod Wheel".to_string()),
         1 => (2, "Breath".to_string()),

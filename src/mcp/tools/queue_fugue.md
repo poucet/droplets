@@ -4,9 +4,10 @@ Queue one or more fugues for transport-synchronized playback. Each fugue is atom
 
 ## Fugue types (use the `type` field)
 
-- **`composite`** — PREFERRED for single-instrument moments. Bundles notes + cc lanes + per-note bend lanes + per-note pressure lanes in ONE fugue. Fields: `notes` (required), `cc` (array of `{cc, points, interpolation?}`), `pitch_bends` (array of `{note, points, interpolation?}`), `pressures` (array of `{note, points, interpolation?}`). Everything optional except `notes`.
+- **`composite`** — PREFERRED for single-instrument moments. Bundles notes + cc lanes + slot lanes + per-note bend lanes + per-note pressure lanes in ONE fugue. Fields: `notes` (required), `cc` (array of `{cc, points, interpolation?}`), `slots` (array of `{slot, points, interpolation?}`), `pitch_bends` (array of `{note, points, interpolation?}`), `pressures` (array of `{note, points, interpolation?}`). Everything optional except `notes`.
 - **`notes`** — single-concern: just notes. Use when this part needs to be replaceable independently (bass swap while melody plays).
-- **`cc`** — single-concern CC lane. Fields: `cc`, `points`, `interpolation?`.
+- **`slot`** — single-concern slot-param automation. Fields: `slot` (0–15), `points` (values 0.0–1.0), `interpolation?`. **Preferred over `cc` for automating soft-synth parameters inside a DAW** — the user maps slots to synth params natively; you drive slots and the DAW records real automation.
+- **`cc`** — single-concern CC lane for hardware targets (external MIDI synths, CC-addressable mixers). Inside a DAW, prefer `slot`. Fields: `cc`, `points`, `interpolation?`.
 - **`per_note_pitch_bend`** / **`per_note_pressure`** — single-concern per-note expression on one held note. Fields: `note`, `points`, `interpolation?`.
 
 ## When to pick which

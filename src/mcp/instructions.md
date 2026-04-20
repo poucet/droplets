@@ -73,22 +73,33 @@ Reference (when you need to think in numbers):
 - Melody / lead:          60–84  (C3–C5)
 - Lead / top-line hooks:  72–96  (C4–C6)
 
-### Common CC numbers (widely supported, but individual synths may remap)
-- CC 1   — Modulation wheel (typically adds vibrato / depth)
-- CC 7   — Channel volume (fader level)
-- CC 10  — Pan (0 = left, 64 = center, 127 = right)
-- CC 11  — Expression (for dynamics — preferred over volume for swells)
-- CC 64  — Sustain pedal (0–63 = off, 64–127 = on)
-- CC 71  — Resonance / filter Q
-- CC 72  — Release time
-- CC 73  — Attack time
-- CC 74  — Filter cutoff / brightness  ← the classic filter sweep CC
-- CC 91  — Reverb send amount
-- CC 93  — Chorus / mod-FX send amount
-- CC 120 — All sound off (panic)
-- CC 123 — All notes off
+### Automating synth parameters — use `slot` fugues, not `cc`
 
-When the user asks for a "filter sweep", default to CC 74. For "volume swell" prefer CC 11. For "mod wheel" it's CC 1.
+Droplets exposes 16 **slot parameters** per instance as native host automation params. The user maps each slot to a synth control once in their DAW (right-click → Map in Bitwig, Configure → drag in Ableton), then you drive slots with `slot` fugue lanes and the DAW records the automation natively on the target parameter. This is the only reliable way to automate modern soft synths (Polysynth, Serum, Pigments, Omnisphere, Vital, …) — they ignore raw MIDI CCs out of the box.
+
+**How to automate a synth parameter:**
+1. Read the `slots` array under each instance in `get_project_state`. Each configured slot looks like `{index: 0, name: "Filter Cutoff"}` — the index is what you target, the name tells you what it controls.
+2. Queue a `slot` fugue (single-concern) or add a `slots` lane inside a `composite`:
+   ```json
+   {"type": "slot", "slot": 0, "points": [[0,0.2],[4,1.0,"exp"],[8,0.2,"log"]]}
+   ```
+   Values are normalized `0.0–1.0` (not `0–127`). Per-point curves, lane `interpolation`, and default-curve behavior match CC lanes exactly.
+3. If `slots` is empty or doesn't list the parameter the user wants, ask them to map + rename a slot rather than guessing.
+
+**Slot vs CC:**
+- `slot` — default for synth-parameter automation in a DAW. Works with soft synths, records as real automation, slot-name survives preset changes.
+- `cc` — for external hardware targets (MIDI synth modules, CC-addressable mixers). Slots never reach the MIDI bus; only `cc` lanes do.
+
+### CC reference — for hardware / standalone use only
+
+When a `cc` fugue is the right choice (hardware target or the user explicitly wants MIDI CC output), these are the GM-standard conventions:
+
+- CC 1   — Modulation wheel  |  CC 7   — Channel volume  |  CC 10  — Pan
+- CC 11  — Expression  |  CC 64  — Sustain pedal  |  CC 71  — Filter resonance
+- CC 73  — Attack  |  CC 74  — Filter cutoff  |  CC 91  — Reverb send
+- CC 93  — Chorus send  |  CC 120 — All sound off (panic)  |  CC 123 — All notes off
+
+**Inside a DAW, these CC numbers are almost always dead MIDI.** Prefer `slot` for in-DAW automation; only fall back to these when routing to hardware.
 
 ## Musical defaults that actually sound good
 - **Always loop by default** (`loop_mode: "forever"`). Write short (2–8 bar) fugues and replace them via tag swap as the piece evolves. Only use one-shots for stings, fills, and accents.
