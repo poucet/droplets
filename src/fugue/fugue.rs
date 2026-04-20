@@ -145,6 +145,50 @@ impl Fugue {
         self.start_beat += self.definition.duration_beats;
     }
 
+    /// Re-anchor a looping fugue so its phase matches the given transport beat.
+    ///
+    /// Called on transport start and on relocate/jump so that forever-looping
+    /// fugues resume as if they'd been playing along with the song timeline
+    /// (phase-locked to the DAW, not wall-clock). Caller must emit note-offs
+    /// for active notes before invoking — this clears all runtime state.
+    ///
+    /// Returns `true` if the fugue should remain; `false` if it should be
+    /// dropped (mid-flight one-shots that can't meaningfully resume).
+    pub fn phase_lock(&mut self, transport_beat: f64) -> bool {
+        let dur = self.definition.duration_beats;
+        if dur <= 0.0 {
+            return true;
+        }
+
+        // Waiting fugues just re-quantize normally on the next buffer.
+        if self.waiting_for_start {
+            self.target_start_beat = None;
+            return true;
+        }
+
+        match self.definition.loop_mode {
+            LoopMode::Forever => {}
+            LoopMode::Once | LoopMode::Times(_) => {
+                // A mid-flight one-shot can't be meaningfully phase-locked —
+                // its events are in the past. Mark finished; caller drops.
+                self.cancelled = true;
+                return false;
+            }
+        }
+
+        let phase = (transport_beat - self.start_beat).rem_euclid(dur);
+        self.start_beat = transport_beat - phase;
+        self.current_loop = 0;
+        self.next_event_index = self
+            .definition
+            .events
+            .partition_point(|e| e.beat_offset < phase);
+        self.active_ramps.clear();
+        self.clear_active_notes();
+        self.cc_state = default_cc_state();
+        true
+    }
+
     /// Get info about this fugue for listing
     pub fn info(&self, current_beat: f64, time_sig_numerator: u32) -> FugueInfo {
         let progress = if self.waiting_for_start {

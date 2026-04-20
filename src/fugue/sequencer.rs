@@ -80,16 +80,17 @@ impl FugueSequencer {
         self.was_playing = true;
 
         if just_started {
-            // Transport just started - sync last_beat to current position
-            // This is NOT a jump, just a normal start from wherever the playhead is
+            // Transport just started - phase-lock all looping fugues to the
+            // new transport position so they resume as if they'd been playing
+            // along with the song timeline.
+            self.phase_lock_all(current_beat);
             self.last_beat = current_beat;
         } else {
-            // Transport was already playing - detect jumps (seeking)
+            // Transport was already playing - detect jumps (seeking).
             let beat_jump = (current_beat - self.last_beat).abs();
             let expected_advance = tempo_bpm / 60.0 / self.sample_rate * frames as f64;
             if beat_jump > expected_advance * 2.0 + 0.01 {
-                // Transport jumped while playing - send note-offs for all active notes
-                self.handle_transport_jump();
+                self.phase_lock_all(current_beat);
             }
         }
 
@@ -182,15 +183,21 @@ impl FugueSequencer {
         }
     }
 
-    /// Handle transport jump by sending note-offs for all active notes
-    fn handle_transport_jump(&mut self) {
-        for fugue in &mut self.fugues {
-            send_note_offs_for_fugue(fugue, &mut self.output_buffer);
-            // Reset fugue to waiting state
-            fugue.waiting_for_start = true;
-            fugue.next_event_index = 0;
-            fugue.target_start_beat = None;
-        }
+    /// Phase-lock all fugues to the given transport beat.
+    ///
+    /// Called on transport start and on relocate. Looping fugues are re-anchored
+    /// so their phase matches `transport_beat` (so beat 4 of a 4-beat loop lands
+    /// on transport beat 4, 8, 12, ...). Mid-flight one-shots can't meaningfully
+    /// resume, so they're dropped. Emits note-offs for all held notes first so
+    /// the synth doesn't get stuck.
+    fn phase_lock_all(&mut self, transport_beat: f64) {
+        let output_buffer = &mut self.output_buffer;
+        self.fugues.retain_mut(|f| {
+            if !f.get_active_notes().is_empty() {
+                send_note_offs_for_fugue(f, output_buffer);
+            }
+            f.phase_lock(transport_beat)
+        });
     }
 
     /// Start pending fugues whose quantization point has arrived.
