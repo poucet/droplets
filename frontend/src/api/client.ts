@@ -18,6 +18,7 @@ import type {
   LoopMode,
   QuantizeMode,
   CancelMode,
+  ProjectLayout,
 } from '../types';
 
 // Extend Window interface for simplyvst
@@ -97,6 +98,16 @@ export async function getFugues(instance = 'default'): Promise<FuguesResponse> {
 
 export async function getTransport(instance = 'default'): Promise<TransportResponse> {
   return apiFetch<TransportResponse>('/transport', instance);
+}
+
+/**
+ * Fetch the current DAW project layout — what the host controller
+ * extension last pushed. Returns an empty `{ tracks: [] }` when no
+ * extension is running. Used for the initial render of the DAW tab;
+ * subsequent updates flow through the WebSocket.
+ */
+export async function getProjectLayout(): Promise<ProjectLayout> {
+  return apiFetch<ProjectLayout>('/project_layout');
 }
 
 export async function getFugue(id: number, instance = 'default'): Promise<FugueResponse> {
@@ -233,11 +244,22 @@ export interface WsFuguesMessage {
   definitions: FuguesResponse['definitions'];
 }
 
-export type WsMessage = WsTransportMessage | WsFuguesMessage;
+/**
+ * Project layout pushed from the backend whenever the host controller
+ * extension (e.g. the Bitwig extension) sends a new snapshot. Flows
+ * through broadcast so the UI reflects DAW changes without polling.
+ */
+export interface WsProjectLayoutMessage {
+  type: 'project_layout';
+  tracks: ProjectLayout['tracks'];
+}
+
+export type WsMessage = WsTransportMessage | WsFuguesMessage | WsProjectLayoutMessage;
 
 export interface RealtimeCallbacks {
   onTransport?: (transport: TransportState) => void;
   onFugues?: (response: FuguesResponse) => void;
+  onProjectLayout?: (layout: ProjectLayout) => void;
   onConnect?: () => void;
   onDisconnect?: () => void;
   onError?: (error: Error) => void;
@@ -278,6 +300,12 @@ export class RealtimeConnection {
             infos: msg.infos,
             definitions: msg.definitions,
           });
+        } else if (msg.type === 'project_layout') {
+          console.debug(
+            '[droplets] WS project_layout:',
+            msg.tracks.length, 'tracks'
+          );
+          this.callbacks.onProjectLayout?.({ tracks: msg.tracks });
         }
       } catch (e) {
         console.error('Failed to parse realtime message:', e);

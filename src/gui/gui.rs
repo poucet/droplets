@@ -5,6 +5,7 @@
 use wry::dpi::LogicalSize;
 
 use crate::fugue::{FugueDefinition, FugueInfo, TransportState};
+use crate::mcp::project::ProjectLayout;
 
 pub const DEFAULT_GUI_SIZE: LogicalSize<f64> = LogicalSize::new(1000.0, 800.0);
 pub const MIN_GUI_SIZE: LogicalSize<f64> = LogicalSize::new(600.0, 500.0);
@@ -20,6 +21,9 @@ pub struct DropletGui {
     last_fugue_ids: Vec<u64>,
     /// Cache last waiting states to detect changes
     last_waiting_states: Vec<bool>,
+    /// Cache last-pushed project-layout JSON so the main-thread poll only
+    /// re-injects when the host extension actually pushed something new.
+    last_project_layout_json: Option<String>,
 }
 
 impl DropletGui {
@@ -31,6 +35,7 @@ impl DropletGui {
             last_transport: None,
             last_fugue_ids: Vec::new(),
             last_waiting_states: Vec::new(),
+            last_project_layout_json: None,
         }
     }
 
@@ -88,6 +93,40 @@ impl DropletGui {
                 defs_json
             );
             let _ = webview.evaluate_script(&js);
+        }
+    }
+
+    /// Push a project-layout update to the webview if it changed since
+    /// last push. Mirrors the transport/fugue pattern: serialize to JSON,
+    /// compare against cache, inject via `evaluate_script`. No-op when the
+    /// layout is identical to last push (avoids main-thread work).
+    pub fn push_project_layout(&mut self, layout: &ProjectLayout) {
+        let Ok(tracks_json) = serde_json::to_string(&layout.tracks) else {
+            log::warn!("gui: failed to serialize project layout tracks");
+            return;
+        };
+
+        if self.last_project_layout_json.as_deref() == Some(tracks_json.as_str()) {
+            return;
+        }
+        self.last_project_layout_json = Some(tracks_json.clone());
+
+        log::info!(
+            "gui: pushing project_layout to webview: {} tracks",
+            layout.tracks.len()
+        );
+
+        if let Some(webview) = &self.web_view {
+            // Frame matches the standalone WS shape so the frontend's
+            // `WsProjectLayoutMessage` dispatch works identically in both
+            // modes: { type: "project_layout", tracks: [...] }.
+            let js = format!(
+                "window.simplyvst._onRealtimeMessage({{\"type\":\"project_layout\",\"tracks\":{}}})",
+                tracks_json
+            );
+            if let Err(e) = webview.evaluate_script(&js) {
+                log::warn!("gui: evaluate_script for project_layout failed: {}", e);
+            }
         }
     }
 

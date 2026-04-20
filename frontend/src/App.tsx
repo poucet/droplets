@@ -7,6 +7,7 @@ import {
   getTransport,
   getInstances,
   getSelf,
+  getProjectLayout,
   renameInstance,
   noteOn,
   noteOff,
@@ -23,8 +24,9 @@ import type {
   FuguesResponse,
   ActivityEventDto,
   InstanceInfo,
+  ProjectLayout,
 } from './types';
-import { FugueList, FugueViewer, FugueComposer, Settings } from './components';
+import { FugueList, FugueViewer, FugueComposer, Settings, DawLayout } from './components';
 import type { ComposerFugue } from './components';
 import { useTransport, useTimingSync } from './timing';
 
@@ -32,7 +34,7 @@ import { useTransport, useTimingSync } from './timing';
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const getNoteName = (midi: number) => `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`;
 
-type TabView = 'sequencer' | 'monitor' | 'settings';
+type TabView = 'sequencer' | 'monitor' | 'daw' | 'settings';
 
 const App: React.FC = () => {
   const [slots, setSlots] = useState<SlotInfo[]>([]);
@@ -57,11 +59,31 @@ const App: React.FC = () => {
   // Tab navigation
   const [activeTab, setActiveTab] = useState<TabView>('sequencer');
 
+  // DAW project layout — pushed by the host controller extension over the
+  // GUI WebSocket. `null` until the first push; rendered as a "no extension
+  // running" empty state.
+  const [projectLayout, setProjectLayout] = useState<ProjectLayout | null>(null);
+  const [layoutUpdatedAt, setLayoutUpdatedAt] = useState<number | null>(null);
+
   // Client-side interpolated transport (smooth animation)
   const transport = useTransport();
   const syncTiming = useTimingSync();
 
   const realtimeRef = useRef<RealtimeConnection | null>(null);
+
+  const fetchProjectLayout = useCallback(async () => {
+    try {
+      const layout = await getProjectLayout();
+      if (layout.tracks.length > 0) {
+        setProjectLayout(layout);
+        setLayoutUpdatedAt(Date.now());
+      }
+    } catch (e) {
+      // Missing endpoint in older backends — silently tolerate so the UI
+      // doesn't spam errors before the rebuild lands.
+      console.debug('getProjectLayout unavailable:', e);
+    }
+  }, []);
 
   const fetchInstances = useCallback(async () => {
     try {
@@ -240,11 +262,16 @@ const App: React.FC = () => {
     fetchActivity();
     fetchFugues();
     fetchTransport();
+    fetchProjectLayout();
 
     // Setup realtime connection for transport/fugue updates
     const realtime = new RealtimeConnection({
       onTransport: syncTiming,
       onFugues: handleFuguesUpdate,
+      onProjectLayout: (layout) => {
+        setProjectLayout(layout);
+        setLayoutUpdatedAt(Date.now());
+      },
       onConnect: () => setServerStatus('connected'),
       onDisconnect: () => setServerStatus('connecting'),
       onError: () => setServerStatus('error'),
@@ -262,7 +289,7 @@ const App: React.FC = () => {
       clearInterval(interval);
       realtime.disconnect();
     };
-  }, [fetchInstances, fetchSlots, fetchActivity, fetchFugues, fetchTransport, handleFuguesUpdate, syncTiming]);
+  }, [fetchInstances, fetchSlots, fetchActivity, fetchFugues, fetchTransport, fetchProjectLayout, handleFuguesUpdate, syncTiming]);
 
   const formatTimestamp = (ts: bigint) => {
     const date = new Date(Number(ts));
@@ -297,6 +324,12 @@ const App: React.FC = () => {
             onClick={() => setActiveTab('monitor')}
           >
             Monitor
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'daw' ? 'active' : ''}`}
+            onClick={() => setActiveTab('daw')}
+          >
+            DAW
           </button>
           <button
             className={`tab-btn ${activeTab === 'settings' ? 'active' : ''}`}
@@ -493,6 +526,13 @@ const App: React.FC = () => {
               <p className="note-hint">Click and hold to play notes. Tests MIDI output routing.</p>
             </section>
           </div>
+        ) : activeTab === 'daw' ? (
+          /* DAW Tab — live view of what the host controller extension has pushed */
+          <DawLayout
+            layout={projectLayout}
+            lastUpdatedAt={layoutUpdatedAt}
+            hostConnected={projectLayout !== null && projectLayout.tracks.length > 0}
+          />
         ) : activeTab === 'settings' ? (
           /* Settings Tab */
           <Settings />

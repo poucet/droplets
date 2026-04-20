@@ -244,7 +244,12 @@ async fn handle_project_layout(
                 "project_layout received: {} tracks",
                 layout.tracks.len()
             );
-            CcBridge::set_project_layout(layout);
+            CcBridge::set_project_layout(layout.clone());
+            // Also push to the GUI WebSocket broadcast so any open UI tab
+            // updates without polling. Deliberately a direct call rather
+            // than a cross-crate trait — the two servers live in the same
+            // binary.
+            crate::gui::server::broadcast_project_layout(layout);
             (StatusCode::OK, "ok").into_response()
         }
         Err(e) => {

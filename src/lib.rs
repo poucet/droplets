@@ -169,6 +169,13 @@ impl<'a> PluginMainThread<'a, DropletShared<'a>> for DropletMainThread<'a> {
                     self.gui.push_fugues(&infos, &definitions);
                 }
             }
+
+            // Push DAW project layout from the host controller extension.
+            // `push_project_layout` short-circuits when nothing changed, so
+            // this is cheap even though we poll on every main-thread tick.
+            if let Some(layout) = mcp::CcBridge::get_project_layout() {
+                self.gui.push_project_layout(&layout);
+            }
         }
     }
 }

@@ -20,9 +20,48 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 
 use crate::fugue::{FugueBridge, TransportState};
+use crate::mcp::{CcBridge, project::ProjectLayout};
 use super::api;
+
+/// Broadcast channel for immediate project-layout updates to all connected
+/// GUI WebSocket sessions. Pushed to from the `/api/project_layout` POST
+/// handler and subscribed to by each `ws_handler` session, so a layout
+/// change in the host extension reaches every open UI tab in one hop (no
+/// polling).
+///
+/// Capacity is low because the payload is cheap and bursts coalesce at the
+/// extension side — we don't need large backlogs. Slow consumers that lag
+/// drop the oldest messages via broadcast's `Lagged` error, which is fine:
+/// we only care about the *latest* layout.
+const PROJECT_LAYOUT_CHANNEL_CAPACITY: usize = 16;
+static PROJECT_LAYOUT_TX: OnceLock<broadcast::Sender<ProjectLayout>> = OnceLock::new();
+
+fn project_layout_tx() -> &'static broadcast::Sender<ProjectLayout> {
+    PROJECT_LAYOUT_TX.get_or_init(|| broadcast::channel(PROJECT_LAYOUT_CHANNEL_CAPACITY).0)
+}
+
+/// Broadcast a new project layout to every connected GUI WebSocket client.
+///
+/// Called from `POST /api/project_layout` (GUI server) and from the MCP
+/// server's `POST /project_layout` handler — both land in Droplets via
+/// the host controller extension, and both need to reach the UI. Silent
+/// no-op when no clients are connected.
+pub fn broadcast_project_layout(layout: ProjectLayout) {
+    let track_count = layout.tracks.len();
+    match project_layout_tx().send(layout) {
+        Ok(n) => log::info!(
+            "broadcast_project_layout: sent {} tracks to {} WS subscriber(s)",
+            track_count, n
+        ),
+        Err(_) => log::info!(
+            "broadcast_project_layout: {} tracks stored, 0 WS subscribers (plugin-mode webview uses IPC instead)",
+            track_count
+        ),
+    }
+}
 
 /// Default port for the GUI server (plugin)
 pub const DEFAULT_GUI_PORT: u16 = 9998;
@@ -52,6 +91,10 @@ pub enum WsMessage {
     Transport(api::TransportResponse),
     /// Fugue list update (sent when fugues change)
     Fugues(api::FuguesResponse),
+    /// Project layout update from the host controller extension. Pushed
+    /// immediately on every `POST /api/project_layout` — no polling, so
+    /// the UI reflects DAW changes in ~one WebSocket round-trip.
+    ProjectLayout(ProjectLayout),
 }
 
 /// Interval for transport updates (client-side interpolation handles smooth animation)
@@ -96,6 +139,10 @@ async fn run_server(port: u16) {
         .route("/api/fugues", get(api_fugues))
         .route("/api/transport", get(api_transport))
         .route("/api/fugue/:id", get(api_fugue_by_id))
+        // Project layout from the host controller extension. GET returns
+        // the current snapshot for a tab opening fresh; POST is an
+        // alternate ingress (the MCP server on :9999 is the primary).
+        .route("/api/project_layout", get(api_get_project_layout).post(api_post_project_layout))
         // Actions
         .route("/api/start_learn/:slot", get(api_start_learn))
         .route("/api/cancel_learn", get(api_cancel_learn))
@@ -175,6 +222,33 @@ async fn api_fugues(Query(query): Query<InstanceQuery>) -> impl IntoResponse {
 async fn api_transport(Query(query): Query<InstanceQuery>) -> impl IntoResponse {
     let response = api::get_transport(&query.instance);
     json_response(response)
+}
+
+/// `GET /api/project_layout` — return the current layout snapshot, or an
+/// empty layout if no host controller extension has pushed yet. The UI
+/// uses this for its initial render; subsequent updates arrive via the
+/// WebSocket's `project_layout` message.
+async fn api_get_project_layout() -> impl IntoResponse {
+    let layout = CcBridge::get_project_layout().unwrap_or_default();
+    json_response(layout)
+}
+
+/// `POST /api/project_layout` — same shape as the MCP server's
+/// `/project_layout` endpoint (port 9999). Mirrored here so the Bitwig
+/// extension can push to either port; storage and broadcast are shared.
+async fn api_post_project_layout(body: axum::body::Bytes) -> impl IntoResponse {
+    match serde_json::from_slice::<ProjectLayout>(&body) {
+        Ok(layout) => {
+            log::info!("GUI /project_layout received: {} tracks", layout.tracks.len());
+            CcBridge::set_project_layout(layout.clone());
+            broadcast_project_layout(layout);
+            (StatusCode::OK, "ok").into_response()
+        }
+        Err(e) => {
+            log::warn!("GUI /project_layout parse error: {}", e);
+            (StatusCode::BAD_REQUEST, format!("parse error: {}", e)).into_response()
+        }
+    }
 }
 
 async fn api_fugue_by_id(
@@ -330,6 +404,9 @@ async fn handle_socket(socket: WebSocket, instance: String) {
     let send_task = tokio::spawn(async move {
         let mut transport_interval = tokio::time::interval(TRANSPORT_UPDATE_INTERVAL);
         let mut fugue_interval = tokio::time::interval(FUGUE_UPDATE_INTERVAL);
+        // Subscribe to project-layout pushes so the UI reflects DAW
+        // changes immediately — no polling.
+        let mut layout_rx = project_layout_tx().subscribe();
 
         let mut last_transport: Option<TransportState> = None;
         let mut last_fugue_ids: Vec<u64> = Vec::new();
@@ -375,6 +452,24 @@ async fn handle_socket(socket: WebSocket, instance: String) {
                         }
                         last_fugue_ids = current_ids;
                         last_waiting_states = current_waiting;
+                    }
+                }
+                layout_update = layout_rx.recv() => {
+                    match layout_update {
+                        Ok(layout) => {
+                            let msg = WsMessage::ProjectLayout(layout);
+                            if let Ok(json) = serde_json::to_string(&msg) {
+                                if sender.send(Message::Text(json)).await.is_err() {
+                                    break;
+                                }
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            // Dropped old layouts under load — fine, we only
+                            // care about the latest. Resync next push.
+                            log::debug!("GUI WS: dropped {} stale layouts", n);
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
             }

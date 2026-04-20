@@ -20,3 +20,11 @@ export type { SlotsResponse } from './SlotsResponse';
 export type { TimedFugueEvent } from './TimedFugueEvent';
 export type { TransportResponse } from './TransportResponse';
 export type { TransportState } from './TransportState';
+
+// DAW project layout (pushed from host controller extension)
+export type { ProjectLayout } from './ProjectLayout';
+export type { TrackContext } from './TrackContext';
+export type { Device } from './Device';
+export type { DrumPad } from './DrumPad';
+export type { Chain } from './Chain';
+export type { ParameterInfo } from './ParameterInfo';

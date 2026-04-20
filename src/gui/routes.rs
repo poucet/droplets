@@ -15,6 +15,8 @@ pub fn handle_request(path: &str, method: &str, body: &[u8], params: &Arc<Drople
         "/fugues" => handle_fugues(instance_id),
         "/transport" => handle_transport(instance_id),
         "/instances" => handle_instances(),
+        "/project_layout" if method == "GET" => handle_get_project_layout(),
+        "/project_layout" if method == "POST" => handle_post_project_layout(body),
         "/cancel_learn" => handle_cancel_learn(instance_id, params),
         "/clear_fugues" => handle_clear_fugues(instance_id),
         "/settings" if method == "GET" => handle_get_settings(),
@@ -69,7 +71,6 @@ fn handle_slots(instance: &str) -> String {
     match api::get_slots(instance) {
         Ok(response) => {
             let result = serde_json::to_string(&response).unwrap_or_else(|_| serialize_error("serialize failed"));
-            crate::logger::log_gui_event("slots_response", &format!("{} slots", response.slots.len()));
             result
         }
         Err(e) => serialize_error(&e),
@@ -94,6 +95,40 @@ fn handle_transport(instance: &str) -> String {
 fn handle_instances() -> String {
     let response = api::get_instances();
     serde_json::to_string(&response).unwrap_or_else(|_| serialize_error("serialize failed"))
+}
+
+/// `GET /api/project_layout` via the wry protocol. Returns the last layout
+/// pushed by the host controller extension, or an empty layout when nothing
+/// has been pushed yet.
+fn handle_get_project_layout() -> String {
+    let layout = crate::mcp::CcBridge::get_project_layout().unwrap_or_default();
+    log::info!(
+        "routes /project_layout GET: returning {} tracks",
+        layout.tracks.len()
+    );
+    serde_json::to_string(&layout)
+        .unwrap_or_else(|_| serialize_error("serialize failed"))
+}
+
+/// `POST /api/project_layout` via the wry protocol. Mirrors the MCP server
+/// endpoint on :9999 so the Bitwig extension can push to either path; both
+/// end up in the same storage and trigger the same broadcast.
+fn handle_post_project_layout(body: &[u8]) -> String {
+    match serde_json::from_slice::<crate::mcp::project::ProjectLayout>(body) {
+        Ok(layout) => {
+            log::info!(
+                "routes /project_layout POST received: {} tracks",
+                layout.tracks.len()
+            );
+            crate::mcp::CcBridge::set_project_layout(layout.clone());
+            crate::gui::server::broadcast_project_layout(layout);
+            serde_json::json!({ "ok": true }).to_string()
+        }
+        Err(e) => {
+            log::warn!("routes /project_layout POST parse error: {}", e);
+            serialize_error(&format!("parse error: {}", e))
+        }
+    }
 }
 
 fn handle_start_learn(slot_str: &str, _instance: &str, params: &Arc<DropletParams>) -> String {
