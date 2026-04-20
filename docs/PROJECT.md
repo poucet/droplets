@@ -9,7 +9,7 @@ architecture_updated: 2026-04-17
 
 **Problem:** Droplets is a CLAP/VST3 plugin that exposes MIDI 1.0/2.0 output to AI assistants via MCP, so LLMs can compose music inside a DAW. Direct per-note MCP calls are too slow for musical timing, so the core primitive is the **fugue** — a batched, tempo-quantized sequence scheduled from the audio thread with sample-accurate timing.
 
-**Current focus:** Phase 01 (demo prep) — shipping a live MCP-music demo on **2026-04-21** (4 days). Priorities: correct docs, a system prompt that actually describes the shipping schema, multi-instance validation, and UI stability on the demo machine. Stretch: per-note expressivity inside fugues.
+**Current focus:** Phase 01 (demo prep) — shipping a live MCP-music demo on **2026-04-23** (4 days). Priorities: correct docs, a system prompt that actually describes the shipping schema, multi-instance validation, and UI stability on the demo machine. Stretch: per-note expressivity inside fugues.
 
 **Notes:**
 - Uses `jj` (Jujutsu), not git. Commits: `jj commit -m "..."`.
