@@ -12,6 +12,7 @@ license = "MIT"
 # in one place and can be read via CARGO_PKG_* or parsed from Cargo.toml.
 [package.metadata.bundle]
 display_name = "Simply Droplets"
+vendor = "Simply Chris"
 clap_bundle_id = "com.simply-chris.simply-droplets"
 vst3_bundle_id = "com.simply-chris.simply-droplets.vst3"
 

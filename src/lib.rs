@@ -71,8 +71,15 @@ impl DefaultPluginFactory for DropletPlugin {
         #[cfg(not(clap_wrapper_vst3))]
         let features = [NOTE_EFFECT];
 
-        PluginDescriptor::new("com.simply-chris.simply-droplets", "Simply Droplets")
-            .with_vendor("Simply Chris")
+        // Bundle identity comes from `[package.metadata.bundle]` in
+        // Cargo.toml — see `build.rs`, which surfaces these values as
+        // compile-time env vars so the plugin descriptor and bundle-folder
+        // names stay in sync without maintaining them in two places.
+        PluginDescriptor::new(
+            env!("DROPLETS_CLAP_BUNDLE_ID"),
+            env!("DROPLETS_DISPLAY_NAME"),
+        )
+            .with_vendor(env!("DROPLETS_VENDOR"))
             .with_features(features)
     }
 
