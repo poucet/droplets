@@ -20,12 +20,11 @@ import java.util.UUID
 private const val NUM_TRACKS = 32
 private const val DEVICES_PER_TRACK = 16
 // Drum machines usually hold ~16 samples, max ~32, clustered in a ~2-octave range
-// around C0–C3 (GM convention: kick=36/C1, snare=38/D1, hat=42/F#1). Allocate 32
-// pad slots scrolled to MIDI 24 (C0 in Bitwig's C3=60 notation) — covers MIDI 24–55
-// (C0 to G2), which catches every realistic kit placement. Pads outside that range
-// won't surface in the layout.
+// starting at the GM kick (MIDI 36 = C1 in DAW C3=60 notation: kick=36, snare=38,
+// hat=42). Allocate 32 pad slots scrolled to MIDI 36 — covers MIDI 36–67 (C1 to G3),
+// which catches every realistic kit placement. Pads outside that range won't surface.
 private const val DRUM_PADS = 32
-private const val DRUM_BANK_SCROLL = 24
+private const val DRUM_BANK_SCROLL = 36
 private const val DEVICES_PER_PAD = 2
 private const val REBUILD_DEBOUNCE_MS = 150L
 
