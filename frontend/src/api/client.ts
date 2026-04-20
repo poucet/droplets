@@ -158,6 +158,33 @@ export async function setSlotChannel(slot: number, channel: number, instance = '
   return apiPost<{ channel: number }, OkResponse>(`/slots/${slot}/channel`, { channel }, instance);
 }
 
+/**
+ * Kick off a native OS drag of one or more fugues as a `.mid` file.
+ *
+ * This is plugin-mode only — it uses wry's IPC bridge to ask the Rust
+ * side to start an OS drag with the parent DAW window's handle. In
+ * standalone/dev contexts, the IPC bridge writes the file and reveals
+ * it in the file manager instead.
+ *
+ * Must be called from within a `mousedown` handler (not `click`). On
+ * macOS and Windows the OS drag must begin during the same mouse-down
+ * gesture the user initiated — by the time a click fires, it's too
+ * late to start tracking the drag.
+ */
+export function startDrag(opts: {
+  instance: string;
+  fugue_ids?: string[];
+  active?: boolean;
+  tempo_bpm?: number;
+}): void {
+  const ipc = (window as unknown as { ipc?: { postMessage: (m: string) => void } }).ipc;
+  if (ipc && typeof ipc.postMessage === 'function') {
+    ipc.postMessage(JSON.stringify({ type: 'start_drag', ...opts }));
+  } else {
+    console.warn('startDrag: window.ipc unavailable (running outside wry?)');
+  }
+}
+
 export async function noteOn(note: number, velocity = 100, instance = 'default'): Promise<OkResponse> {
   return apiFetch<OkResponse>(`/note_on/${note}/${velocity}`, instance);
 }

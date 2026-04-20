@@ -82,9 +82,9 @@ See [ROADMAP.md §Feature 15](ROADMAP.md#feature-15-native-drag-out-of-fugues--d
 
 | Done | # | Task | Notes |
 |------|---|------|-------|
-| [ ] | 15c.1 | Drag handle per-fugue in [FugueViewer.tsx](../../../frontend/src/components/FugueViewer.tsx) | Small 🎵-icon button on each fugue row. `onMouseDown` → IPC `start_drag` with `{ instance, fugue_ids: [id] }`. Crucially: use `mousedown` not `click` — native drag must start during the initial mouse-down gesture on Windows/macOS. |
-| [ ] | 15c.2 | "Drag all active" affordance in [FugueList.tsx](../../../frontend/src/components/FugueList.tsx) | Single handle at the list header. IPC `start_drag` with `{ instance, active: true }`. |
-| [ ] | 15c.3 | Visual feedback | Drag handle highlights while the user holds the button. Show a count badge (🎵 × N) on the "all active" handle so the user knows how many fugues will bundle. |
+| [x] | 15c.1 | Whole-container drag source (scope widened) | Entire `.fugue-list-item` row and the `.viewer-header` in [FugueViewer.tsx](../../../frontend/src/components/FugueViewer.tsx) are drag sources, not small icon buttons — matches user's UX expectation ("why can't I drag the whole fugue"). Movement-threshold pattern (4px) on mousedown distinguishes click-to-select from press-and-drag: a global mousemove listener fires `startDrag` only once the cursor has actually moved; pure clicks still fire `onSelect`. Uses `mousedown` as the gesture anchor (not `click`) because macOS/Windows need the drag to start during the initial press. |
+| [x] | 15c.2 | "Drag all active" affordance in [FugueList.tsx](../../../frontend/src/components/FugueList.tsx) | `⇣ Drag all <N>` button in the list header. IPC `start_drag` with `{ instance, active: true }`. Only rendered when 2+ fugues are live (dragging a single fugue is redundant with the row drag). |
+| [x] | 15c.3 | Visual feedback | Cursor changes to `grab` on rows and the drag-all button, `grabbing` while pressed. Drag-all button shows live count. Further visual tweaks (drag-preview image, row highlight while drag is in-flight) deferred — drag-crate's v1 draws no preview; DAWs show their own drag ghost anyway. |
 | [ ] | 15c.4 | Platform caveats doc | Short note in [FUGUE_UI.md](../../FUGUE_UI.md) about macOS Gatekeeper: first-time drag may require a quarantine-bypass dialog for the temp file. Users drop onto a Bitwig clip and it works. |
 
 ### Phase 15d — HTTP endpoints for LLM / scripted use
@@ -99,7 +99,6 @@ See [ROADMAP.md §Feature 15](ROADMAP.md#feature-15-native-drag-out-of-fugues--d
 
 | Done | # | Task | Notes |
 |------|---|------|-------|
-| [ ] | 15e.1 | Document automation limitations | MIDI export carries notes + CC only. Slot param automation doesn't have a portable MIDI representation. Guidance in [FUGUE.md](../../FUGUE.md): to capture slot automation in the DAW, arm automation lanes and replay the fugue. |
 | [ ] | 15e.2 | Update [instructions.md](../../../src/mcp/instructions.md) | Tell the LLM that `export_fugues` exists for hand-off workflows. |
 
 ---

@@ -397,6 +397,8 @@ const App: React.FC = () => {
               <FugueList
                 fugues={fugueInfos}
                 selectedId={selectedFugueId}
+                instance={selectedInstance}
+                tempoBpm={transport.tempo}
                 onSelect={handleSelectFugue}
                 onCancel={handleCancelFugue}
                 onExport={handleExportFugue}
@@ -406,6 +408,8 @@ const App: React.FC = () => {
                 <FugueViewer
                   fugue={selectedFugue}
                   info={selectedInfo}
+                  instance={selectedInstance}
+                  tempoBpm={transport.tempo}
                 />
               )}
             </div>

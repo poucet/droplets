@@ -134,6 +134,53 @@
   color: #fff;
 }
 
+/* Drag-all header: shown when there are 2+ fugues so the user can
+   pull every active pattern onto a DAW track as one multi-track .mid. */
+.fugue-list-header {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 4px 6px;
+}
+
+.drag-all-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: rgba(79, 195, 247, 0.08);
+  border: 1px dashed rgba(79, 195, 247, 0.4);
+  border-radius: 4px;
+  color: #4fc3f7;
+  font-size: 0.75rem;
+  cursor: grab;
+  user-select: none;
+}
+
+.drag-all-btn:hover {
+  background: rgba(79, 195, 247, 0.15);
+  border-color: rgba(79, 195, 247, 0.7);
+}
+
+.drag-all-btn:active {
+  cursor: grabbing;
+}
+
+.drag-all-count {
+  font-weight: 600;
+}
+
+/* Rows are full-container drag sources — give the cursor an explicit
+   affordance that press-and-drag is the gesture. Click-without-move
+   still selects thanks to the threshold logic in the component. */
+.fugue-list-item {
+  cursor: grab;
+  user-select: none;
+}
+
+.fugue-list-item:active {
+  cursor: grabbing;
+}
+
 /* Scrollbar */
 .fugue-list::-webkit-scrollbar {
   width: 6px;

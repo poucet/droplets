@@ -15,6 +15,12 @@
   align-items: center;
   gap: 16px;
   font-size: 13px;
+  cursor: grab;
+  user-select: none;
+}
+
+.viewer-header:active {
+  cursor: grabbing;
 }
 
 .viewer-tag {
