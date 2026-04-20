@@ -55,3 +55,40 @@ multi-track round-trip, `tag_prefix` namespacing, synthetic tag fallback,
 NoteOn-vel-0 pairing, dangling-note-on closure at EOT, CC passthrough,
 strict-mode rejection of pitch bend, option passthrough, and the
 parse-intermediate-without-policy inspection pattern.
+
+---
+
+## 2026-04-20 (later) — demo-prep triage + drag docs polish
+
+Bitwig's clip launcher won't emit `.mid` on drag. Verified not a
+Droplets bug: even Finder can't accept a clip-launcher drag from
+Bitwig. "Save Launcher Clip to Library" emits `.bwclip`, which is
+Bitwig's clip-level subset of the open **dawproject** spec. Added
+Feature 23 to the roadmap to support `.bwclip` export + import
+alongside `.mid`, gated by a settings toggle. Estimated 2–3 days
+when picked up; the zip + quick-xml stack is well-trodden and the
+dawproject schema is published.
+
+With 3 days to demo (2026-04-23), triaged open items. Kept the
+"should land" list small:
+
+- **15c.4** — FUGUE_UI.md gained a Drag-out/drag-in section and a
+  Platform caveats block (macOS Gatekeeper, Linux GTK fallback,
+  Bitwig launcher-clip limitation with forward-reference to
+  Feature 23).
+- **15e.2 + a symmetric drag-in entry** — instructions.md now
+  frames drag-out as the user-facing hand-off and drag-in /
+  `import_fugue` as the return leg, including the per-note
+  expression caveat. Also added `import_fugue` to the Other
+  tools list so the LLM doesn't need to rediscover it.
+- **Summary-table fix** — Feature 15 was still `[ ]` in
+  ROADMAP.md despite shipping; marked `[x]`.
+
+**Deferred past demo** with rationale captured: Feature 8 (egui
+migration, XL), 10 (audio-thread per-note ramps, risky), 18
+(pause-instead-of-delete, untested in hot path), 19 + 20 (port
+changes, breaks connectivity on stage), 9 (stateful MCP,
+notifications not demo-critical), 21 / 22 / 23 (all format work).
+Only remaining critical demo item is **14b.10** — Bitwig
+extension walkthrough on the actual demo machine. Everything
+else is post-demo.
