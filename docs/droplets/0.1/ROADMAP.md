@@ -24,7 +24,7 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [x] | P0 | 11 | `composite` fugue type (notes + cc + bends + pressures in one fugue) | M | High — LLMs currently emit 10 fugues for one instrument; this is the biggest LLM-ergonomics fix left |
 | [x] | P1 | 12 | UI lanes for per-note bend/pressure | M | Medium — composite fugues aren't useful if the UI can't render half their content |
 | [x] | P0 | 13 | Transport phase-locking (fugues resume from correct phase on stop/play/relocate) | S | High — without this, every stop/play kills the demo |
-| [~] | P0 | 14 | DAW track context (drum maps, device names) via host extension | L | Very High — AI currently picks random notes for drums because it has no way to know which sample is on which pad. **Rust side shipped 2026-04-20; Bitwig extension in progress.** |
+| [~] | P0 | 14 | DAW track context (drum maps, device names) via host extension | L | Very High — AI currently picks random notes for drums because it has no way to know which sample is on which pad. **Rust side + Bitwig extension shipped 2026-04-20; demo-machine walkthrough pending.** |
 
 ### Phase 02: Post-Demo Polish
 
@@ -209,14 +209,14 @@ The existing jump-detector heuristic in `FugueSequencer::process` (comparing `cu
 
 **Graceful degradation:** In DAWs without the extension (Ableton, Logic, Live pre-Python-script), `get_project_state` returns an empty `ProjectLayout` and the LLM falls back to asking the user or to GM conventions.
 
-**Status (2026-04-20 — Rust side shipped):**
+**Status (2026-04-20 — code shipped, demo-machine walkthrough pending):**
 - ✅ Phase 14a (Rust, DAW-agnostic): all 11 tasks done. Instance-ID plugin parameter, `ProjectLayout` types with three tiered serialization views, `POST /project_layout` HTTP endpoint, `WS /ws/controller` command stream, three MCP tools (`get_project_state` / `get_track_info` / `get_device_parameters`), updated system instructions telling the LLM to call `get_project_state` first and trust the returned drum map over GM conventions. 145 tests pass (11 new for the ProjectLayout types).
-- ⏳ Phase 14b (Bitwig extension): in flight by a second agent. Kotlin extension at [extensions/bitwig/](../../../extensions/bitwig/) — reads track/device tree, pushes to the Rust side over HTTP, connects the WebSocket command channel.
+- ✅ Phase 14b (Bitwig extension): Kotlin `.bwextension` at [extensions/bitwig/](../../../extensions/bitwig/) (~380 LOC, Kotlin stdlib bundled, no Gradle/Maven — just `kotlinc` + `jar`). Walks `TrackBank(32) → DeviceBank(16) → DrumPadBank(128) → DeviceBank(8)`, detects Droplets via the direct-parameter display pattern (no hard-coded VST3 UID), auto-renames instances on first sight, debounces rebuilds at 150ms, POSTs the layout + connects the WS command channel. v1 gaps (no container chain walk, no native-Sampler `sampleName`, no param introspection, C1 root assumed for drum pads) captured in the extension README. End-to-end walkthrough on the demo machine tracked as 14b.10.
 - ⏳ Phase 14c (Ableton): deferred, post-demo.
 
 **Files (Rust side, shipped):** new [src/instance_param.rs](../../../src/instance_param.rs) (read-only param exposing the instance ID), [src/lib.rs](../../../src/lib.rs) (register `PluginParams`), new [src/mcp/project.rs](../../../src/mcp/project.rs) (all types + tiered views + 11 tests), [src/mcp/bridge.rs](../../../src/mcp/bridge.rs) (ProjectLayout storage + `resolve_instance_id`), [src/mcp/mod.rs](../../../src/mcp/mod.rs) (`POST /project_layout` + `WS /ws/controller` routes + broadcast channel), [src/mcp/server.rs](../../../src/mcp/server.rs) + [src/mcp/requests.rs](../../../src/mcp/requests.rs) (three MCP tools + request types), [src/mcp/instructions.md](../../../src/mcp/instructions.md).
 
-**Files (Bitwig extension, in progress):** [extensions/bitwig/](../../../extensions/bitwig/).
+**Files (Bitwig extension, shipped):** [extensions/bitwig/DropletsExtension.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsExtension.kt) (observer wiring + rebuild), [DropletsClient.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsClient.kt) (HTTP + WS), [DropletsExtensionDefinition.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsExtensionDefinition.kt), [Json.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/Json.kt), [build.sh](../../../extensions/bitwig/build.sh) + [install.sh](../../../extensions/bitwig/install.sh) + [README.md](../../../extensions/bitwig/README.md).
 
 See [TASKS.md](TASKS.md) for the detailed task breakdown and resolved design decisions.
 
@@ -277,7 +277,7 @@ Phase 01:
   ↓
   14 (DAW track context)                       ← AI can finally see drums and synths;
                                                  14a Rust side [done 2026-04-20],
-                                                 14b Bitwig extension [in progress],
+                                                 14b Bitwig extension [done 2026-04-20],
                                                  14c Ableton deferred post-demo
   ↓
   6 (multi-instance validation) + 7 (UI verify) ← both on demo machine; final

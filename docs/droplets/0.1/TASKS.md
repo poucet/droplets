@@ -28,20 +28,20 @@ Split into two phases: the **Rust side** is DAW-agnostic and unblocks everything
 
 ### Phase 14b — Bitwig extension
 
-Built in parallel by a second agent. Source is at [extensions/bitwig/](../../../extensions/bitwig/) (uncommitted at time of writing). Track progress + final verification in this section.
+**Status (2026-04-20 — code shipped, demo-machine walkthrough pending):** 14b.1–14b.9 done. Source at [extensions/bitwig/](../../../extensions/bitwig/) — ~380 LOC Kotlin, Kotlin stdlib bundled, no Gradle/Maven. `./install.sh` builds + copies into `~/Documents/Bitwig Studio/Extensions/`.
 
 | Done | # | Task | Notes |
 |------|---|------|-------|
-| [ ] | 14b.1 | Scaffold `extensions/bitwig/` directory | Kotlin + `kotlinc`/`jar` shell script, no Gradle. Sibling of `src/`. |
-| [ ] | 14b.2 | Extension entry + controller definition | `DropletsExtension` + `DropletsExtensionDefinition`, service manifest registered. |
-| [ ] | 14b.3 | Track + device enumeration | `TrackBank` with reasonable size, per-track `DeviceBank`, VST3 matcher for Droplets detection. |
-| [ ] | 14b.4 | Read instance ID from Droplets params | Direct-parameter ID observer + display-value observer on the `Instance` param. |
-| [ ] | 14b.5 | Drum Machine pad enumeration | `createDrumPadBank` + per-pad `name()` / `addNoteObserver` / nested `DeviceBank` / `sampleName()`. |
-| [ ] | 14b.6 | Device chain walk + preset names | Per device: name, preset, vendor, recurse through containers. Params deferred for tier 3. |
-| [ ] | 14b.7 | Auto-rename Droplets instance | POST `/rename_instance` on first sight, so the LLM sees track-matched names without user intervention. |
-| [ ] | 14b.8 | Build ProjectLayout JSON + POST | Schedule HTTP off the observer thread; re-POST on relevant changes. |
-| [ ] | 14b.9 | WebSocket client for `/ws/controller` | Connect + auto-reconnect. v1 has nothing to handle beyond `Noop`. |
-| [ ] | 14b.10 | Bitwig-demo walkthrough | End-to-end: load on 2 tracks, verify primary devices + pad names via `get_project_state`, verify auto-rename, demo drum pattern uses correct notes. |
+| [x] | 14b.1 | Scaffold `extensions/bitwig/` directory | [build.sh](../../../extensions/bitwig/build.sh) runs `kotlinc -include-runtime` → jar, then `jar uf` for `META-INF/services`. [install.sh](../../../extensions/bitwig/install.sh) builds + copies to Bitwig's extensions dir. Auto-copies `bitwig.jar` out of the Bitwig app on first run. Pins `JAVA_HOME` to Homebrew's openjdk (macOS ships no JDK). `.gitignore` excludes `build/` + the 33 MB API jar. |
+| [x] | 14b.2 | Extension entry + controller definition | [DropletsExtensionDefinition.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsExtensionDefinition.kt) (API 18, stable UUID, 0 MIDI ports) + [DropletsExtension.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsExtension.kt). Service registered via [META-INF/services/com.bitwig.extension.ExtensionDefinition](../../../extensions/bitwig/src/main/resources/META-INF/services/com.bitwig.extension.ExtensionDefinition). |
+| [x] | 14b.3 | Track + device enumeration | `TrackBank(32, 0, 0)`, `track.createDeviceBank(16)`. No VST3 UID matcher — Droplets detection piggybacks on the direct-parameter display observer (see 14b.4), which works identically for CLAP and VST3 without hard-coding a wrapper-derived UID. |
+| [x] | 14b.4 | Read instance ID from Droplets params | `device.addDirectParameterValueDisplayObserver(32, BiConsumer)` caches `(paramId, displayValue)` per device; `findInstanceId` scans for any value matching `^droplets-[0-9a-f]+$`. `setObservedParameterIds` turned out unnecessary — the read-only display string only emits once per load. |
+| [x] | 14b.5 | Drum Machine pad enumeration | `device.hasDrumPads()` → `device.createDrumPadBank(128)` → per pad: `name()`, `createDeviceBank(8)`. Pad MIDI note = `36 + padIndex` (assumes C1 root, documented as a v1 limitation). `addNoteObserver` dropped (its signature is note-on/off events, not root-note observation). `sampleName()` deferred — needs `createSpecificBitwigDevice(SamplerUUID)`; `preset_name` currently carries the sample name for drag-and-drop samples. |
+| [x] | 14b.6 | Device chain walk + preset names | Per device: `name()`, `presetName()`, `isPlugin()`, `deviceType()` ("instrument" / "audio_effect" / "note_effect"). Recurses into `DrumPad.createDeviceBank`. Container (Chain Selector, Instrument Layer) walk deferred — emits as `unknown` for v1. |
+| [x] | 14b.7 | Auto-rename Droplets instance | `HashSet<String>` of already-renamed IDs; first sight POSTs `{ instance, name }` to `/rename_instance`. |
+| [x] | 14b.8 | Build ProjectLayout JSON + POST | 150ms-debounced rebuild via `host.scheduleTask` coalesces observer bursts at load. Hand-written [Json.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/Json.kt) (no deps). POST via `java.net.http.HttpClient.sendAsync` — I/O never hits the controller thread. |
+| [x] | 14b.9 | WebSocket client for `/ws/controller` | [DropletsClient.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsClient.kt): `HttpClient.newWebSocketBuilder().buildAsync(...)` on init. Exponential backoff 1s → 30s cap on connect fail / close / error. v1 logs received text frames. |
+| [ ] | 14b.10 | Bitwig-demo walkthrough | Steps captured in [extensions/bitwig/README.md](../../../extensions/bitwig/README.md); needs execution on the demo machine. |
 
 ### Phase 14c — Ableton (follow-up, not demo-critical)
 
