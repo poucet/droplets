@@ -4,8 +4,9 @@ import type { ProjectLayout, TrackContext, Device, DrumPad } from '../types';
 
 // MIDI number → pitch notation. Mirrors the backend `midi_to_name`
 // helper so what we render on the UI matches the MCP-visible view.
+// DAW convention: C3 = middle C = MIDI 60 (Bitwig/Ableton/Logic/Reaper).
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-const midiToName = (midi: number) => `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`;
+const midiToName = (midi: number) => `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 2}`;
 
 interface DawLayoutProps {
   layout: ProjectLayout | null;
@@ -26,6 +27,14 @@ interface DawLayoutProps {
 const DawLayout: React.FC<DawLayoutProps> = ({ layout, lastUpdatedAt, hostConnected }) => {
   const [showRawJson, setShowRawJson] = React.useState(false);
 
+  // Only show tracks that actually have devices. Natively filters out
+  // Bitwig's master/FX/return tracks and any empty audio/MIDI tracks —
+  // the user wants to see what's on the project, not an inventory.
+  const visibleTracks = React.useMemo(
+    () => (layout?.tracks ?? []).filter((t) => t.devices.length > 0),
+    [layout],
+  );
+
   // Raw JSON view is always available for debugging, even when no layout
   // has arrived — seeing `null` vs an empty `{tracks:[]}` tells the user
   // whether the frontend just hasn't received anything, or received an
@@ -40,7 +49,7 @@ const DawLayout: React.FC<DawLayoutProps> = ({ layout, lastUpdatedAt, hostConnec
     </button>
   );
 
-  if (!hostConnected || !layout || layout.tracks.length === 0) {
+  if (!hostConnected || !layout || visibleTracks.length === 0) {
     return (
       <div className="daw-layout daw-layout--empty">
         <div className="daw-empty-card">
@@ -78,7 +87,12 @@ const DawLayout: React.FC<DawLayoutProps> = ({ layout, lastUpdatedAt, hostConnec
             <LiveUpdateTimer lastUpdatedAt={lastUpdatedAt} />
           )}
           <span className="daw-track-count">
-            {layout.tracks.length} track{layout.tracks.length === 1 ? '' : 's'}
+            {visibleTracks.length} track{visibleTracks.length === 1 ? '' : 's'}
+            {layout.tracks.length !== visibleTracks.length && (
+              <span className="daw-track-count-hint">
+                {' '}({layout.tracks.length - visibleTracks.length} empty hidden)
+              </span>
+            )}
           </span>
           {rawToggle}
         </div>
@@ -88,8 +102,8 @@ const DawLayout: React.FC<DawLayoutProps> = ({ layout, lastUpdatedAt, hostConnec
         <pre className="daw-raw-json">{JSON.stringify(layout, null, 2)}</pre>
       )}
 
-      <div className="daw-track-grid">
-        {layout.tracks.map((track, idx) => (
+      <div className="daw-track-list">
+        {visibleTracks.map((track, idx) => (
           <TrackCard key={`${track.track_name}-${idx}`} track={track} />
         ))}
       </div>

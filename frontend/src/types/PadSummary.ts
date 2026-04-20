@@ -2,11 +2,11 @@
 
 /**
  * Tier 1 view of a drum pad — just what the LLM needs to pick the right
- * note. Note rendered as pitch notation (`"C2"`) not an integer.
+ * note. Note rendered as DAW pitch notation (`"C1"`, C3=60) not an integer.
  */
 export type PadSummary = { 
 /**
- * Pitch notation — `"C2"`, `"F#3"`. Comes from converting the raw MIDI
+ * Pitch notation — `"C1"`, `"F#2"` (DAW convention, C3=60). Comes from converting the raw MIDI
  * number in [`DrumPad::note`].
  */
 note: string, name: string, 

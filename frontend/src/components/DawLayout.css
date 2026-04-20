@@ -6,8 +6,11 @@
   flex-direction: column;
   gap: 16px;
   padding: 20px;
+  /* Fill the .app-main area so the inner list can scroll within. */
+  height: 100%;
   min-height: 0;
-  overflow-y: auto;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .daw-layout--empty {
@@ -160,10 +163,24 @@
   width: 100%;
 }
 
-.daw-track-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: 16px;
+/* Vertical stack — the panel is narrow in-plugin; horizontal layouts
+   can only fit two cards before the device chain starts to truncate.
+   A stack lets every track use the full width and show the chain cleanly.
+   The list itself is the scroll container so the header stays pinned. */
+.daw-track-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* Small padding so the last card's flash animation isn't clipped. */
+  padding-right: 4px;
+}
+
+.daw-track-count-hint {
+  color: #777;
+  font-weight: 400;
 }
 
 /* Track card ------------------------------------------------------------ */

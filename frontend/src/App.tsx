@@ -30,9 +30,10 @@ import { FugueList, FugueViewer, FugueComposer, Settings, DawLayout } from './co
 import type { ComposerFugue } from './components';
 import { useTransport, useTimingSync } from './timing';
 
-// Note names for display
+// Note names for display. DAW convention: C3 = middle C = MIDI 60
+// (Bitwig/Ableton/Logic/Reaper/Studio One).
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-const getNoteName = (midi: number) => `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 1}`;
+const getNoteName = (midi: number) => `${NOTE_NAMES[midi % 12]}${Math.floor(midi / 12) - 2}`;
 
 type TabView = 'sequencer' | 'monitor' | 'daw' | 'settings';
 
