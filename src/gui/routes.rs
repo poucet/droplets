@@ -28,6 +28,7 @@ pub fn handle_request(path: &str, method: &str, body: &[u8], params: &Arc<Drople
         "/rename_instance" if method == "POST" => handle_rename_instance(body),
         "/settings" if method == "POST" => handle_update_settings(body),
         "/export_fugue" if method == "POST" => handle_export_fugue(body, instance_id),
+        "/import_fugue" if method == "POST" => handle_import_fugue(body, instance_id),
         "/slots" if method == "POST" => handle_add_slot(body, instance_id),
         _ => handle_dynamic_route(path, method, body, instance_id, params),
     }
@@ -442,6 +443,31 @@ fn handle_reveal_exports() -> String {
 // =============================================================================
 // Export Handlers
 // =============================================================================
+
+/// POST /api/import_fugue — body is raw `.mid` bytes (no JSON envelope).
+///
+/// The wry custom-protocol route takes the instance from the URL path, so
+/// `handle_import_fugue` uses `instance_id` directly and the query struct
+/// is constructed with defaults. The axum HTTP route adds a `Query<...>`
+/// layer on top when we need per-request options (tag_prefix, loop_mode,
+/// etc.); this wry path keeps the simple defaults since the webview's only
+/// caller (the instance drop zone) is happy with "loop forever, bar-quantize".
+fn handle_import_fugue(body: &[u8], instance: &str) -> String {
+    let query = api::ImportFugueQuery {
+        instance: instance.to_string(),
+        ..Default::default()
+    };
+    let response = api::import_fugue(instance, body, query);
+    if response.ok {
+        crate::logger::log_gui_event(
+            "import_fugue",
+            &format!("{} fugue(s)", response.fugue_ids.len()),
+        );
+    } else {
+        log::warn!("routes /import_fugue failed: {:?}", response.error);
+    }
+    serde_json::to_string(&response).unwrap_or_else(|_| serialize_error("serialize failed"))
+}
 
 fn handle_export_fugue(body: &[u8], instance: &str) -> String {
     let Ok(req) = serde_json::from_slice::<api::ExportFugueRequest>(body) else {

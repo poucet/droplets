@@ -289,6 +289,43 @@ export async function exportFugue(id: string, tempo?: number, instance = 'defaul
 }
 
 // =============================================================================
+// Fugue Import API — drag-in of .mid blobs dropped onto the per-instance zone.
+// =============================================================================
+
+export interface ImportFugueResponse {
+  ok: boolean;
+  fugue_ids?: string[];
+  error?: string;
+}
+
+/**
+ * POST raw SMF bytes to the import endpoint. Body is the raw file contents
+ * (Content-Type: audio/midi); options come via the query string so the
+ * wire shape matches the curl one-liner documented on the Rust side.
+ *
+ * `instance` is the instance the fugues will be queued on — for drag-and-
+ * drop on a specific instance row, pass that row's id, not `selectedInstance`.
+ */
+export async function importFugueBytes(
+  bytes: ArrayBuffer,
+  instance: string,
+  opts: { tagPrefix?: string } = {}
+): Promise<ImportFugueResponse> {
+  const params = new URLSearchParams({ instance });
+  if (opts.tagPrefix) params.set('tag_prefix', opts.tagPrefix);
+  const url = `${API_BASE}/import_fugue?${params.toString()}`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'audio/midi' },
+    body: bytes,
+  });
+  if (!response.ok) {
+    throw new Error(`import failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+// =============================================================================
 // WebSocket for Real-time Updates
 // =============================================================================
 

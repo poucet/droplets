@@ -10,6 +10,7 @@ mod sequencer;
 mod types;
 
 pub mod export;
+pub mod import;
 pub mod settings;
 
 pub use bridge::{FugueBridge, FugueInfoHandle};

@@ -77,6 +77,9 @@ ts-rs = "10"
 # MIDI file generation for fugue export
 midly = "0.5"
 
+# Base64 for the import_fugue MCP tool (LLM passes .mid bytes as a string)
+base64 = "0.22"
+
 # Cross-platform directory paths
 dirs = "5"
 

@@ -170,7 +170,8 @@ async fn run_server(port: u16) {
         .route("/api/queue_fugue", post(api_queue_fugue))
         .route("/api/cancel_fugue", post(api_cancel_fugue))
         .route("/api/cancel_fugues_by_tag", post(api_cancel_fugues_by_tag))
-        .route("/api/clear_fugues", get(api_clear_fugues));
+        .route("/api/clear_fugues", get(api_clear_fugues))
+        .route("/api/import_fugue", post(api_import_fugue));
 
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => {
@@ -448,6 +449,26 @@ async fn api_clear_fugues(Query(query): Query<InstanceQuery>) -> impl IntoRespon
         Ok(response) => json_response(response),
         Err(e) => error_response(StatusCode::BAD_REQUEST, &e),
     }
+}
+
+/// Body is raw SMF bytes (Content-Type: audio/midi or application/octet-stream).
+/// Options come from the query string so a curl one-liner can import a file
+/// without a JSON envelope: `curl --data-binary @clip.mid
+/// "/api/import_fugue?instance=bass&tag_prefix=edited-"`.
+async fn api_import_fugue(
+    Query(query): Query<api::ImportFugueQuery>,
+    body: axum::body::Bytes,
+) -> impl IntoResponse {
+    let instance = query.instance.clone();
+    log::info!(
+        "GUI import_fugue: instance='{}' bytes={} tag_prefix={:?}",
+        instance, body.len(), query.tag_prefix,
+    );
+    let response = api::import_fugue(&instance, body.as_ref(), query);
+    if !response.ok {
+        log::warn!("GUI import_fugue failed: {:?}", response.error);
+    }
+    json_response(response)
 }
 
 // =============================================================================

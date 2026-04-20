@@ -10,6 +10,7 @@ import {
   renameInstance,
   cancelFugue,
   exportFugue,
+  importFugueBytes,
   RealtimeConnection,
 } from './api';
 import type {
@@ -192,6 +193,73 @@ const App: React.FC = () => {
       console.error('Failed to export fugue:', e);
     }
   }, [selectedInstance, transport.tempo]);
+
+  // Drag-in support: accept .mid files dropped on the sequencer panel and
+  // queue them as fugues on the currently-selected instance. `dragDepth`
+  // tracks dragenter/leave nesting so child elements don't flicker the
+  // highlight off when the cursor crosses internal boundaries.
+  const [isDraggingMidi, setIsDraggingMidi] = useState(false);
+  const dragDepthRef = useRef(0);
+  const hasMidiFile = useCallback((e: React.DragEvent): boolean => {
+    // dataTransfer.items carries MIME types during dragenter/over (files
+    // themselves aren't exposed until drop). Accept the official audio/midi
+    // type plus audio/mid (older) and any item with a .mid/.midi name
+    // suffix — browsers disagree on what they report for local drags.
+    const items = e.dataTransfer.items;
+    if (!items || items.length === 0) return false;
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (it.kind !== 'file') continue;
+      if (it.type === 'audio/midi' || it.type === 'audio/mid' || it.type === 'audio/x-midi') {
+        return true;
+      }
+    }
+    return true; // fall back to accepting — final filter is on drop.
+  }, []);
+  const handleDragEnter = useCallback((e: React.DragEvent) => {
+    if (!hasMidiFile(e)) return;
+    e.preventDefault();
+    dragDepthRef.current += 1;
+    setIsDraggingMidi(true);
+  }, [hasMidiFile]);
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  }, []);
+  const handleDragLeave = useCallback(() => {
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDraggingMidi(false);
+  }, []);
+  const handleDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault();
+    dragDepthRef.current = 0;
+    setIsDraggingMidi(false);
+    const files = Array.from(e.dataTransfer.files ?? []).filter(
+      f => f.name.toLowerCase().endsWith('.mid') || f.name.toLowerCase().endsWith('.midi')
+    );
+    if (files.length === 0) return;
+    // Import sequentially so log output is ordered and a single failure
+    // doesn't swallow other files' errors. One fetch per file; the backend
+    // handles multi-track files by producing one fugue per track.
+    for (const file of files) {
+      try {
+        const bytes = await file.arrayBuffer();
+        const result = await importFugueBytes(bytes, selectedInstance);
+        if (!result.ok) {
+          console.error('[droplets] import_fugue failed:', result.error);
+        } else {
+          console.debug(
+            '[droplets] imported', file.name, '→', result.fugue_ids?.length ?? 0, 'fugue(s)'
+          );
+        }
+      } catch (err) {
+        console.error('[droplets] import error for', file.name, err);
+      }
+    }
+    // One refresh covers all drops — the WS push should catch up anyway,
+    // but a deterministic fetch makes the UI update feel instant.
+    fetchFugues();
+  }, [selectedInstance, fetchFugues]);
 
   // Handle realtime updates
   const handleFuguesUpdate = useCallback((instanceId: string, response: FuguesResponse) => {
@@ -389,9 +457,23 @@ const App: React.FC = () => {
           /* Sequencer Tab — read-only view of what's playing. Composing is
              LLM-driven via MCP; the UI used to have an in-app editor, but it
              duplicated the DAW's piano roll badly and was removed. */
-          <div className="sequencer-view">
+          <div
+            className={`sequencer-view${isDraggingMidi ? ' is-drop-target' : ''}`}
+            onDragEnter={handleDragEnter}
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+          >
             <div className="sequencer-header">
               <h2>Fugue Sequencer</h2>
+              {/* Drop hint only renders while a drag is in flight — avoids
+                  UI noise for users who never use the drag-in feature. */}
+              {isDraggingMidi && (
+                <span className="drop-hint">
+                  Drop <code>.mid</code> to import into{' '}
+                  <strong>{instances.find(i => i.id === selectedInstance)?.name ?? selectedInstance}</strong>
+                </span>
+              )}
             </div>
             <div className="sequencer-content">
               <FugueList

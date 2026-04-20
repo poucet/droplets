@@ -685,6 +685,43 @@ fn default_compact() -> bool {
     true
 }
 
+/// Request body for `import_fugue` — accepts a base64-encoded `.mid` blob
+/// and a small set of queue-time knobs. Mirrors the options used by the
+/// frontend drop-zone HTTP handler so the MCP and HTTP paths can share
+/// the underlying `api::import_fugue` function.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ImportFugueData {
+    /// Base64-encoded Standard MIDI File. The LLM typically gets this from
+    /// a user message ("here is a .mid I edited") or from a fetch tool.
+    #[schemars(description = "Base64-encoded Standard MIDI File bytes (SMF format 0 or 1).")]
+    pub base64_mid: String,
+
+    /// Optional prefix prepended to each imported fugue's tag. Useful for
+    /// namespacing a batch so it can be cancelled later via
+    /// `cancel_fugues_by_tag` with the same prefix.
+    #[serde(default)]
+    #[schemars(description = "Optional prefix prepended to every imported fugue's tag (e.g. 'edited-' → 'edited-bass').")]
+    pub tag_prefix: Option<String>,
+
+    /// Loop policy applied to every imported fugue. Defaults to `forever`
+    /// to match the LLM-facing queue_fugue default.
+    #[serde(default)]
+    #[schemars(description = "Loop mode for the imported fugues. One of: once | times | forever. Default: forever.")]
+    pub loop_mode: Option<String>,
+
+    /// Quantize policy applied to every imported fugue. Defaults to `bar`.
+    #[serde(default)]
+    #[schemars(description = "Quantize mode for imported fugues: immediate | beat | bar. Default: bar.")]
+    pub quantize: Option<String>,
+
+    /// When true, reject files containing per-note expression (pitch bend,
+    /// polyphonic aftertouch) instead of silently dropping those events.
+    /// Useful when the caller wants a hard guarantee of round-trip fidelity.
+    #[serde(default)]
+    #[schemars(description = "Reject files containing per-note expression instead of dropping those events. Default: false.")]
+    pub strict: Option<bool>,
+}
+
 // =============================================================================
 // Instance management types (these don't use the wrapper since instance is the subject)
 // =============================================================================
@@ -722,6 +759,7 @@ pub type QueueFugueRequest = InstanceRequest<QueueFugueData>;
 pub type CancelFugueRequest = InstanceRequest<CancelFugueData>;
 pub type CancelFuguesByTagRequest = InstanceRequest<CancelFuguesByTagData>;
 pub type GetFugueRequest = InstanceRequest<GetFugueData>;
+pub type ImportFugueRequest = InstanceRequest<ImportFugueData>;
 
 // =============================================================================
 // Default value functions

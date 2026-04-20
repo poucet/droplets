@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 use super::bridge::CcBridge;
 use super::requests::{
-    CancelFugueRequest, CancelFuguesByTagRequest, FugueContent, GetFugueRequest, GetSlotsRequest,
+    CancelFugueRequest, CancelFuguesByTagRequest, FugueContent, GetFugueRequest, GetSlotsRequest, ImportFugueRequest,
     QueueFugueRequest, RenameInstanceRequest,
     emit_cc_lane, emit_notes, emit_per_note_pitch_bend, emit_per_note_pressure,
     parse_interpolation_mode,
@@ -184,30 +184,8 @@ impl DropletsMcp {
             let loop_mode_str = compact.loop_mode.as_deref().unwrap_or(default_loop_mode_str);
             let fugue_channel = compact.channel.unwrap_or(1).saturating_sub(1).min(15);
 
-            // Parse loop mode
-            let loop_mode = match loop_mode_str.to_lowercase().as_str() {
-                "once" => LoopMode::Once,
-                "forever" => LoopMode::Forever,
-                s => {
-                    if let Ok(n) = s.parse::<u32>() {
-                        LoopMode::Times(n)
-                    } else {
-                        LoopMode::Forever
-                    }
-                }
-            };
-
-            // Parse quantize mode
-            let quantize = match quantize_str.to_lowercase().as_str() {
-                "immediate" => QuantizeMode::Immediate,
-                "beat" => QuantizeMode::Beat,
-                "bar" => QuantizeMode::Bar,
-                s if s.starts_with("bars:") => {
-                    let n = s.strip_prefix("bars:").and_then(|n| n.parse().ok()).unwrap_or(1);
-                    QuantizeMode::Bars(n)
-                }
-                _ => QuantizeMode::Bar,
-            };
+            let loop_mode = parse_loop_mode_str(loop_mode_str).unwrap_or(LoopMode::Forever);
+            let quantize = parse_quantize_str(quantize_str).unwrap_or(QuantizeMode::Bar);
 
             // Parse cancel mode
             let cancel_mode_str = compact.cancel_mode.as_deref().unwrap_or("none");
@@ -346,6 +324,33 @@ impl DropletsMcp {
         Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
+    /// Import a `.mid` file as one or more fugues queued on an instance.
+    #[tool(description = "Import a Standard MIDI File as fugues on an instance. The body must be base64-encoded SMF bytes. Each MIDI track becomes one fugue (format 0 files produce one fugue). Track names become fugue tags (with optional `tag_prefix` prepended); tracks without names get synthetic `imported-N` tags. Notes + CC are preserved exactly; per-note pitch bend and polyphonic aftertouch are dropped because MIDI 1.0 can't represent them per-note (set `strict: true` to error instead). Returns the queued fugue IDs. Typical workflow: user drags a .mid out of a DAW, edits it in the piano roll, and hands it back to the LLM who imports it as the new canonical version of a part.")]
+    fn import_fugue(&self, Parameters(req): Parameters<ImportFugueRequest>) -> Result<CallToolResult, McpError> {
+        use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
+        let bytes = match B64.decode(req.data.base64_mid.as_bytes()) {
+            Ok(b) => b,
+            Err(e) => {
+                return Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Error: failed to decode base64 payload: {}", e
+                ))]));
+            }
+        };
+
+        let query = crate::gui::api::ImportFugueQuery {
+            instance: req.instance.clone(),
+            tag_prefix: req.data.tag_prefix,
+            loop_mode: req.data.loop_mode.as_deref().and_then(parse_loop_mode_str),
+            quantize: req.data.quantize.as_deref().and_then(parse_quantize_str),
+            cancel_mode: None,
+            strict: req.data.strict,
+        };
+        let response = crate::gui::api::import_fugue(&req.instance, &bytes, query);
+        let body = serde_json::to_string_pretty(&response)
+            .unwrap_or_else(|_| "error serializing import response".to_string());
+        Ok(CallToolResult::success(vec![Content::text(body)]))
+    }
+
     /// Cancel a specific fugue by ID.
     #[tool(description = "Cancel a specific fugue by its ID. Sends note-offs for any active notes and stops playback. Use the fugue_id returned by queue_fugue.")]
     fn cancel_fugue(&self, Parameters(req): Parameters<CancelFugueRequest>) -> Result<CallToolResult, McpError> {
@@ -474,6 +479,36 @@ impl ServerHandler for DropletsMcp {
 // =============================================================================
 // Compact read-back view for get_fugue
 // =============================================================================
+
+/// Parse the LLM-facing loop-mode string (`once` | `forever` | `<n>`) into
+/// a `LoopMode`. Returns `None` for the empty/unrecognized case so callers
+/// can apply their own default; `<n>` decodes to `Times(n)` so the LLM
+/// can write `"loop_mode": "4"` for a 4-repeat pattern.
+fn parse_loop_mode_str(s: &str) -> Option<LoopMode> {
+    match s.trim().to_lowercase().as_str() {
+        "" => None,
+        "once" => Some(LoopMode::Once),
+        "forever" => Some(LoopMode::Forever),
+        other => other.parse::<u32>().ok().map(LoopMode::Times),
+    }
+}
+
+/// Parse the LLM-facing quantize-mode string (`immediate` | `beat` | `bar`
+/// | `bars:<n>`) into a `QuantizeMode`. Returns `None` on unrecognized
+/// input so the caller decides the fallback (usually `Bar`).
+fn parse_quantize_str(s: &str) -> Option<QuantizeMode> {
+    let lower = s.trim().to_lowercase();
+    match lower.as_str() {
+        "" => None,
+        "immediate" => Some(QuantizeMode::Immediate),
+        "beat" => Some(QuantizeMode::Beat),
+        "bar" => Some(QuantizeMode::Bar),
+        _ => lower
+            .strip_prefix("bars:")
+            .and_then(|n| n.parse::<u32>().ok())
+            .map(QuantizeMode::Bars),
+    }
+}
 
 /// Serialize an interpolation mode using its serde tag so round-tripping
 /// through queue_fugue hits the same parser. `InterpolationMode` derives

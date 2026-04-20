@@ -275,6 +275,28 @@
   overflow: auto;
 }
 
+/* Drag-in highlight — only applied while the user is dragging a file over
+   the sequencer panel. Dashed outline + subtle tint so the region reads
+   as "drop here" without needing a separate always-visible dropzone. */
+.sequencer-view.is-drop-target {
+  outline: 2px dashed rgba(79, 195, 247, 0.6);
+  outline-offset: -6px;
+  background: rgba(79, 195, 247, 0.06);
+  border-radius: 8px;
+}
+
+.sequencer-header .drop-hint {
+  font-size: 0.85rem;
+  color: #4fc3f7;
+}
+
+.sequencer-header .drop-hint code {
+  background: rgba(79, 195, 247, 0.12);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+
 /* Monitor View */
 .monitor-view {
   display: flex;

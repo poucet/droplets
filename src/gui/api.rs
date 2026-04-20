@@ -10,6 +10,7 @@ use crate::fugue::{
     CancelMode, FugueBridge, FugueDefinition, FugueInfo, InterpolationMode, LoopMode, QuantizeMode,
     TimedFugueEvent, TransportState,
     export::{fugue_to_smf, generate_filename},
+    import::{smf_to_fugues, ImportOptions},
     settings::{self, SettingsResponse, UpdateSettingsRequest},
 };
 use crate::mcp::CcBridge;
@@ -526,6 +527,99 @@ pub fn export_fugue(instance: &str, req: ExportFugueRequest) -> ExportFugueRespo
     ExportFugueResponse {
         ok: true,
         path: Some(file_path.to_string_lossy().to_string()),
+        error: None,
+    }
+}
+
+// =============================================================================
+// Fugue Import API — inverse of export. Accepts a raw .mid blob (from a
+// browser file drop or an LLM-provided file), parses it into one or more
+// FugueDefinitions, and queues each on the requested instance.
+// =============================================================================
+
+/// Caller-supplied knobs for the import. All fields optional — defaults match
+/// what the LLM writes for freshly-queued fugues (loop forever, quantize to
+/// the bar, no cancel). Kept shallow because the wire format is a query
+/// string on the HTTP side.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ImportFugueQuery {
+    pub instance: String,
+    #[serde(default)]
+    pub tag_prefix: Option<String>,
+    #[serde(default)]
+    pub loop_mode: Option<LoopMode>,
+    #[serde(default)]
+    pub quantize: Option<QuantizeMode>,
+    #[serde(default)]
+    pub cancel_mode: Option<CancelMode>,
+    #[serde(default)]
+    pub strict: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export)]
+pub struct ImportFugueResponse {
+    pub ok: bool,
+    /// Freshly-assigned fugue IDs (one per imported track). Serialized as
+    /// strings for JS compatibility.
+    #[serde(default)]
+    pub fugue_ids: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Parse raw SMF bytes and queue each resulting fugue on the instance.
+/// Returns the IDs of every queued fugue, in the order they were queued.
+/// Partial success is impossible: if any queue call fails, the import
+/// aborts — caller must handle cleanup of the already-queued fugues via
+/// their returned ids if desired.
+pub fn import_fugue(instance: &str, bytes: &[u8], query: ImportFugueQuery) -> ImportFugueResponse {
+    let mut opts = ImportOptions::default();
+    if let Some(lm) = query.loop_mode { opts.loop_mode = lm; }
+    if let Some(q) = query.quantize { opts.quantize = q; }
+    if let Some(cm) = query.cancel_mode { opts.cancel_mode = cm; }
+    opts.tag_prefix = query.tag_prefix;
+    if let Some(s) = query.strict { opts.strict = s; }
+
+    let fugues = match smf_to_fugues(bytes, &opts) {
+        Ok(f) => f,
+        Err(e) => {
+            return ImportFugueResponse {
+                ok: false,
+                fugue_ids: Vec::new(),
+                error: Some(e),
+            };
+        }
+    };
+    if fugues.is_empty() {
+        return ImportFugueResponse {
+            ok: false,
+            fugue_ids: Vec::new(),
+            error: Some("no playable tracks found in MIDI file".into()),
+        };
+    }
+
+    let mut queued_ids: Vec<String> = Vec::with_capacity(fugues.len());
+    for def in fugues {
+        let id = def.id;
+        match FugueBridge::queue(instance, def) {
+            Ok(fugue_id) => {
+                FugueBridge::wait_for_fugue_visible(instance, fugue_id, 100);
+                queued_ids.push(fugue_id.to_string());
+            }
+            Err(e) => {
+                return ImportFugueResponse {
+                    ok: false,
+                    fugue_ids: queued_ids,
+                    error: Some(format!("queue failed for fugue {}: {}", id, e)),
+                };
+            }
+        }
+    }
+
+    ImportFugueResponse {
+        ok: true,
+        fugue_ids: queued_ids,
         error: None,
     }
 }
