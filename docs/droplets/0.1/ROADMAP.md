@@ -42,7 +42,8 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [ ] | P3 | 21 | MPE round-trip for per-note expression in drag-out/drag-in | L | Medium — today Features 15/16 drop pitch bend + pressure because MIDI 1.0 SMF has no per-note target. MPE (channel-per-note encoding) is understood by Logic, Bitwig, Live 12+, Cubase, so a `.mid` emitted in MPE shape round-trips the full expressivity. Cost: dynamic channel allocation on export, channel→note attribution on import |
 | [ ] | P4 | 22 | Adopt MIDI 2.0 / SMF2 for native per-note support | L | Low (today) — SMF2 has true per-note bend/pressure in the format itself. DAW support is inconsistent as of 2026; revisit once Logic / Bitwig / Live all read SMF2 natively. Supersedes Feature 21 when that happens |
 | [ ] | P3 | 23 | `.bwclip` (dawproject) export/import alongside `.mid` | M | Medium (Bitwig-only) — lets users round-trip launcher clips via Bitwig's "Save Launcher Clip to Library" (which Bitwig refuses to emit as `.mid`). Preserves per-note expression, tag, color, and timing metadata that MIDI 1.0 drops. Format is Bitwig's open dawproject spec (XML in a zip). Settings toggle chooses `.mid` vs `.bwclip` for drag-out |
-| [ ] | P2 | 24 | VST3 MIDI-effect classification for Ableton Live | L | Medium — today the VST3 build is categorized as an instrument, so Ableton replaces existing devices on the track when Droplets is added. Users work around via two-track MIDI routing. **Blocked upstream**: clap-wrapper acknowledges "VST3 does not support MIDI OUT properly [for pure MIDI plugins]; we would need the VST Module Architecture SDK." Category override alone is insufficient. Options: wait for wrapper upstream, switch wrapper (nih-plug), or ship a native VST3 alongside CLAP |
+| [ ] | P2 | 24a | Expose `CLAP_PLUGIN_AS_VST3` extension (Rust side) | S | Medium — the clap-wrapper already honours `vst3info->features` as a direct SubCategories override ([wrapasvst3_entry.cpp:269-276](https://github.com/free-audio/clap-wrapper/blob/main/src/wrapasvst3_entry.cpp#L269-L276)). Wire this on the Rust side (clack patch or raw FFI), emit `Fx\|Tools`, drop VST3 audio bus. Ableton stops treating Droplets as an instrument. Notes flow through fine; CC output stays broken until 24b |
+| [ ] | P2 | 24b | clap-wrapper PR: translate `CLAP_EVENT_MIDI` out on VST3 | M | Medium — today [process.cpp:808-812](https://github.com/free-audio/clap-wrapper/blob/main/src/detail/vst3/process.cpp#L808-L812) silently swallows `CLAP_EVENT_MIDI` / `_SYSEX` / `_MIDI2` in `enqueueOutputEvent`. Fix is a surgical addition alongside the existing NOTE_ON/OFF cases: parse status byte, fan out to `kLegacyMIDICCOutEvent` / `kDataEvent`. Upstream PR against clap-wrapper (issue [#414](https://github.com/free-audio/clap-wrapper/issues/414)) |
 
 ---
 
@@ -442,30 +443,66 @@ The MCP-side bare `/project_layout` and `/rename_instance` routes go away — bo
 
 ---
 
-#### Feature 24: VST3 MIDI-effect classification for Ableton Live
+#### Feature 24: Ableton Live VST3 MIDI-effect support (two upstream fixes)
 
 **Problem:** In Ableton Live, Droplets currently lands in the Instruments bucket — adding it to a track replaces whatever instrument was there (drum rack, synth, sampler). This is Ableton's one-instrument-per-track rule kicking in. Bitwig is fine because CLAP note-effect plugins route correctly; Ableton's CLAP support is too recent / inconsistent for most of our target users, so VST3 is the practical path.
 
-**Root cause (validated 2026-04-20):** the clap-wrapper's `NOTE_EFFECT → Instrument|Synth` mapping ([external/clap-wrapper/src/detail/vst3/categories.cpp:62](https://github.com/free-audio/clap-wrapper/blob/main/src/detail/vst3/categories.cpp#L62)) forces the `"Instrument"` token into the VST3 SubCategories string for any plugin declaring NOTE_EFFECT. Attempts to drop INSTRUMENT and use UTILITY alone produced a bare `"Tools"` subcategory — Ableton rejected the plugin at instantiation (likely the wrapper's audio-bus expectations conflict with our zero-audio-bus declaration, or Ableton refuses plugins without a recognized main category).
+Full Ableton-VST3 MIDI-effect support needs **both** 24a and 24b. 24a alone lets Droplets coexist with a synth on the same track; 24b is additionally required for CC output to actually reach the downstream synth (without it, notes flow through but filter-sweep CCs etc. are silently dropped).
 
-**Deeper blocker (found 2026-04-20, clap-wrapper upstream statement):**
+**Investigation (2026-04-20):** attempted two in-plugin fixes that both failed:
+1. **Drop audio bus, use `[UTILITY]` category.** Ableton refused to instantiate — the clap-wrapper likely synthesizes an audio bus regardless of our `count()=0` report, and the mismatch confuses Ableton.
+2. **Keep audio bus, drop INSTRUMENT token from features.** The wrapper's `NOTE_EFFECT → Instrument|Synth` mapping ([categories.cpp:62](https://github.com/free-audio/clap-wrapper/blob/main/src/detail/vst3/categories.cpp#L62)) forces `Instrument` into the category regardless of our features — no way around it via CLAP features alone.
 
-> "VST3 does not support MIDI OUT properly. For pure MIDI plugins, we would need the VST Module Architecture SDK, which we do not have yet in support. Perhaps we can investigate on that later on."
+---
 
-So even if we wire `CLAP_PLUGIN_AS_VST3` to override the subcategory and drop the audio bus, the wrapper's VST3 side does not route MIDI output correctly for pure-MIDI plugins — it needs Steinberg's VST MA SDK integration, which clap-wrapper has explicitly deferred. The category-string fix alone would produce a plugin Ableton shelves correctly but whose MIDI output doesn't reach downstream devices.
+**Feature 24a: expose `CLAP_PLUGIN_AS_VST3` on the Rust side (~1 day).**
 
-**Possible paths (all post-demo, none trivial):**
+The clap-wrapper already supports this ([wrapasvst3_entry.cpp:269-276](https://github.com/free-audio/clap-wrapper/blob/main/src/wrapasvst3_entry.cpp#L269-L276)):
 
-1. **Wait for clap-wrapper upstream** to add VST MA SDK support. Tracked in their issues. Zero work on our side; landing date unknown.
-2. **Switch VST3 wrapper** — `nih-plug` has its own VST3 backend that may handle MIDI-out plugins better. Means migrating our plugin shell off clack/clap-wrapper. Large effort.
-3. **Ship a native VST3 plugin** alongside the CLAP — use Steinberg's official VST3 SDK directly (or `vst3-rs`) to wrap our audio-thread + MCP server as a proper MIDI-effect VST3. Keeps CLAP build as-is; adds a second-bundle build path.
-4. **Accept the limitation indefinitely** — Ableton users use the two-track workaround, Bitwig/Logic/Cubase users are unaffected.
+```cpp
+if (vst3info && vst3info->features)
+  features = vst3info->features;        // direct SubCategories override
+else
+  features = clapCategoriesToVST3(clapdescr->features);
+```
+
+Returning a `clap_plugin_info_as_vst3_t { features = "Fx|Tools", ... }` from our plugin makes the wrapper emit `"Fx|Tools"` as the VST3 SubCategories — fully bypassing the NOTE_EFFECT→Instrument mapping. Combined with `count()=0` on audio ports, Ableton classifies as a MIDI effect.
+
+Blocker: clack doesn't expose this wrapper-specific extension. Two paths:
+- **Upstream contribution to clack** — cleanest. The extension is a tiny struct (vendor string + component ID + features string); mechanical addition alongside existing extension bindings.
+- **Raw FFI in this repo** — add the struct + `get_extension` hook ourselves, parallel to clack. Keeps the change local but maintains a small FFI surface.
+
+---
+
+**Feature 24b: clap-wrapper PR for `CLAP_EVENT_MIDI` output (~2-3 days).**
+
+Today ([process.cpp:808-812](https://github.com/free-audio/clap-wrapper/blob/main/src/detail/vst3/process.cpp#L808-L812)):
+
+```cpp
+case CLAP_EVENT_MIDI:
+case CLAP_EVENT_MIDI_SYSEX:
+case CLAP_EVENT_MIDI2:
+  return true;        // silently swallowed
+  break;
+```
+
+The fix is a surgical addition mirroring the existing NOTE_ON/OFF handling in the same function (~50 lines of C++ per case):
+
+- `CLAP_EVENT_MIDI`: parse status byte, fan out to `Steinberg::Vst::Event::kLegacyMIDICCOutEvent` for CC / PitchBend / Aftertouch / ProgramChange.
+- `CLAP_EVENT_MIDI_SYSEX`: translate to `Event::kDataEvent` with `DataEvent::kMidiSysEx` type.
+- `CLAP_EVENT_MIDI2`: leave as commented-out TODO per wrapper upstream's deferral of MIDI 2 SDK work.
+
+Upstream bug: [clap-wrapper #414](https://github.com/free-audio/clap-wrapper/issues/414). Maintainer response pending but the issue is open and has clear precedent in the same file.
+
+---
 
 **Temporary workaround (shipped, documented in [README.md](../../../README.md) §2):** Ableton users put Droplets on a separate MIDI track and route MIDI output into their instrument track via `MIDI From: <droplets track>`. Works today, zero plugin changes.
 
 **Non-goals:** Logic and Cubase classification are already correct (they accept the current VST3 categorization as instrument without the destructive replace behavior). This feature is Ableton-specific.
 
-**Files (when any path is picked up):** [src/lib.rs](../../../src/lib.rs) (VST3 feature gate + extension registration), [src/midi/ports.rs](../../../src/midi/ports.rs) (conditional zero audio buses once the classification override lands), likely a new `src/vst3_extension.rs` or upstream clack/clap-wrapper patches.
+**Files (when picked up):**
+- 24a: [src/lib.rs](../../../src/lib.rs) (extension registration), [src/midi/ports.rs](../../../src/midi/ports.rs) (conditional zero audio buses for VST3), either a clack upstream patch or new `src/vst3_extension.rs` for raw FFI.
+- 24b: upstream PR against `free-audio/clap-wrapper`, specifically `src/detail/vst3/process.cpp::ProcessAdapter::enqueueOutputEvent`.
 
 ---
 
