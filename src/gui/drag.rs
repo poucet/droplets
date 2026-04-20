@@ -22,6 +22,9 @@ use std::sync::{Arc, Mutex};
 
 use wry::raw_window_handle::{HandleError, HasWindowHandle, RawWindowHandle, WindowHandle};
 
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+const DRAG_PREVIEW_PNG: &[u8] = include_bytes!("../../assets/drag-preview.png");
+
 /// Wrapper around a raw parent-window handle that implements
 /// `HasWindowHandle`. Unsafe because we're asserting the underlying window
 /// outlives any borrow we hand out — in practice the DAW owns the window
@@ -95,10 +98,9 @@ pub fn start_file_drag(state: &DragState, file: PathBuf) -> DragStart {
         };
 
         let item = drag::DragItem::Files(vec![file]);
-        // No preview image — most DAWs show their own ghost of the
-        // dragged file, and building a placeholder PNG adds a surprising
-        // amount of code (platform-specific icon encoding).
-        let preview = drag::Image::Raw(Vec::new());
+        // Bundled PNG preview. An empty Vec here crashes macOS (NSImage
+        // returns nil from zero-byte data, then AppKit dereferences it).
+        let preview = drag::Image::Raw(DRAG_PREVIEW_PNG.to_vec());
 
         match drag::start_drag(
             window,
