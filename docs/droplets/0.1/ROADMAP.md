@@ -23,6 +23,8 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [ ] | P0 | 7 | macOS UI verification on demo machine | S | Critical — risk mitigation |
 | [x] | P0 | 11 | `composite` fugue type (notes + cc + bends + pressures in one fugue) | M | High — LLMs currently emit 10 fugues for one instrument; this is the biggest LLM-ergonomics fix left |
 | [x] | P1 | 12 | UI lanes for per-note bend/pressure | M | Medium — composite fugues aren't useful if the UI can't render half their content |
+| [x] | P0 | 13 | Transport phase-locking (fugues resume from correct phase on stop/play/relocate) | S | High — without this, every stop/play kills the demo |
+| [ ] | P0 | 14 | DAW track context (drum maps, device names) via host extension | L | Very High — AI currently picks random notes for drums because it has no way to know which sample is on which pad |
 
 ### Phase 02: Post-Demo Polish
 
@@ -165,6 +167,54 @@ Composite fugues from Feature 11 render as a vertical stack: piano-roll (with be
 
 ---
 
+#### Feature 13: Transport phase-locking
+
+**Problem:** Fugues were anchored to an absolute `start_beat` captured at quantization time, with loop iterations monotonically advancing `start_beat += duration_beats`. Consequences: pressing stop and then play in Bitwig (from beat 0 or from anywhere else) left looping fugues silent — their events were all in the past relative to the new transport position, and `next_event_index` was past the end. Pressing play from bar 2 also broke alignment because `current_beat` didn't line up with `start_beat + k*duration`.
+
+**Solution:** Treat looping fugues as **phase-locked to the DAW's transport timeline.** On transport start and on jump/relocate, re-anchor each looping fugue so its phase matches the current transport beat:
+
+```
+phase = (transport_beat - original_start_beat) mod duration_beats
+new_start_beat = transport_beat - phase
+next_event_index = first event with beat_offset >= phase
+```
+
+Mid-flight one-shots (`LoopMode::Once` / `Times(n)`) can't be meaningfully resumed — their events are in the past — so they're cancelled on jump. Pending (waiting) fugues re-quantize normally on the next buffer. Note-offs emitted for all held notes before re-anchoring so the synth doesn't get stuck.
+
+The existing jump-detector heuristic in `FugueSequencer::process` (comparing `current_beat` delta to expected advance) now drives phase-locking instead of "reset to waiting." The previous `just_started` fast-path that only synced `last_beat` was replaced by a real re-anchor call.
+
+**Status (2026-04-20 — shipped):** `Fugue::phase_lock(transport_beat)` on the fugue type; `FugueSequencer::phase_lock_all` replaces `handle_transport_jump`. All 114 tests pass.
+
+**Files:** [src/fugue/fugue.rs](../../../src/fugue/fugue.rs) (phase_lock method), [src/fugue/sequencer.rs](../../../src/fugue/sequencer.rs) (transport-start + jump handling).
+
+---
+
+#### Feature 14: DAW track context (drum maps, device names)
+
+**Problem:** When asked to write a drum pattern, the LLM has no way to know which sample sits on which drum pad — it guesses notes based on General MIDI conventions (kick = C1/C2, snare = D1/D2), which is often wrong for user-loaded kits. Same problem for "add a filter sweep to the Serum bass" — the model can't see what synth is on the track. The plugin has no API to introspect its host's device tree (CLAP and VST3 both isolate plugins from neighbouring devices), so the host must push this info to us.
+
+**Solution:** A small host extension (Bitwig for v1, Ableton in a follow-up) reads the project's track/device tree and pushes a `ProjectLayout` snapshot to the plugin process over HTTP. The plugin exposes three MCP tools providing tiered views:
+
+- **`get_project_state`** — minimal "what's loaded" view. For each Droplets instance: track name, primary instrument device (with preset), or drum machine with pad list including **pad name, note (as pitch-notation string), and sample_name**. This is enough for the LLM to write a drum pattern with correct note mapping.
+- **`get_track_info(instance)`** — full recursive device chain for one track. Drum pads with nested device chains, effects chain with device names + presets, no parameter lists yet.
+- **`get_device_parameters(instance, device_path)`** — parameter detail for one addressed device. For the future "map CC to Delay > Amount" flow.
+
+**Identity handshake:** Droplets exposes a read-only plugin parameter whose displayed-value string is the instance ID (`droplets-a1b2c3d4`). The host extension reads that via the Bitwig API's direct-parameter path to correlate a device-on-track with a plugin instance in the MCP server. The extension also auto-renames each Droplets instance to match its track name, so the LLM sees meaningful names (`drums`, `bass`) without user intervention.
+
+**Project-wide payload:** The extension POSTs the full `ProjectLayout` in one call (not per-instance), keyed by track name. Tracks without Droplets on them are still included, so the LLM has complete context ("there's a Synth track I can't play, but the user may ask about it").
+
+**Command channel (future):** A WebSocket endpoint (`/ws/controller`) streams `ControllerCommand`s from the plugin process to the extension — for things like "map CC 74 to Delay > Amount on track X." v1 ships the endpoint and the command queue, but no commands are emitted yet. The shape is reserved so later MCP tools (`map_cc_to_parameter`, etc.) can enqueue commands without protocol changes.
+
+**Extension language:** Kotlin `.bwextension` (JVM is the only option for Bitwig extensions; Kotlin is more compact than Java and doesn't require Gradle — a two-line `kotlinc` + `jar` script produces the artifact). Lives in a sibling directory (`bitwig-extension/`) with its own README and build script, intentionally isolated from the Rust/TypeScript build.
+
+**Graceful degradation:** In DAWs without the extension (Ableton, Logic, Live pre-Python-script), `get_project_state` returns an empty `ProjectLayout` and the LLM falls back to asking the user or to GM conventions.
+
+**Files:** [src/lib.rs](../../../src/lib.rs) + new `src/params.rs` entry (instance ID param), [src/mcp/bridge.rs](../../../src/mcp/bridge.rs) (ProjectLayout storage), [src/mcp/project.rs](../../../src/mcp/project.rs) (new — ProjectLayout / Device / DrumPad types with tiered serialization views), [src/mcp/server.rs](../../../src/mcp/server.rs) (three new MCP tools + `/project_layout` HTTP endpoint + `/ws/controller` WebSocket), [src/mcp/instructions.md](../../../src/mcp/instructions.md) (steer LLM to `get_project_state` first), new `bitwig-extension/` (Kotlin source, build script, README).
+
+See [TASKS.md](TASKS.md) for the implementation breakdown.
+
+---
+
 ### Phase 02: Post-Demo Polish
 
 #### Feature 8: Migrate UI to egui (in-process)
@@ -215,6 +265,13 @@ Phase 01:
   ↓
   12 (UI lanes for bend/pressure)              ← depends on 11: composite fugues aren't
                                                  useful if the UI can't render them
+  ↓
+  13 (transport phase-locking)                ← stop/play reliability  [done]
+  ↓
+  14 (DAW track context)                       ← AI can finally see drums and synths;
+                                                 Rust side first (instance ID param,
+                                                 ProjectLayout types, endpoints, MCP tools,
+                                                 instructions); Bitwig extension follows
   ↓
   6 (multi-instance validation) + 7 (UI verify) ← both on demo machine; final
   ↓
