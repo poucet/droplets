@@ -41,7 +41,7 @@ Split into two phases: the **Rust side** is DAW-agnostic and unblocks everything
 | [x] | 14b.7 | Auto-rename Droplets instance | `HashSet<String>` of already-renamed IDs; first sight POSTs `{ instance, name }` to `/rename_instance`. |
 | [x] | 14b.8 | Build ProjectLayout JSON + POST | 150ms-debounced rebuild via `host.scheduleTask` coalesces observer bursts at load. Hand-written [Json.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/Json.kt) (no deps). POST via `java.net.http.HttpClient.sendAsync` — I/O never hits the controller thread. |
 | [x] | 14b.9 | WebSocket client for `/ws/controller` | [DropletsClient.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsClient.kt): `HttpClient.newWebSocketBuilder().buildAsync(...)` on init. Exponential backoff 1s → 30s cap on connect fail / close / error. v1 logs received text frames. |
-| [ ] | 14b.10 | Bitwig-demo walkthrough | Steps captured in [extensions/bitwig/README.md](../../../extensions/bitwig/README.md); needs execution on the demo machine. |
+| [x] | 14b.10 | Bitwig-demo walkthrough | Verified end-to-end on 2026-04-20: extension loads, POSTs project layout, auto-renames Droplets instances to track names, drum-pad notes come through correctly, WebSocket connects. |
 
 ### Phase 14c — Ableton (follow-up, not demo-critical)
 

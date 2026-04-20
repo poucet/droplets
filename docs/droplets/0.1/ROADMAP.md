@@ -24,7 +24,7 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [x] | P0 | 11 | `composite` fugue type (notes + cc + bends + pressures in one fugue) | M | High — LLMs currently emit 10 fugues for one instrument; this is the biggest LLM-ergonomics fix left |
 | [x] | P1 | 12 | UI lanes for per-note bend/pressure | M | Medium — composite fugues aren't useful if the UI can't render half their content |
 | [x] | P0 | 13 | Transport phase-locking (fugues resume from correct phase on stop/play/relocate) | S | High — without this, every stop/play kills the demo |
-| [~] | P0 | 14 | DAW track context (drum maps, device names) via host extension | L | Very High — AI currently picks random notes for drums because it has no way to know which sample is on which pad. **Rust side + Bitwig extension shipped 2026-04-20; demo-machine walkthrough pending.** |
+| [x] | P0 | 14 | DAW track context (drum maps, device names) via host extension | L | Very High — AI currently picks random notes for drums because it has no way to know which sample is on which pad. **Rust side + Bitwig extension shipped 2026-04-20; walkthrough verified same day.** |
 
 ### Phase 02: Post-Demo Polish
 
