@@ -42,7 +42,7 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [ ] | P3 | 21 | MPE round-trip for per-note expression in drag-out/drag-in | L | Medium — today Features 15/16 drop pitch bend + pressure because MIDI 1.0 SMF has no per-note target. MPE (channel-per-note encoding) is understood by Logic, Bitwig, Live 12+, Cubase, so a `.mid` emitted in MPE shape round-trips the full expressivity. Cost: dynamic channel allocation on export, channel→note attribution on import |
 | [ ] | P4 | 22 | Adopt MIDI 2.0 / SMF2 for native per-note support | L | Low (today) — SMF2 has true per-note bend/pressure in the format itself. DAW support is inconsistent as of 2026; revisit once Logic / Bitwig / Live all read SMF2 natively. Supersedes Feature 21 when that happens |
 | [ ] | P3 | 23 | `.bwclip` (dawproject) export/import alongside `.mid` | M | Medium (Bitwig-only) — lets users round-trip launcher clips via Bitwig's "Save Launcher Clip to Library" (which Bitwig refuses to emit as `.mid`). Preserves per-note expression, tag, color, and timing metadata that MIDI 1.0 drops. Format is Bitwig's open dawproject spec (XML in a zip). Settings toggle chooses `.mid` vs `.bwclip` for drag-out |
-| [ ] | P2 | 24 | VST3 MIDI-effect classification for Ableton Live | M | Medium — today the VST3 build is categorized as an instrument, so Ableton replaces existing devices on the track when Droplets is added (one-instrument-per-track rule). Users work around via two-track MIDI routing. Proper fix: wire the clap-wrapper's `CLAP_PLUGIN_AS_VST3` extension (external/clap-wrapper/include/clapwrapper/vst3.h) to override the VST3 SubCategories string to `Fx\|Tools`, then remove the audio bus for VST3 builds. clack doesn't expose this extension — needs either a clack upstream contribution or raw CLAP FFI plumbing |
+| [ ] | P2 | 24 | VST3 MIDI-effect classification for Ableton Live | L | Medium — today the VST3 build is categorized as an instrument, so Ableton replaces existing devices on the track when Droplets is added. Users work around via two-track MIDI routing. **Blocked upstream**: clap-wrapper acknowledges "VST3 does not support MIDI OUT properly [for pure MIDI plugins]; we would need the VST Module Architecture SDK." Category override alone is insufficient. Options: wait for wrapper upstream, switch wrapper (nih-plug), or ship a native VST3 alongside CLAP |
 
 ---
 
@@ -448,17 +448,24 @@ The MCP-side bare `/project_layout` and `/rename_instance` routes go away — bo
 
 **Root cause (validated 2026-04-20):** the clap-wrapper's `NOTE_EFFECT → Instrument|Synth` mapping ([external/clap-wrapper/src/detail/vst3/categories.cpp:62](https://github.com/free-audio/clap-wrapper/blob/main/src/detail/vst3/categories.cpp#L62)) forces the `"Instrument"` token into the VST3 SubCategories string for any plugin declaring NOTE_EFFECT. Attempts to drop INSTRUMENT and use UTILITY alone produced a bare `"Tools"` subcategory — Ableton rejected the plugin at instantiation (likely the wrapper's audio-bus expectations conflict with our zero-audio-bus declaration, or Ableton refuses plugins without a recognized main category).
 
-**Solution:** wire the wrapper's dedicated escape hatch — the `CLAP_PLUGIN_AS_VST3` extension ([vst3.h](https://github.com/free-audio/clap-wrapper/blob/main/include/clapwrapper/vst3.h)) exposes a `clap_plugin_info_as_vst3_t.features` field whose string goes directly into `PClassInfo2::SubCategories`, bypassing the clap-features-to-vst3-category translation entirely. Emit `"Fx|Tools"` there, drop the audio output bus for VST3 builds (handled at port declaration time), and Ableton should shelve Droplets as a proper MIDI effect — stackable before any synth on the same track.
+**Deeper blocker (found 2026-04-20, clap-wrapper upstream statement):**
 
-**Blocker:** clack (our CLAP framework) does not currently expose this wrapper-specific extension. Two paths:
-- **Upstream contribution to clack** — cleanest, benefits other users. The extension is a tiny struct (vendor string + component ID + features string); implementing it in clack is straightforward if the maintainer is willing.
-- **Raw FFI** — add the `clap_plugin_info_as_vst3` struct ourselves, register via clap's generic `get_extension` entry point. Keeps the change local but means maintaining a small CLAP-FFI surface parallel to clack.
+> "VST3 does not support MIDI OUT properly. For pure MIDI plugins, we would need the VST Module Architecture SDK, which we do not have yet in support. Perhaps we can investigate on that later on."
 
-**Temporary workaround (documented in [README.md](../../../README.md) §2):** Ableton users put Droplets on a separate MIDI track and route MIDI output into their instrument track via `MIDI From: <droplets track>`. Works today, zero plugin changes.
+So even if we wire `CLAP_PLUGIN_AS_VST3` to override the subcategory and drop the audio bus, the wrapper's VST3 side does not route MIDI output correctly for pure-MIDI plugins — it needs Steinberg's VST MA SDK integration, which clap-wrapper has explicitly deferred. The category-string fix alone would produce a plugin Ableton shelves correctly but whose MIDI output doesn't reach downstream devices.
+
+**Possible paths (all post-demo, none trivial):**
+
+1. **Wait for clap-wrapper upstream** to add VST MA SDK support. Tracked in their issues. Zero work on our side; landing date unknown.
+2. **Switch VST3 wrapper** — `nih-plug` has its own VST3 backend that may handle MIDI-out plugins better. Means migrating our plugin shell off clack/clap-wrapper. Large effort.
+3. **Ship a native VST3 plugin** alongside the CLAP — use Steinberg's official VST3 SDK directly (or `vst3-rs`) to wrap our audio-thread + MCP server as a proper MIDI-effect VST3. Keeps CLAP build as-is; adds a second-bundle build path.
+4. **Accept the limitation indefinitely** — Ableton users use the two-track workaround, Bitwig/Logic/Cubase users are unaffected.
+
+**Temporary workaround (shipped, documented in [README.md](../../../README.md) §2):** Ableton users put Droplets on a separate MIDI track and route MIDI output into their instrument track via `MIDI From: <droplets track>`. Works today, zero plugin changes.
 
 **Non-goals:** Logic and Cubase classification are already correct (they accept the current VST3 categorization as instrument without the destructive replace behavior). This feature is Ableton-specific.
 
-**Files:** [src/lib.rs](../../../src/lib.rs) (VST3 feature gate + extension registration), [src/midi/ports.rs](../../../src/midi/ports.rs) (conditional zero audio buses once the classification override lands), likely a new `src/vst3_extension.rs` or upstream clack patch.
+**Files (when any path is picked up):** [src/lib.rs](../../../src/lib.rs) (VST3 feature gate + extension registration), [src/midi/ports.rs](../../../src/midi/ports.rs) (conditional zero audio buses once the classification override lands), likely a new `src/vst3_extension.rs` or upstream clack/clap-wrapper patches.
 
 ---
 
