@@ -12,4 +12,12 @@ semitones: number, } | { "type": "per_note_pressure", channel: number, note: num
 /**
  * Pressure value 0.0-1.0
  */
-pressure: number, };
+pressure: number, } | { "type": "slot", 
+/**
+ * Slot index 0–15.
+ */
+slot: number, 
+/**
+ * Normalized value 0.0–1.0.
+ */
+value: number, curve: InterpolationMode | null, };

@@ -22,6 +22,20 @@ pub struct ActiveCcRamp {
     pub interpolation: InterpolationMode,
 }
 
+/// Active slot-param ramp. Direct analogue of [`ActiveCcRamp`] but targets a
+/// Droplets plugin slot (0–15) and carries normalized float values instead of
+/// 0-127 CC ints. Slot ramps emit host `ParamValueEvent`s on the audio thread
+/// so the DAW records the automation like any other plugin-param change.
+#[derive(Debug, Clone)]
+pub struct ActiveSlotRamp {
+    pub slot: u8,
+    pub start_value: f32,
+    pub end_value: f32,
+    pub start_beat: f64,
+    pub end_beat: f64,
+    pub interpolation: InterpolationMode,
+}
+
 /// Runtime state for an active fugue
 pub struct Fugue {
     /// The fugue definition being played
@@ -46,6 +60,11 @@ pub struct Fugue {
     cc_state: [[Option<u8>; 128]; 16],
     /// Active CC ramps that span multiple buffers
     active_ramps: Vec<ActiveCcRamp>,
+    /// Last known slot value per slot index (start point for interpolation).
+    /// `None` means this slot hasn't been touched by this fugue yet.
+    slot_state: [Option<f32>; 16],
+    /// Active slot-param ramps that span multiple buffers.
+    active_slot_ramps: Vec<ActiveSlotRamp>,
 }
 
 // Helper to create default CC state array
@@ -67,6 +86,8 @@ impl Fugue {
             cancelled: false,
             cc_state: default_cc_state(),
             active_ramps: Vec::new(),
+            slot_state: [None; 16],
+            active_slot_ramps: Vec::new(),
         }
     }
 
@@ -259,6 +280,12 @@ impl Fugue {
             beats_per_sample,
             &mut events,
         );
+        self.process_active_slot_ramps(
+            current_beat,
+            end_beat,
+            beats_per_sample,
+            &mut events,
+        );
 
         // Process events in this range
         while self.next_event_index < self.definition.events.len() {
@@ -327,7 +354,80 @@ impl Fugue {
                 );
                 events.push(ProcessedEvent::Instant { sample_offset, message: msg });
             }
+            FugueEvent::Slot { slot, value, curve } => {
+                self.process_slot_event(*slot, *value, *curve, beat_offset, sample_offset, events);
+            }
         }
+    }
+
+    /// Process a slot-param event — mirrors [`Self::process_cc_event`] for the
+    /// slot/param path. Values are normalized 0..1 floats instead of 0-127 CC
+    /// ints; output is a [`ProcessedEvent::SlotInstant`] or [`ProcessedEvent::SlotRamp`].
+    fn process_slot_event(
+        &mut self,
+        slot: u8,
+        value: f32,
+        event_curve: Option<InterpolationMode>,
+        beat_offset: f64,
+        sample_offset: u32,
+        events: &mut Vec<ProcessedEvent>,
+    ) {
+        let slot_idx = slot as usize;
+        if slot_idx >= 16 {
+            return;
+        }
+        let clamped = value.clamp(0.0, 1.0);
+
+        let prev_value = self.slot_state[slot_idx];
+        self.slot_state[slot_idx] = Some(clamped);
+
+        let segment_curve = event_curve.unwrap_or(self.definition.cc_interpolation);
+
+        if prev_value.is_none() || segment_curve == InterpolationMode::None {
+            events.push(ProcessedEvent::SlotInstant {
+                sample_offset,
+                slot,
+                value: clamped,
+            });
+            return;
+        }
+
+        let start_value = prev_value.unwrap();
+        if (start_value - clamped).abs() < f32::EPSILON {
+            events.push(ProcessedEvent::SlotInstant {
+                sample_offset,
+                slot,
+                value: clamped,
+            });
+            return;
+        }
+
+        let ramp_start_beat = self.find_previous_slot_beat(slot, beat_offset);
+        let absolute_start_beat = self.start_beat + ramp_start_beat;
+        let absolute_end_beat = self.start_beat + beat_offset;
+
+        self.active_slot_ramps.retain(|r| r.slot != slot);
+        self.active_slot_ramps.push(ActiveSlotRamp {
+            slot,
+            start_value,
+            end_value: clamped,
+            start_beat: absolute_start_beat,
+            end_beat: absolute_end_beat,
+            interpolation: segment_curve,
+        });
+    }
+
+    /// Find the beat offset of the previous slot event for this slot index.
+    fn find_previous_slot_beat(&self, slot: u8, current_beat_offset: f64) -> f64 {
+        for i in (0..self.next_event_index).rev() {
+            let event = &self.definition.events[i];
+            if let FugueEvent::Slot { slot: s, .. } = event.event {
+                if s == slot && event.beat_offset < current_beat_offset {
+                    return event.beat_offset;
+                }
+            }
+        }
+        0.0
     }
 
     /// Process a CC event — either emit instant or start a ramp.
@@ -496,7 +596,85 @@ impl Fugue {
     pub fn clear_cc_state(&mut self) {
         self.cc_state = default_cc_state();
         self.active_ramps.clear();
+        self.slot_state = [None; 16];
+        self.active_slot_ramps.clear();
     }
+
+    /// Slot analogue of [`Self::process_active_ramps`]. Shares the per-buffer
+    /// clipping + start/end sample math; differs only in output variant.
+    fn process_active_slot_ramps(
+        &mut self,
+        current_beat: f64,
+        end_beat: f64,
+        beats_per_sample: f64,
+        events: &mut Vec<ProcessedEvent>,
+    ) {
+        let mut finished_indices = Vec::new();
+
+        for (idx, ramp) in self.active_slot_ramps.iter().enumerate() {
+            if ramp.end_beat <= current_beat {
+                finished_indices.push(idx);
+                continue;
+            }
+            if ramp.start_beat >= end_beat {
+                continue;
+            }
+
+            let ramp_start_in_buffer = ramp.start_beat.max(current_beat);
+            let ramp_end_in_buffer = ramp.end_beat.min(end_beat);
+
+            let start_sample = ((ramp_start_in_buffer - current_beat) / beats_per_sample)
+                .round()
+                .max(0.0) as u32;
+            let end_sample = ((ramp_end_in_buffer - current_beat) / beats_per_sample)
+                .round()
+                .max(0.0) as u32;
+
+            let ramp_duration = ramp.end_beat - ramp.start_beat;
+            if ramp_duration <= 0.0 {
+                continue;
+            }
+
+            let t_start = (ramp_start_in_buffer - ramp.start_beat) / ramp_duration;
+            let t_end = (ramp_end_in_buffer - ramp.start_beat) / ramp_duration;
+
+            let start_value = interpolate_slot_value(
+                ramp.start_value,
+                ramp.end_value,
+                t_start,
+                ramp.interpolation,
+            );
+            let end_value = interpolate_slot_value(
+                ramp.start_value,
+                ramp.end_value,
+                t_end,
+                ramp.interpolation,
+            );
+
+            events.push(ProcessedEvent::SlotRamp {
+                slot: ramp.slot,
+                start_value,
+                end_value,
+                start_sample,
+                end_sample,
+                interpolation: ramp.interpolation,
+            });
+
+            if ramp.end_beat <= end_beat {
+                finished_indices.push(idx);
+            }
+        }
+
+        for idx in finished_indices.into_iter().rev() {
+            self.active_slot_ramps.remove(idx);
+        }
+    }
+}
+
+/// Slot-value interpolation — float analogue of [`interpolate_value`].
+fn interpolate_slot_value(start: f32, end: f32, t: f64, mode: InterpolationMode) -> f32 {
+    let tc = mode.apply_curve(t);
+    (start as f64 + (end - start) as f64 * tc) as f32
 }
 
 /// Interpolate between two values. The curve shape comes from

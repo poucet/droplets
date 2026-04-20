@@ -201,6 +201,24 @@ pub enum FugueEvent {
         /// Pressure value 0.0-1.0
         pressure: f32,
     },
+    /// Slot parameter ramp point — automates one of the 16 Droplets plugin
+    /// slot params (0-15). Writes the slot's normalized value and emits a host
+    /// `ParamValueEvent` from the audio thread so the DAW sees it as real
+    /// automation: the user maps each slot to a synth parameter once in the DAW
+    /// (right-click → Map in Bitwig, Configure → drag in Ableton), then the LLM
+    /// drives slots without any CC routing at all.
+    ///
+    /// `curve` controls interpolation for the ramp ARRIVING at this point,
+    /// identical semantics to [`FugueEvent::Cc`]. The raw MIDI CC path remains
+    /// available via `Cc` for hardware targets.
+    Slot {
+        /// Slot index 0–15.
+        slot: u8,
+        /// Normalized value 0.0–1.0.
+        value: f32,
+        #[serde(default)]
+        curve: Option<InterpolationMode>,
+    },
 }
 
 impl FugueEvent {
@@ -237,6 +255,10 @@ impl FugueEvent {
             Self::Cc { channel, .. } => *channel,
             Self::PerNotePitchBend { channel, .. } => *channel,
             Self::PerNotePressure { channel, .. } => *channel,
+            // Slot params are global per-plugin, not per-channel. Report 0 so
+            // callers that bucket events by channel (e.g. active-note tracking)
+            // behave sensibly without special-casing.
+            Self::Slot { .. } => 0,
         }
     }
 
@@ -247,7 +269,7 @@ impl FugueEvent {
             Self::NoteOff { note, .. } => Some(*note),
             Self::PerNotePitchBend { note, .. } => Some(*note),
             Self::PerNotePressure { note, .. } => Some(*note),
-            Self::Cc { .. } => None,
+            Self::Cc { .. } | Self::Slot { .. } => None,
         }
     }
 }
@@ -444,6 +466,23 @@ pub enum ProcessedEvent {
         cc: u8,
         start_value: u8,
         end_value: u8,
+        start_sample: u32,
+        end_sample: u32,
+        interpolation: InterpolationMode,
+    },
+    /// Instant write to a slot param. Audio thread stores the value and emits
+    /// a host `ParamValueEvent` so the DAW picks it up as automation.
+    SlotInstant {
+        sample_offset: u32,
+        slot: u8,
+        value: f32,
+    },
+    /// Slot param ramp — analogous to [`ProcessedEvent::CcRamp`] but targeting
+    /// a Droplets plugin slot param instead of a MIDI CC.
+    SlotRamp {
+        slot: u8,
+        start_value: f32,
+        end_value: f32,
         start_sample: u32,
         end_sample: u32,
         interpolation: InterpolationMode,

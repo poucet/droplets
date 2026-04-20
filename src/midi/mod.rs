@@ -8,9 +8,10 @@
 
 use clack_plugin::events::event_types::{
     Midi2Event, MidiEvent, NoteExpressionEvent, NoteExpressionType, NoteOffEvent, NoteOnEvent,
-    TransportFlags,
+    ParamValueEvent, TransportFlags,
 };
 use clack_plugin::events::{Match, Pckn};
+use clack_plugin::utils::{ClapId, Cookie};
 use clack_plugin::host::HostAudioProcessorHandle;
 use clack_plugin::plugin::{PluginAudioProcessor, PluginError};
 use clack_plugin::process::{Audio, Events, PluginAudioConfiguration, Process, ProcessStatus};
@@ -111,7 +112,7 @@ fn build_ump_per_note_mgmt(group: u8, channel: u8, note: u8, flags: u8) -> [u32;
 // =============================================================================
 
 pub struct DropletMidiProcessor<'a> {
-    shared: &'a DropletShared<'a>,
+    pub(crate) shared: &'a DropletShared<'a>,
     midi_consumer: Consumer<MidiMessage>,
     fugue_sequencer: FugueSequencer,
     fugue_info_handle: FugueInfoHandle,
@@ -199,6 +200,13 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
                     let _ = events.output.try_push(&NoteExpressionEvent::new(time, expr.pckn(), expr_type, expr.value()));
                 }
             }
+
+            // Apply host-driven slot-param automation inline with the block.
+            // Hosts deliver param changes through `events.input` during
+            // process(); the audio-processor flush() path only fires when the
+            // host calls it out-of-band (e.g. while stopped). Handling both
+            // keeps automation and offline param edits consistent.
+            crate::instance_param::apply_slot_param_event(&self.shared.params, event);
         }
 
         // Output MIDI from MCP server (immediate messages)
@@ -329,6 +337,91 @@ impl<'a> DropletMidiProcessor<'a> {
                     events,
                 );
             }
+            ProcessedEvent::SlotInstant { sample_offset, slot, value } => {
+                self.output_slot_value(*slot, *value, *sample_offset, events);
+            }
+            ProcessedEvent::SlotRamp {
+                slot,
+                start_value,
+                end_value,
+                start_sample,
+                end_sample,
+                interpolation,
+            } => {
+                self.output_slot_ramp(
+                    *slot,
+                    *start_value,
+                    *end_value,
+                    *start_sample,
+                    *end_sample,
+                    *interpolation,
+                    events,
+                );
+            }
+        }
+    }
+
+    /// Write a slot value: update the shared slot store AND emit a host
+    /// `ParamValueEvent` so the DAW sees the change as real automation (records
+    /// into clip lanes, updates plugin-UI sliders, etc.).
+    ///
+    /// Deliberately bypasses the CC-emission side of `DropletParams::set_slot`.
+    /// Slot fugues target the plugin's host-param surface; the user is expected
+    /// to have mapped that param to a synth control via their DAW's native
+    /// mapping flow. Re-emitting CC would add a parallel, unwanted signal path.
+    fn output_slot_value(&self, slot: u8, value: f32, sample_offset: u32, events: &mut Events) {
+        let idx = slot as usize;
+        if idx >= crate::params::NUM_CC_SLOTS {
+            return;
+        }
+        let clamped = value.clamp(0.0, 1.0);
+        self.shared.params.slots[idx].value.store(clamped as f64);
+
+        let param_id = ClapId::new(crate::instance_param::SLOT_PARAM_BASE + slot as u32);
+        let event = ParamValueEvent::new(
+            sample_offset,
+            param_id,
+            Pckn::match_all(),
+            clamped as f64,
+            Cookie::empty(),
+        );
+        let _ = events.output.try_push(&event);
+    }
+
+    /// Emit a sequence of slot `ParamValueEvent`s interpolating start→end
+    /// across the buffer. Follows the same cadence as `output_cc_ramp`
+    /// (one event every `CC_INTERPOLATION_SAMPLES` samples) so slot automation
+    /// feels as smooth as CC automation without flooding the event queue.
+    fn output_slot_ramp(
+        &self,
+        slot: u8,
+        start_value: f32,
+        end_value: f32,
+        start_sample: u32,
+        end_sample: u32,
+        interpolation: InterpolationMode,
+        events: &mut Events,
+    ) {
+        if interpolation == InterpolationMode::None {
+            self.output_slot_value(slot, end_value, end_sample, events);
+            return;
+        }
+
+        let duration = end_sample.saturating_sub(start_sample);
+        if duration == 0 {
+            self.output_slot_value(slot, end_value, end_sample, events);
+            return;
+        }
+
+        let num_steps = (duration / CC_INTERPOLATION_SAMPLES).max(1);
+        let step_size = duration / num_steps;
+
+        for i in 0..=num_steps {
+            let sample = start_sample + (i * step_size).min(duration);
+            let t = i as f64 / num_steps as f64;
+            let tc = interpolation.apply_curve(t);
+            let value = start_value + (end_value - start_value) * tc as f32;
+            self.output_slot_value(slot, value, sample, events);
         }
     }
 
