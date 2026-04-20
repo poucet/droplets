@@ -15,6 +15,18 @@ When `layout_available` is false, ask the user: "Which note is your kick on?" ra
 ## queue_fugue — primary composition tool
 Batches multiple fugues into one call. Each fugue is atomic; swap one musical part by queueing a new fugue with the same tag + `cancel_mode: "tag:<name>"`. The other parts keep playing untouched.
 
+**ALWAYS set `instance` explicitly, and match the part to the instrument.** `queue_fugue` routes to exactly ONE Droplets instance per call — the top-level `instance` field names which one (e.g. `"bass"`, `"lead"`, `"drums"` — whatever `get_project_state` / `list_instances` returned).
+
+Each instance sits on a track with a specific instrument. **You must route each musical part to an instance whose instrument can actually play it:**
+- Drum / percussion parts → a drum-machine instance (kicks, snares, hats use the pad map from `get_project_state`, not melodic pitches).
+- Bass lines → a bass synth instance (low register, monophonic-friendly).
+- Chords / pads → a polyphonic pad or keys instance.
+- Leads / melodies → a lead synth instance.
+
+Sending a bass line to a drum machine will trigger whatever pad happens to sit on those notes (usually silence or random percussion). Sending a kick pattern to a synth plays it as pitched notes. If `get_project_state` doesn't show an instance suitable for a part you want to write, ask the user rather than forcing it onto a mismatched track.
+
+Never rely on `"default"` when multiple instances are loaded. To drive multiple instruments, issue one `queue_fugue` call per instance (parallelizable).
+
 **ALWAYS default to looping unless the user explicitly asks for a one-shot.** Set `loop_mode: "forever"` (or omit it — it's the default) and write short, composable fugues you can replace via tag swap. This is what makes the system feel musical — patterns keep running while you edit one layer at a time. One-shot fugues are for stings and fills only, not song structure.
 
 Fugue content types:

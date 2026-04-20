@@ -1,5 +1,7 @@
 Queue one or more fugues for transport-synchronized playback. Each fugue is atomic — replaced together, cancelled together, one UI row.
 
+**Required:** top-level `instance` — which Droplets plugin instance to target (from `get_project_state` / `list_instances`). One call = one instance; for multi-instrument arrangements, issue one `queue_fugue` call per instance (parallelizable). Avoid `"default"` when multiple instances are loaded.
+
 ## Fugue types (use the `type` field)
 
 - **`composite`** — PREFERRED for single-instrument moments. Bundles notes + cc lanes + per-note bend lanes + per-note pressure lanes in ONE fugue. Fields: `notes` (required), `cc` (array of `{cc, points, interpolation?}`), `pitch_bends` (array of `{note, points, interpolation?}`), `pressures` (array of `{note, points, interpolation?}`). Everything optional except `notes`.
