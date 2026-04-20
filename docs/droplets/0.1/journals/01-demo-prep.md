@@ -92,3 +92,41 @@ notifications not demo-critical), 21 / 22 / 23 (all format work).
 Only remaining critical demo item is **14b.10** — Bitwig
 extension walkthrough on the actual demo machine. Everything
 else is post-demo.
+
+---
+
+## 2026-04-20 (late) — Ableton MIDI-effect classification investigation
+
+User tried putting Droplets on a track with a drum rack in Ableton
+and got the one-instrument-per-track replacement behavior. Spent
+a session trying to reclassify the VST3 as a MIDI effect. Two dead
+ends:
+
+1. **Drop audio bus, use `[UTILITY]` category** — emits bare
+   `"Tools"` subcategory, zero audio buses. Ableton refused to
+   instantiate: "This VST3 Plug-in could not be opened." Likely
+   the clap-wrapper synthesizes an audio bus regardless of our
+   `count()=0` report, and the mismatch confuses Ableton.
+2. **Keep audio bus, drop INSTRUMENT token from features** — the
+   wrapper's `NOTE_EFFECT → Instrument|Synth` mapping
+   ([categories.cpp:62](https://github.com/free-audio/clap-wrapper/blob/main/src/detail/vst3/categories.cpp#L62))
+   always forces `Instrument` into the category string for
+   note-effect plugins. No way around it via CLAP feature flags.
+
+Real fix exists: `CLAP_PLUGIN_AS_VST3` extension
+([vst3.h](https://github.com/free-audio/clap-wrapper/blob/main/include/clapwrapper/vst3.h))
+has a `features` field that directly overrides the VST3
+SubCategories string, bypassing the translation table entirely.
+Emit `"Fx|Tools"` there + drop the audio bus, and Ableton treats
+it as a MIDI effect. Blocker: clack doesn't expose this wrapper
+extension — needs an upstream contribution or raw CLAP FFI
+plumbing. Not a demo-safe task.
+
+Reverted all code changes to baseline. Documented the two-track
+MIDI routing workaround in README.md §2 (Droplets on track 1,
+instrument on track 2, `MIDI From: Droplets`). Tracked the proper
+fix as **Feature 24** in ROADMAP.md.
+
+**Takeaway for the demo:** demo is on Bitwig where the issue
+doesn't exist. Ableton users get the documented workaround. Good
+enough.
