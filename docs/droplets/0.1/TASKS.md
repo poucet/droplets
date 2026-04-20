@@ -55,6 +55,94 @@ Remote Script (Python) or M4L device — decide based on Ableton version of demo
 
 ---
 
+## Feature 15: Native drag-out of fugues → DAW clip (`.mid`)
+
+See [ROADMAP.md §Feature 15](ROADMAP.md#feature-15-native-drag-out-of-fugues--daw-clip-mid) for the problem statement. Below is the implementation breakdown.
+
+### Phase 15a — Exporter: merge active fugues
+
+| Done | # | Task | Notes |
+|------|---|------|-------|
+| [ ] | 15a.1 | Extend [src/fugue/export.rs](../../../src/fugue/export.rs) with `fugues_to_smf(&[FugueDefinition], tempo, duration_beats)` | Single-fugue `fugue_to_smf` stays as a thin wrapper that forwards a one-element slice. Merge events from all inputs into one sorted timeline; each fugue maps to its own MIDI track (SMF format 1) so per-part editing in the DAW is clean. |
+| [ ] | 15a.2 | Choose MIDI-file format: one track per fugue-tag vs one-merged-track | Decision: one track per tag. Tagged-fugue groups map to tracks; untagged fugues share a "misc" track. Reason: user opens the file in Bitwig's piano roll and sees "bass / lead / pad" as separate lanes instead of one confusing blob. |
+| [ ] | 15a.3 | Loop-aware duration | When all inputs share the same loop length, export one cycle. When durations differ, export LCM of durations (capped at 32 bars) so each part ends on a musical boundary. Write a TimeSignature meta-event from `transport.time_sig_numerator`. |
+| [ ] | 15a.4 | Tests | Fixtures covering: single fugue, multi-fugue with different tags, LCM duration, mixed interpolation curves round-tripping through the exporter. |
+
+### Phase 15b — `drag` crate + IPC wiring
+
+| Done | # | Task | Notes |
+|------|---|------|-------|
+| [ ] | 15b.1 | Add `drag = "2.1"` to Cargo.toml | Cross-platform wrapper around `NSFilePromiseProvider` / `IDropSource` / XDND. Small crate (~900 LOC, no heavyweight deps). |
+| [ ] | 15b.2 | New wry IPC handler `start_drag` in [src/gui/webview.rs](../../../src/gui/webview.rs) | Receives `{ instance, fugue_ids?: string[], active?: bool }`. `fugue_ids` = specific fugues; `active` = "all currently playing." Writes `.mid` to `std::env::temp_dir()/droplets-<timestamp>.mid`. |
+| [ ] | 15b.3 | Start native drag from the wry window handle | `drag::start_drag(window_handle, DragItem::Files(vec![path]), Image::Raw(...), on_result, options)`. Place-holder image (simple MIDI icon) acceptable for v1. |
+| [ ] | 15b.4 | Temp file cleanup | Spawn a thread on drag-result callback to delete the file after 60s — gives the DAW time to copy/index. Alternative: use `tempfile::NamedTempFile` with manual drop-delay. |
+| [ ] | 15b.5 | Fallback when drag isn't supported | If `drag::start_drag` errors (rare — mostly Linux distro mismatches), fall back to `open::that(&path)` to reveal in the file manager. Return the path to the frontend so it can show a toast with it. |
+
+### Phase 15c — Drag zones in UI
+
+| Done | # | Task | Notes |
+|------|---|------|-------|
+| [ ] | 15c.1 | Drag handle per-fugue in [FugueViewer.tsx](../../../frontend/src/components/FugueViewer.tsx) | Small 🎵-icon button on each fugue row. `onMouseDown` → IPC `start_drag` with `{ instance, fugue_ids: [id] }`. Crucially: use `mousedown` not `click` — native drag must start during the initial mouse-down gesture on Windows/macOS. |
+| [ ] | 15c.2 | "Drag all active" affordance in [FugueList.tsx](../../../frontend/src/components/FugueList.tsx) | Single handle at the list header. IPC `start_drag` with `{ instance, active: true }`. |
+| [ ] | 15c.3 | Visual feedback | Drag handle highlights while the user holds the button. Show a count badge (🎵 × N) on the "all active" handle so the user knows how many fugues will bundle. |
+| [ ] | 15c.4 | Platform caveats doc | Short note in [FUGUE_UI.md](../../FUGUE_UI.md) about macOS Gatekeeper: first-time drag may require a quarantine-bypass dialog for the temp file. Users drop onto a Bitwig clip and it works. |
+
+### Phase 15d — HTTP endpoints for LLM / scripted use
+
+| Done | # | Task | Notes |
+|------|---|------|-------|
+| [ ] | 15d.1 | `GET /api/export/fugue/:id` | Serves the `.mid` for one fugue. Query param `tempo` overrides the session tempo. Response `Content-Type: audio/midi`. Useful as a test harness for 15a and for MCP-driven export flows. |
+| [ ] | 15d.2 | `GET /api/export/active?instance=` | Serves a `.mid` bundling all currently-active fugues on the instance. Same format as the drag-out path (one track per tag). |
+| [ ] | 15d.3 | New MCP tool `export_fugues(instance, fugue_ids?)` | Returns `{ path: "/path/to/file.mid", size_bytes }`. The file is written to the user-configured export dir (not the temp dir the drag-out uses). Useful when the LLM wants to "save this pattern somewhere I can find later." |
+
+### Phase 15e — Caveats + docs
+
+| Done | # | Task | Notes |
+|------|---|------|-------|
+| [ ] | 15e.1 | Document automation limitations | MIDI export carries notes + CC only. Slot param automation doesn't have a portable MIDI representation. Guidance in [FUGUE.md](../../FUGUE.md): to capture slot automation in the DAW, arm automation lanes and replay the fugue. |
+| [ ] | 15e.2 | Update [instructions.md](../../../src/mcp/instructions.md) | Tell the LLM that `export_fugues` exists for hand-off workflows. |
+
+---
+
+## Feature 16: Native drag-in of `.mid` → fugue on an instance
+
+See [ROADMAP.md §Feature 16](ROADMAP.md#feature-16-native-drag-in-of-mid--fugue-on-an-instance). Implements the return leg of the round-trip.
+
+### Phase 16a — MIDI parser → FugueDefinition
+
+| Done | # | Task | Notes |
+|------|---|------|-------|
+| [ ] | 16a.1 | New [src/fugue/import.rs](../../../src/fugue/import.rs) with `smf_to_fugues(&[u8], opts) -> Result<Vec<FugueDefinition>, String>` | Opts: default channel, loop_mode, quantize, tag-prefix. Parse via `midly::Smf::parse` (already a dep). Handle both SMF format 0 and format 1. |
+| [ ] | 16a.2 | Note on/off pairing | Track active (channel, note) pairs across a single parse; emit a note event with `duration = off_tick - on_tick` scaled to beats via the file's PPQ. A dangling note-on at EOF closes at the last parsed tick. |
+| [ ] | 16a.3 | CC events passthrough | Straight translation: `MidiMessage::Controller { cc, value }` → `FugueEvent::Cc { channel, cc, value, curve: None }`. Fugue-level `cc_interpolation: Linear` so ramps rebuild smoothly. |
+| [ ] | 16a.4 | Drop per-note expression | `PitchBend` and `Aftertouch` ignored — MIDI 1.0 channel events don't carry the per-note target. Document the lossy conversion (16a.1 opts can include `strict: bool` that errors on unsupported events instead). |
+| [ ] | 16a.5 | Multi-track handling | SMF format 1 → one `FugueDefinition` per track, each gets the track name as its tag (falls back to `imported-N`). Format 0 → single fugue. |
+| [ ] | 16a.6 | Tests | Round-trip: a fugue exported via 15a re-imports to an equivalent event stream (modulo per-note expression). Fuzz: malformed SMF produces a clean `Err`, never panics. |
+
+### Phase 16b — HTTP endpoint + drop zone
+
+| Done | # | Task | Notes |
+|------|---|------|-------|
+| [ ] | 16b.1 | `POST /api/import/fugue?instance=&tag_prefix=&loop_mode=&quantize=` | Body: `Content-Type: audio/midi` raw bytes. Parse via 16a, queue each resulting fugue via `FugueBridge::queue`. Respond `{ ok, fugue_ids: [..] }`. |
+| [ ] | 16b.2 | Drop zone in [App.tsx](../../../frontend/src/App.tsx) instance header | Accepts `.mid` drag events. `onDrop` reads the file as ArrayBuffer and POSTs. Visual feedback: the header highlights while a file is dragged over. |
+| [ ] | 16b.3 | MCP tool `import_fugue(instance, base64_mid, options?)` | Accepts base64-encoded MIDI. Decodes, queues through the same path as 16b.1. Returns `fugue_ids`. |
+| [ ] | 16b.4 | Handle drop onto a specific instance row | If the user's project has multiple Droplets instances, dropping on `instance "bass"` queues to that instance specifically (not `selectedInstance`). |
+
+---
+
+## Feature 17: MCP tool `get_fugue(id)` — read back a FugueDefinition
+
+See [ROADMAP.md §Feature 17](ROADMAP.md#feature-17-mcp-tool-get_fugueid--read-back-a-fuguedefinition). Closes the loop: LLM reads user-edited fugues.
+
+| Done | # | Task | Notes |
+|------|---|------|-------|
+| [ ] | 17.1 | `FugueBridge::get_definition(instance, id) -> Option<FugueDefinition>` | Thin lookup beside existing `get_definitions` (plural). ~15 min. |
+| [ ] | 17.2 | New MCP tool `get_fugue` | `#[tool]` fn in [src/mcp/server.rs](../../../src/mcp/server.rs). Takes `{ instance, fugue_id }`, returns the raw `FugueDefinition` serialized as JSON. |
+| [ ] | 17.3 | Compact-schema response (stretch) | Group NoteOn/NoteOff pairs back into `{beat, note, duration, velocity?, channel?}` tuples, collapse CC events into `{cc, points: [[beat, value]]}` lanes. Returns the same `FugueContent::Composite` shape the LLM accepts on input — symmetric read/modify/write. ~2 hours; not blocking 17.2. |
+| [ ] | 17.4 | Docs: read-modify-write pattern | Paragraph in [instructions.md](../../../src/mcp/instructions.md): "To evolve a user-edited pattern, call `get_fugue`, mutate, then re-queue with the same `tag + cancel_mode: 'tag:…'`." |
+
+---
+
 ## Resolved design decisions
 
 - **Instance ID param encoding:** went with `ParamInfoFlags::IS_READONLY` + constant numeric value `0.0` + `value_to_text` returning the `instance_id` string. Host extensions read via `addDirectParameterValueDisplayObserver`. Numeric value is meaningless but that's fine — only the displayed string matters for this correlation.

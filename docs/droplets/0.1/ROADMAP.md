@@ -34,8 +34,8 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [ ] | P3 | 9 | Evaluate stateful MCP mode for server→client push | S | Medium — unlocks event notifications (fugue-finished, instance-changed) |
 | [ ] | P2 | 10 | Audio-thread ramps for per-note expression (pitch bend, pressure) | M | Quality — sample-accurate per-note curves instead of server-side discrete-event expansion |
 | [ ] | P1 | 15 | Native drag-out of fugues → DAW clip (`.mid` file) | M | High — lets users hand AI-generated patterns to the DAW's piano roll for editing; removes the need for an in-app editor |
+| [ ] | P1 | 17 | MCP tool: `get_fugue(id)` returning current FugueDefinition | S | High — small surface, immediately unlocks LLM read-modify-write; prereq for round-trip and standalone valuable even without drag-in |
 | [ ] | P2 | 16 | Native drag-in of `.mid` → new fugue on an instance | M | Medium — round-trip workflow: edit in the DAW, drop back as a fugue |
-| [ ] | P2 | 17 | MCP tool: `get_fugue(id)` returning current FugueDefinition | S | Medium — closes the round-trip loop: LLM can read back user-edited fugues and reason about what changed |
 
 ---
 
@@ -295,7 +295,9 @@ See [TASKS.md](TASKS.md) for the detailed task breakdown and resolved design dec
 
 #### Feature 17: MCP tool `get_fugue(id)` — read back a FugueDefinition
 
-**Problem:** `list_fugues` today returns `FugueInfo` (id, tag, loop progress, timing) but not the actual event content. Once drag-in (Feature 16) exists, the LLM has no way to see what the user edited. Composing a "verse 2" that picks up where the user left their edited "verse 1" requires reading the notes, CC points, and curves back.
+**Problem:** `list_fugues` today returns `FugueInfo` (id, tag, loop progress, timing) but not the actual event content. Composing a "verse 2" that picks up where verse 1 left off — or modifying a fugue the user edited via drag-in (Feature 16) — requires reading the notes, CC points, and curves back. The LLM currently has no path to inspect its own output; it can only emit fresh fugues.
+
+**Priority:** bumped to P1. Even without the drag-in return-leg, `get_fugue` unlocks a read-modify-write loop that's valuable on its own: LLM queues v1 of a pattern, user listens, asks for an edit, LLM reads v1 and emits v2 as a diff rather than rewriting from memory. Small implementation footprint (~1 tool + thin bridge lookup) for outsized LLM ergonomic gain.
 
 **Solution:** New MCP tool `get_fugue(instance, fugue_id)` returning the full `FugueDefinition` — or an error when the id isn't active on that instance. The scheduler already keeps definitions alive for the duration a fugue is queued/playing ([src/fugue/bridge.rs](../../../src/fugue/bridge.rs) `get_definitions`), so this is a thin wrapper: look up by id, serialize through the same path the UI uses.
 
@@ -342,9 +344,10 @@ Phase 01:
   2026-04-21: DEMO
   ↓
 Phase 02: 8 (egui migration) + 9 (stateful MCP) + 10 (audio-thread per-note ramps)
-          15 (drag-out) → 16 (drag-in) → 17 (get_fugue MCP read-back)
-          ↑ 15 first, then 16+17 together — 16 and 17 both close the
-          round-trip loop (user edits → LLM sees the edits).
+          15 (drag-out) → 17 (get_fugue) → 16 (drag-in)
+          ↑ 15 first; then 17 (small, unlocks LLM read-modify-write on its
+            own — useful even without drag-in); 16 last to close the full
+            round-trip (user edits a clip → drops back → LLM reads via 17).
 ```
 
 ---
