@@ -96,46 +96,6 @@ impl DropletsMcp {
         Ok(CallToolResult::success(vec![Content::text(result)]))
     }
 
-    /// Get recent MIDI activity for debugging/visualization.
-    #[tool(description = "Get recent MIDI activity (CC, notes, and per-note expressions) sent through Simply Droplets instances. Useful for debugging and seeing what was sent.")]
-    fn get_activity(&self) -> Result<CallToolResult, McpError> {
-        let activity = CcBridge::recent_activity();
-
-        let result = if activity.is_empty() {
-            "No recent activity.".to_string()
-        } else {
-            let formatted: Vec<String> = activity
-                .iter()
-                .map(|e| {
-                    if let Some(cc) = e.cc {
-                        format!(
-                            "[{}] {} -> CC{} = {} (ch{})",
-                            e.timestamp_ms, e.instance, cc, e.value, e.channel + 1
-                        )
-                    } else if let Some(expr_type) = &e.expression_type {
-                        // Per-note expression
-                        let note = e.note.unwrap_or(0);
-                        format!(
-                            "[{}] {} -> {} note={} val={} (ch{})",
-                            e.timestamp_ms, e.instance, expr_type, note, e.value, e.channel + 1
-                        )
-                    } else if let Some(note) = e.note {
-                        let note_type = if e.is_note_on.unwrap_or(false) { "NoteOn" } else { "NoteOff" };
-                        format!(
-                            "[{}] {} -> {} {} vel={} (ch{})",
-                            e.timestamp_ms, e.instance, note_type, note, e.value, e.channel + 1
-                        )
-                    } else {
-                        format!("[{}] {} -> unknown event", e.timestamp_ms, e.instance)
-                    }
-                })
-                .collect();
-
-            formatted.join("\n")
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
-    }
-
     /// List all parameter slots for an instance with their names, CC mappings, and current values.
     #[tool(description = "List all parameter slots for an instance with their names, CC mappings, and values. Shows which slots are mapped to MIDI CC and can output CC when set.")]
     fn list_slots(&self, Parameters(req): Parameters<GetSlotsRequest>) -> Result<CallToolResult, McpError> {

@@ -164,51 +164,56 @@ Notes auto-generate their own note-offs at `beat + duration`. CC points interpol
 
 ## 🛠️ MCP Tools
 
-AI can use these tools to control your music:
-
-### 🎛️ Control
-| Tool | Description |
-|------|-------------|
-| `set_param` | Set automatable parameter slot |
-
-> **MIDI is fugue-only by design.** LLM round-trip latency (~1–10s) is too high for musically-timed one-shot events — notes, CC, and MIDI 2.0 per-note expression all go through `queue_fugue`, which schedules events on the audio thread with sample-accurate timing. Use a composite fugue to bundle notes + CC automation + per-note pitch bend + pressure into one atomic musical moment.
+> **MIDI is fugue-only by design.** LLM round-trip latency (~1–10s) is too high for musically-timed one-shot events — notes, CC, and MIDI 2.0 per-note expression all go through `queue_fugue`, which schedules events on the audio thread with sample-accurate timing. Use a `composite` fugue to bundle notes + CC automation + per-note pitch bend + pressure into one atomic musical moment.
 
 ### 🎼 Fugues
 | Tool | Description |
 |------|-------------|
-| `queue_fugue` | Schedule a musical sequence |
-| `cancel_fugue` | Stop a specific fugue |
-| `cancel_fugues_by_tag` | Stop all fugues with a tag |
-| `clear_fugues` | Emergency stop — cancel everything |
-| `list_fugues` | See what's playing |
+| `queue_fugue` | Schedule one or more fugues (notes / cc / pitch_bends / pressures / composite) with tempo-quantized start |
+| `list_fugues` | List active + pending fugues with timing and loop progress |
+| `get_fugue` | Read a single fugue's full content back in the same compact shape `queue_fugue` accepts — enables read-modify-write |
+| `import_fugue` | Import a base64-encoded `.mid` as one or more fugues (the return leg of drag-out → edit-in-DAW → hand back) |
+| `cancel_fugue` | Stop a specific fugue by id |
+| `cancel_fugues_by_tag` | Stop every fugue sharing a tag (e.g. `"melody"`) |
+| `clear_fugues` | Emergency stop — cancel every fugue on an instance |
 
-### ℹ️ Info
+### 🎚️ Transport & context
 | Tool | Description |
 |------|-------------|
-| `list_instances` | List connected plugins |
-| `list_slots` | Show parameter slots |
-| `get_activity` | Recent MIDI activity log |
+| `get_transport` | Current `{beat, tempo, playing, time_sig, loop bounds}` for reasoning about scheduling |
+| `get_project_state` | **Call first when composing.** Summary of connected Droplets instances, each track's primary device, and drum-pad maps (pitch notation + sample names) so the LLM writes correct notes instead of GM conventions |
+
+### 🏷️ Instances & slots
+| Tool | Description |
+|------|-------------|
+| `list_instances` | Every connected Droplets plugin process |
+| `set_instance_name` | Rename an instance (`bass`, `pad`, `lead`) for clearer targeting |
+| `list_slots` | Parameter slots with their CC mappings and current values |
 
 ---
 
 ## 🖥️ Plugin UI
 
-The plugin has three tabs:
+Four tabs in the plugin window:
 
 ### 🎼 Sequencer
-- See active fugues with real-time progress
-- Export fugues as MIDI files (drag to DAW!)
-- Cancel patterns individually
+- Every active fugue renders its own piano-roll grid with a live playhead.
+- Drag a row (or the `⇣ Drag all` button) onto your DAW to drop a `.mid` clip of the fugue(s).
+- Drop a `.mid` back onto the sequencer panel to re-queue it as fugues (drag-round-trip).
+- Cancel, export, or export-all via the row controls.
 
-### 📊 Monitor
-- Parameter slots with values and mappings
-- Recent MIDI activity
-- Test keyboard for manual notes
+### 🎛️ MIDI Mapping
+- Per-instance list of CC slot parameters with their names and mapped CC numbers.
+- Wiggle a slot to test the mapping; use MIDI-learn to bind a hardware controller.
+
+### 🎹 DAW
+- Live view of what the host controller extension (Bitwig today) has pushed: tracks, primary devices, drum-pad maps with sample names, per-track Remote Controls.
+- Empty state shown when no extension is running (Ableton, Logic, older Bitwig).
 
 ### ⚙️ Settings
-- MCP server URL (copy for AI config)
-- Export folder location
-- Server port info
+- MCP server URL (copy for your AI's config).
+- Export folder for manually-saved `.mid` files.
+- Custom instructions appended to the MCP system prompt.
 
 ---
 

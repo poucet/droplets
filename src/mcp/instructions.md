@@ -154,7 +154,6 @@ notes:[[0.00,"C2",0.2,100],[0.25,"E2",0.2,90],
 - `list_fugues` / `get_fugue` / `cancel_fugue` / `cancel_fugues_by_tag` / `clear_fugues`
 - `import_fugue` — queue fugues from a base64-encoded `.mid` the user edited in their DAW (see "Drag round-trip" below).
 - `list_slots` — parameter-slot listing
-- `get_activity` — recent MIDI event log (debugging)
 
 ## Drag round-trip with the DAW
 The user has two non-MCP paths for handing patterns between Droplets and their DAW — you should **mention them when relevant** rather than trying to rebuild the same workflow through tools.
