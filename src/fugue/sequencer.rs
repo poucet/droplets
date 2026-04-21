@@ -121,6 +121,17 @@ impl FugueSequencer {
             false
         });
 
+        // Deconflict same-sample NoteOff+NoteOn pairs for the same
+        // (channel, note). The classic offender is a DAW loop wrap:
+        // phase_lock_all emits note-offs for currently-held notes at
+        // sample 0, then the phase-locked fugue's beat-0 NoteOns land at
+        // sample 0 too. Our per-event left-skew of NoteOffs (one sample
+        // earlier, in `Fugue::process_buffer`) saturates at 0 and can't
+        // rescue this specific case. Shift the NoteOn forward one sample
+        // instead — the NoteOn is always safe to push because a buffer
+        // is never one sample long.
+        deconflict_same_sample_note_retriggers(&mut self.output_buffer, frames);
+
         self.last_beat = end_beat;
         self.output_buffer.drain(..)
     }
@@ -398,6 +409,53 @@ impl FugueSequencer {
             .filter(|f| !f.is_finished())
             .map(|f| f.definition.clone())
             .collect()
+    }
+}
+
+/// Shift every `NoteOn` that shares its `sample_offset` with a `NoteOff`
+/// on the same `(channel, note)` one sample forward, so the ordering the
+/// synth sees is unambiguously OFF → ON instead of two simultaneous
+/// events. Only touches true collisions — non-colliding events keep their
+/// original sample_offsets. No-op when the output buffer has no NoteOff,
+/// which is the common case.
+///
+/// Why this matters: CLAP event lists are stable-sorted by sample_offset,
+/// but several shipping synths collapse same-sample OFF+ON pairs for the
+/// same pitch regardless of list order, dropping the retrigger. The
+/// specific failure this catches is a DAW transport wrap that triggers
+/// `phase_lock_all` (emits NoteOffs at sample 0) in the same buffer that
+/// the phase-locked fugue emits its beat-0 NoteOns (also at sample 0).
+/// Our per-fugue left-skew clamps at sample 0 and can't help here.
+///
+/// Shift direction is +1 on the NoteOn rather than -1 on the NoteOff for
+/// the same reason: a NoteOff at sample 0 has nowhere earlier to go
+/// within this buffer. Capped at `frames - 1` in the extremely unlikely
+/// case that a NoteOn is already at the last sample of a `frames`-sized
+/// buffer (the NoteOff would have to be on the last sample too, which
+/// the phase_lock path never does).
+fn deconflict_same_sample_note_retriggers(
+    output_buffer: &mut [ProcessedEvent],
+    frames: u32,
+) {
+    use std::collections::HashSet;
+    let mut off_slots: HashSet<(u32, u8, u8)> = HashSet::new();
+    for ev in output_buffer.iter() {
+        if let ProcessedEvent::Instant { sample_offset, message: MidiMessage::Note(n) } = ev {
+            if !n.is_note_on {
+                off_slots.insert((*sample_offset, n.channel, n.note));
+            }
+        }
+    }
+    if off_slots.is_empty() {
+        return;
+    }
+    let max_sample = frames.saturating_sub(1);
+    for ev in output_buffer.iter_mut() {
+        if let ProcessedEvent::Instant { sample_offset, message: MidiMessage::Note(n) } = ev {
+            if n.is_note_on && off_slots.contains(&(*sample_offset, n.channel, n.note)) {
+                *sample_offset = (*sample_offset + 1).min(max_sample);
+            }
+        }
     }
 }
 
