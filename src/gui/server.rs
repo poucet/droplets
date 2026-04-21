@@ -50,16 +50,9 @@ fn project_layout_tx() -> &'static broadcast::Sender<ProjectLayout> {
 /// the host controller extension, and both need to reach the UI. Silent
 /// no-op when no clients are connected.
 pub fn broadcast_project_layout(layout: ProjectLayout) {
-    let track_count = layout.tracks.len();
     match project_layout_tx().send(layout) {
-        Ok(n) => log::info!(
-            "broadcast_project_layout: sent {} tracks to {} WS subscriber(s)",
-            track_count, n
-        ),
-        Err(_) => log::info!(
-            "broadcast_project_layout: {} tracks stored, 0 WS subscribers (plugin-mode webview uses IPC instead)",
-            track_count
-        ),
+        Ok(n) => (),
+        Err(_) => ()
     }
 }
 
@@ -256,7 +249,6 @@ async fn api_get_project_layout() -> impl IntoResponse {
 async fn api_post_project_layout(body: axum::body::Bytes) -> impl IntoResponse {
     match serde_json::from_slice::<ProjectLayout>(&body) {
         Ok(layout) => {
-            log::info!("GUI /project_layout received: {} tracks", layout.tracks.len());
             CcBridge::set_project_layout(layout.clone());
             broadcast_project_layout(layout);
             (StatusCode::OK, "ok").into_response()
