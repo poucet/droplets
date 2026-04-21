@@ -6,9 +6,16 @@ pub fn init_logger() {
     let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let log_path = format!("{}/droplets_plugin.log", home_dir);
 
+    // rmcp::service logs a Debug line per tool call, which drowns out the
+    // lines we actually care about when debugging the fugue scheduler.
+    // Filter it at the logger level so it's never formatted or written.
+    let config = ConfigBuilder::new()
+        .add_filter_ignore_str("rmcp::service")
+        .build();
+
     let _ = WriteLogger::init(
         LevelFilter::Debug,
-        Config::default(),
+        config,
         File::create(&log_path).unwrap_or_else(|_| File::create("/tmp/droplets_plugin.log").unwrap()),
     );
 
