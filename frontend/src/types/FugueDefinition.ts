@@ -3,6 +3,7 @@ import type { CancelMode } from "./CancelMode";
 import type { InterpolationMode } from "./InterpolationMode";
 import type { LoopMode } from "./LoopMode";
 import type { QuantizeMode } from "./QuantizeMode";
+import type { StartMode } from "./StartMode";
 import type { TimedFugueEvent } from "./TimedFugueEvent";
 
 /**
@@ -40,4 +41,10 @@ cancel_mode: CancelMode,
 /**
  * Interpolation mode for CC automation
  */
-cc_interpolation: InterpolationMode, };
+cc_interpolation: InterpolationMode, 
+/**
+ * How the fugue places itself when `target_beat` isn't aligned to
+ * `duration_beats`. See [`StartMode`] for the full semantics;
+ * defaults to [`StartMode::Phase`].
+ */
+start_mode: StartMode, };

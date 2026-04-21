@@ -331,6 +331,7 @@ pub fn queue_fugue(instance: &str, req: QueueFugueRequest) -> QueueFugueResponse
         quantize: req.quantize,
         cancel_mode: req.cancel_mode,
         cc_interpolation: req.cc_interpolation,
+        start_mode: crate::fugue::StartMode::default(),
     };
 
     match FugueBridge::queue(instance, definition) {

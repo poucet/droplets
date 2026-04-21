@@ -124,6 +124,44 @@ impl Default for CancelMode {
     }
 }
 
+/// How a promoted fugue places itself on the song-grid when its quantize
+/// target isn't already aligned to its `duration_beats`.
+///
+/// Iteration boundaries always live at `k · duration_beats` from song-beat-0
+/// regardless of this mode — that's the "queue-time latency can't shift
+/// musical alignment" invariant. This mode only decides what happens
+/// *between* the queue moment and the next iteration boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum StartMode {
+    /// Fugue joins the implicit always-running grid at its current phase.
+    /// Example: `dur=16`, queued at transport 8 with `quantize:"bar"`.
+    /// Plays pattern-beat-8 → pattern-beat-16 from transport 8 → 16
+    /// (second half of the pattern sounds immediately), then
+    /// pattern-beat-0 at transport 16, 32, 48.
+    ///
+    /// Default — the more natural "queue and hear something now"
+    /// behaviour for live interaction.
+    Phase,
+    /// Fugue waits for the next iteration boundary (next multiple of
+    /// `duration_beats` from song-beat-0 ≥ target), then plays from
+    /// pattern-beat-0.
+    /// Example: same setup, silent from transport 8 → 16, then
+    /// pattern-beat-0 at transport 16, 32, 48.
+    ///
+    /// Use this when the start of the pattern is musically important
+    /// (e.g. a drum fill's downbeat) and you'd rather have a short
+    /// silence than a mid-pattern start.
+    Boundary,
+}
+
+impl Default for StartMode {
+    fn default() -> Self {
+        Self::Phase
+    }
+}
+
 /// Interpolation mode for continuous-signal ramps (CC, per-note expression).
 ///
 /// New curves extend this enum and add one line to [`InterpolationMode::apply_curve`];
@@ -308,6 +346,11 @@ pub struct FugueDefinition {
     /// Interpolation mode for CC automation
     #[serde(default)]
     pub cc_interpolation: InterpolationMode,
+    /// How the fugue places itself when `target_beat` isn't aligned to
+    /// `duration_beats`. See [`StartMode`] for the full semantics;
+    /// defaults to [`StartMode::Phase`].
+    #[serde(default)]
+    pub start_mode: StartMode,
 }
 
 impl FugueDefinition {
@@ -322,6 +365,7 @@ impl FugueDefinition {
             quantize: QuantizeMode::Immediate,
             cancel_mode: CancelMode::None,
             cc_interpolation: InterpolationMode::default(),
+            start_mode: StartMode::default(),
         }
     }
 
@@ -352,6 +396,12 @@ impl FugueDefinition {
     /// Set the CC interpolation mode
     pub fn with_cc_interpolation(mut self, mode: InterpolationMode) -> Self {
         self.cc_interpolation = mode;
+        self
+    }
+
+    /// Set the start mode (phase vs boundary alignment).
+    pub fn with_start_mode(mut self, mode: StartMode) -> Self {
+        self.start_mode = mode;
         self
     }
 }

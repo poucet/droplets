@@ -19,5 +19,5 @@ pub use fugue::Fugue;
 pub use sequencer::FugueSequencer;
 pub use types::{
     CancelMode, FugueDefinition, FugueEvent, FugueInfo, InterpolationMode, LoopMode,
-    ProcessedEvent, QuantizeMode, TimedFugueEvent, TransportState,
+    ProcessedEvent, QuantizeMode, StartMode, TimedFugueEvent, TransportState,
 };

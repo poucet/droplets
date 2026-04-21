@@ -166,6 +166,7 @@ impl ImportedMidi {
                 quantize: opts.quantize,
                 cancel_mode: opts.cancel_mode.clone(),
                 cc_interpolation: InterpolationMode::Linear,
+                start_mode: crate::fugue::StartMode::default(),
             });
         }
         out

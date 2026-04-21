@@ -6,7 +6,7 @@ use rtrb::Consumer;
 
 use super::command::FugueCommand;
 use super::fugue::Fugue;
-use super::types::{CancelMode, FugueDefinition, FugueInfo, ProcessedEvent};
+use super::types::{CancelMode, FugueDefinition, FugueInfo, ProcessedEvent, StartMode};
 use crate::mcp::{MidiMessage, NoteMessage};
 
 /// Buffer capacity for output MIDI messages per process cycle
@@ -283,10 +283,17 @@ impl FugueSequencer {
             // Apply cancel mode at the same sample offset as the new fugue starts
             self.apply_cancel_mode_at_offset(&cancel_mode, sample_offset);
 
-            // Now start the fugue
+            // Now start the fugue. Place the iteration on the song-grid
+            // (multiples of `duration_beats` from song-beat-0) rather
+            // than at `target` directly — this is the critical invariant
+            // that keeps pattern-beat-0 landing on the same transport
+            // beats regardless of LLM queue latency, and matches what
+            // `phase_lock` does on transport jumps. Without this, a fugue
+            // queued mid-song plays at one offset and then shifts to
+            // another the first time the DAW wraps.
             let fugue = &mut self.fugues[idx];
-            fugue.waiting_for_start = false;
-            fugue.start_beat = target;
+            let dur = fugue.definition.duration_beats;
+            place_on_song_grid(fugue, target, dur);
         }
     }
 
@@ -459,6 +466,69 @@ fn deconflict_same_sample_note_retriggers(
     }
 }
 
+/// Transition a `waiting_for_start` fugue to active, placing its
+/// iteration boundaries on the song-grid `k · dur` from transport-0.
+/// Handles both start modes from `StartMode`:
+///
+/// - `Phase` (default): the fugue joins the implicit always-running grid
+///   at whatever phase the target currently sits at. `start_beat` is
+///   snapped *back* to the most recent dur-multiple ≤ target, and
+///   `next_event_index` is advanced past any events before the current
+///   phase so the fugue plays from wherever it "should be" right now.
+/// - `Boundary`: the fugue delays until the next dur-aligned boundary
+///   ≥ target, then plays from pattern-beat-0. Implemented by parking
+///   it back in `waiting_for_start` with a bumped `target_start_beat` —
+///   the next process cycle starts it cleanly at the new target.
+///
+/// In both cases the post-start iteration sequence is identical: events
+/// fire at transport beats `start_beat + beat_offset`, where `start_beat`
+/// is a multiple of `dur` from song-zero and every subsequent iteration
+/// is `start_beat + k·dur`. Phase_lock preserves this invariant on
+/// transport jumps.
+fn place_on_song_grid(fugue: &mut Fugue, target: f64, dur: f64) {
+    if dur <= 0.0 {
+        // Malformed fugue — fall back to the pre-fix behavior (start
+        // exactly at target). Shouldn't occur: duration auto-sizing
+        // guarantees dur ≥ 4 beats for any well-formed fugue.
+        fugue.waiting_for_start = false;
+        fugue.start_beat = target;
+        fugue.next_event_index = 0;
+        return;
+    }
+    let phase = target.rem_euclid(dur);
+    match fugue.definition.start_mode {
+        StartMode::Phase => {
+            // Virtual start is the most-recent multiple of dur ≤ target.
+            // Events before `phase` already happened in the implicit
+            // past iteration — skip past them so the fugue plays from
+            // its current song-phase position.
+            fugue.waiting_for_start = false;
+            fugue.start_beat = target - phase;
+            fugue.next_event_index = fugue
+                .definition
+                .events
+                .partition_point(|e| e.beat_offset < phase);
+        }
+        StartMode::Boundary => {
+            // Already on a boundary: start from pattern-beat-0 right now.
+            if phase == 0.0 {
+                fugue.waiting_for_start = false;
+                fugue.start_beat = target;
+                fugue.next_event_index = 0;
+                return;
+            }
+            // Otherwise push target to the next dur-aligned boundary
+            // and keep waiting. `start_pending_fugues` will pick the
+            // fugue up again on a future process cycle once the
+            // transport reaches that boundary.
+            let next_boundary = target + (dur - phase);
+            fugue.target_start_beat = Some(next_boundary);
+            // waiting_for_start stays true; we deliberately don't
+            // clear it here.
+        }
+    }
+}
+
 /// Send note-offs for all active notes in a fugue at sample offset 0
 fn send_note_offs_for_fugue(fugue: &mut Fugue, output_buffer: &mut Vec<ProcessedEvent>) {
     send_note_offs_for_fugue_at_offset(fugue, output_buffer, 0);
@@ -534,6 +604,17 @@ mod daw_loop_tests {
         let (mut prod, cons) = RingBuffer::<FugueCommand>::new(16);
         prod.push(FugueCommand::Queue(def)).expect("queue must fit");
         FugueSequencer::new(cons, SAMPLE_RATE)
+    }
+
+    /// Build a sequencer with no fugues queued yet. Returns both the
+    /// producer (so the test can push `Queue` commands mid-playback,
+    /// after transport has advanced to a non-zero beat) and the
+    /// sequencer. Used by the Feature 25 tests where we need the
+    /// quantize target at queue time to land off the dur-grid — which
+    /// can't happen at transport 0, because every grid includes beat 0.
+    fn empty_sequencer() -> (rtrb::Producer<FugueCommand>, FugueSequencer) {
+        let (prod, cons) = RingBuffer::<FugueCommand>::new(16);
+        (prod, FugueSequencer::new(cons, SAMPLE_RATE))
     }
 
     /// Collect every `(sample_offset, channel, note, is_on)` note event
@@ -689,6 +770,187 @@ mod daw_loop_tests {
             note_on_60_count, 3,
             "expected 3 beat-0 NoteOns across 3 fugue iterations; got {}. All events: {:?}",
             note_on_60_count, all
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Feature 25 regression tests — iteration boundaries on song-grid
+    // regardless of queue-time quantize target (LLM latency can't shift
+    // musical alignment).
+    // -----------------------------------------------------------------
+
+    /// Drive the sequencer forward without any fugues queued, up to
+    /// `target_beat` (roughly — we stop at the first buffer whose start
+    /// is ≥ target). Returns the transport beat reached. Used by the
+    /// queue-mid-play Feature 25 tests that need the quantize grid to
+    /// round up to a non-dur-aligned target (which can only happen at
+    /// a non-zero transport position).
+    fn advance_empty(seq: &mut FugueSequencer, target_beat: f64) -> f64 {
+        let mut current = 0.0;
+        while current < target_beat {
+            let _ = seq
+                .process(true, current, TEMPO, BUFFER_FRAMES, TIME_SIG)
+                .count();
+            current += buffer_beats();
+        }
+        current
+    }
+
+    /// Collect every note event over `total_beats` starting from
+    /// `start_beat`. Returns `(absolute_beat, channel, note, is_on)`
+    /// tuples so tests can assert on *when in the transport timeline*
+    /// each event fired, not just which buffer.
+    fn run_and_collect(
+        seq: &mut FugueSequencer,
+        start_beat: f64,
+        total_beats: f64,
+    ) -> Vec<(f64, u8, u8, bool)> {
+        let mut events: Vec<(f64, u8, u8, bool)> = Vec::new();
+        let mut current = start_beat;
+        let end = start_beat + total_beats;
+        while current < end {
+            let out: Vec<_> = seq
+                .process(true, current, TEMPO, BUFFER_FRAMES, TIME_SIG)
+                .collect();
+            for (sample, ch, note, on) in collect_notes(&out) {
+                let absolute = current + sample as f64 * beats_per_sample();
+                events.push((absolute, ch, note, on));
+            }
+            current += buffer_beats();
+        }
+        events
+    }
+
+    /// Queue a 16-beat fugue at transport ~5 with `quantize: "bar"` —
+    /// next bar is 8, which isn't a multiple of 16. Under Phase mode,
+    /// the fugue joins the implicit song-grid at current phase: first
+    /// pattern-beat-0 firing lands on transport 16 (next dur boundary),
+    /// not transport 8. Events before beat 8 are skipped from the
+    /// current iteration.
+    #[test]
+    fn phase_mode_puts_pattern_beat_0_on_song_grid_not_target() {
+        use crate::fugue::types::QuantizeMode;
+        let def = make_notes_fugue(&[(0.0, 60, 0.5)], 16.0)
+            .with_quantize(QuantizeMode::Bar)
+            .with_start_mode(StartMode::Phase);
+        let (mut prod, mut seq) = empty_sequencer();
+
+        // Advance to transport ~5 before pushing the Queue — the first
+        // buffer that sees the queue command has current_beat > 4, so
+        // quantize:bar rounds target up to 8 (mid-duration for dur=16).
+        let queued_at = advance_empty(&mut seq, 5.0);
+        prod.push(FugueCommand::Queue(def)).unwrap();
+
+        let events = run_and_collect(&mut seq, queued_at, 20.0);
+        let first_note_60 = events
+            .iter()
+            .find(|(_, ch, note, on)| *on && *ch == 0 && *note == 60);
+
+        assert!(
+            first_note_60.is_some(),
+            "expected note 60 to fire. Events: {:?}",
+            events
+        );
+        let (first_absolute, _, _, _) = first_note_60.unwrap();
+        assert!(
+            (*first_absolute - 16.0).abs() < 0.05,
+            "pattern-beat-0 should fire at transport 16 (next multiple of dur=16), \
+             got transport {:.3}. Events: {:?}",
+            first_absolute,
+            events
+        );
+    }
+
+    /// Same setup but with `StartMode::Boundary`: the fugue waits for
+    /// the next dur-boundary (transport 16) and plays from pattern-beat-0
+    /// there. No notes should fire in the pre-boundary window (transport
+    /// 8 → 16); leakage would mean Boundary mode is behaving like Phase.
+    #[test]
+    fn boundary_mode_waits_for_next_dur_boundary_and_stays_silent_until_then() {
+        use crate::fugue::types::QuantizeMode;
+        let def = make_notes_fugue(&[(0.0, 60, 0.5), (4.0, 62, 0.5)], 16.0)
+            .with_quantize(QuantizeMode::Bar)
+            .with_start_mode(StartMode::Boundary);
+        let (mut prod, mut seq) = empty_sequencer();
+
+        let queued_at = advance_empty(&mut seq, 5.0);
+        prod.push(FugueCommand::Queue(def)).unwrap();
+
+        let events = run_and_collect(&mut seq, queued_at, 22.0);
+
+        // Pre-boundary window = events before transport 16 minus the
+        // initial advance. If Boundary mode leaks, some event would
+        // fire between transport 8 and 16.
+        let leaked: Vec<_> = events
+            .iter()
+            .filter(|(t, _, _, on)| *on && *t >= 8.0 && *t < 15.95)
+            .collect();
+        assert!(
+            leaked.is_empty(),
+            "Boundary mode should stay silent from transport 8 → 16, \
+             but these events fired in that window: {:?}",
+            leaked
+        );
+
+        let note_60 = events.iter().find(|(_, ch, n, on)| *on && *ch == 0 && *n == 60);
+        assert!(
+            note_60.is_some(),
+            "note 60 should fire at transport 16 under Boundary mode. Events: {:?}",
+            events
+        );
+        let (t60, _, _, _) = note_60.unwrap();
+        assert!(
+            (*t60 - 16.0).abs() < 0.05,
+            "note 60 should fire ≈ transport 16 under Boundary mode; got {:.3}",
+            t60
+        );
+
+        let note_62 = events.iter().find(|(_, ch, n, on)| *on && *ch == 0 && *n == 62);
+        if let Some((t62, _, _, _)) = note_62 {
+            assert!(
+                (*t62 - 20.0).abs() < 0.05,
+                "note 62 (pattern-beat-4) should fire at transport 20 \
+                 under Boundary mode; got {:.3}",
+                t62
+            );
+        }
+    }
+
+    /// Queue-offset stability across a DAW wrap: queue mid-play so
+    /// `target` ≠ multiple of dur, play one iteration, then simulate
+    /// a DAW transport wrap back to 0. Pattern-beat-0 must fire again
+    /// on transport 0 (song-grid), not shifted by the queue offset.
+    /// This is the exact user-reported "queue-while-playing offset
+    /// from then on" bug.
+    #[test]
+    fn queue_offset_stable_across_daw_wrap() {
+        use crate::fugue::types::QuantizeMode;
+        let def = make_notes_fugue(&[(0.0, 60, 0.5)], 16.0)
+            .with_quantize(QuantizeMode::Bar)
+            .with_start_mode(StartMode::Phase);
+        let (mut prod, mut seq) = empty_sequencer();
+
+        let queued_at = advance_empty(&mut seq, 5.0);
+        prod.push(FugueCommand::Queue(def)).unwrap();
+
+        // Play through a full iteration — pattern-beat-0 should have
+        // fired at transport 16 under Phase mode (pre-existing test
+        // above asserts this).
+        let _pre_wrap = run_and_collect(&mut seq, queued_at, 17.0);
+
+        // Simulate DAW wrap back to 0.
+        let wrap_out: Vec<_> = seq
+            .process(true, 0.0, TEMPO, BUFFER_FRAMES, TIME_SIG)
+            .collect();
+        let wrap_note_on = collect_notes(&wrap_out)
+            .into_iter()
+            .find(|(_, ch, note, on)| *on && *ch == 0 && *note == 60);
+
+        assert!(
+            wrap_note_on.is_some(),
+            "after DAW wrap, pattern-beat-0 should fire on transport 0 (song-grid). \
+             Events in wrap buffer: {:?}",
+            collect_notes(&wrap_out)
         );
     }
 }

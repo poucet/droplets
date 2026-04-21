@@ -15,7 +15,7 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::fugue::{
     CancelMode, FugueDefinition, FugueEvent, InterpolationMode, LoopMode, QuantizeMode,
-    TimedFugueEvent,
+    StartMode, TimedFugueEvent,
 };
 
 use super::compact::{
@@ -72,6 +72,16 @@ pub fn parse_quantize_str(s: &str) -> Option<QuantizeMode> {
     }
 }
 
+/// Parse the LLM-facing start-mode string. Unknown / missing input
+/// falls back to [`StartMode::Phase`] (the default — immediate-ish
+/// "join the grid" behaviour).
+pub fn parse_start_mode_str(s: Option<&str>) -> StartMode {
+    match s.map(str::trim).map(str::to_lowercase).as_deref() {
+        Some("boundary") => StartMode::Boundary,
+        _ => StartMode::Phase,
+    }
+}
+
 /// Parse the LLM-facing cancel-mode string. `tag:<name>` captures the
 /// inner tag; unknown input silently falls back to `None` (layer onto
 /// existing fugues).
@@ -121,6 +131,14 @@ fn quantize_tag(mode: QuantizeMode) -> String {
     }
 }
 
+/// Stable lowercase tag for a [`StartMode`], matching `parse_start_mode_str`.
+fn start_mode_tag(mode: StartMode) -> &'static str {
+    match mode {
+        StartMode::Phase => "phase",
+        StartMode::Boundary => "boundary",
+    }
+}
+
 /// Stable lowercase tag for a `CancelMode`.
 fn cancel_mode_tag(mode: &CancelMode) -> String {
     match mode {
@@ -160,16 +178,22 @@ pub struct QueueFugueDefaults {
     pub quantize_str: String,
     pub duration_beats: Option<f64>,
     pub loop_mode_str: String,
+    pub start_mode_str: Option<String>,
 }
 
 impl QueueFugueDefaults {
     /// Build from the outer `QueueFugueData`. Missing fields get the
-    /// documented defaults (`bar`, auto-sized, `forever`).
+    /// documented defaults (`bar`, auto-sized, `forever`). `start_mode`
+    /// stays `None` at this layer so the per-fugue resolver can tell
+    /// "LLM didn't specify" from "LLM picked phase explicitly" — the
+    /// final fallback to `StartMode::Phase` happens in
+    /// `compact_to_definition`.
     pub fn from_data(data: &QueueFugueData) -> Self {
         Self {
             quantize_str: data.quantize.as_deref().unwrap_or("bar").to_string(),
             duration_beats: data.duration_beats,
             loop_mode_str: data.loop_mode.as_deref().unwrap_or("forever").to_string(),
+            start_mode_str: data.start_mode.clone(),
         }
     }
 }
@@ -224,6 +248,12 @@ pub fn compact_to_definition(
     let quantize = parse_quantize_str(quantize_str).unwrap_or(QuantizeMode::Bar);
     let cancel_mode_str = compact.cancel_mode.as_deref().unwrap_or("none");
     let cancel_mode = parse_cancel_mode_str(cancel_mode_str);
+    let start_mode = parse_start_mode_str(
+        compact
+            .start_mode
+            .as_deref()
+            .or(defaults.start_mode_str.as_deref()),
+    );
 
     let mut events: Vec<TimedFugueEvent> = Vec::new();
     // Fugue-level CC interpolation defaults to Linear; single-lane CC
@@ -280,7 +310,8 @@ pub fn compact_to_definition(
         .with_loop_mode(loop_mode)
         .with_quantize(quantize)
         .with_cancel_mode(cancel_mode)
-        .with_cc_interpolation(cc_interpolation);
+        .with_cc_interpolation(cc_interpolation)
+        .with_start_mode(start_mode);
     if let Some(tag) = compact.tag.clone() {
         definition = definition.with_tag(tag);
     }
@@ -423,6 +454,7 @@ pub fn definition_to_compact(def: &FugueDefinition) -> CompactFugue {
         quantize: Some(quantize_tag(def.quantize)),
         duration_beats: Some(def.duration_beats),
         loop_mode: Some(loop_mode_tag(def.loop_mode)),
+        start_mode: Some(start_mode_tag(def.start_mode).to_string()),
         content: FugueContent::Composite {
             notes,
             cc,
@@ -474,6 +506,7 @@ mod tests {
             quantize_str: "bar".into(),
             duration_beats: Some(4.0),
             loop_mode_str: "forever".into(),
+            start_mode_str: None,
         }
     }
 
@@ -562,6 +595,7 @@ mod tests {
             quantize_str: "bar".into(),
             duration_beats: Some(8.0),
             loop_mode_str: "once".into(),
+            start_mode_str: None,
         };
         let def = compact_to_definition(&input, &defaults);
         let out = definition_to_compact(&def);
@@ -574,6 +608,7 @@ mod tests {
             quantize_str: "bar".into(),
             duration_beats: None,
             loop_mode_str: "forever".into(),
+            start_mode_str: None,
         }
     }
 
@@ -679,6 +714,7 @@ mod tests {
             quantize_str: "bar".into(),
             duration_beats: Some(16.0),
             loop_mode_str: "forever".into(),
+            start_mode_str: None,
         };
         let def = compact_to_definition(&input, &defaults);
         assert_eq!(def.duration_beats, 16.0);

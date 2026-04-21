@@ -39,7 +39,9 @@ Fugue content types:
 
 **Which to pick**: if all parts belong to one musical moment on one instrument (a pad with held chords, filter sweep, and pressure swells), use `composite`. If parts need independent replacement (bass swap while melody keeps playing), keep them as separate single-concern fugues with distinct tags.
 
-Shared fields (override per-fugue): `duration_beats`, `quantize` (`"immediate"|"beat"|"bar"|"bars:N"`), `loop_mode` (`"once"|"forever"|"N"` — default `"forever"`).
+Shared fields (override per-fugue): `duration_beats`, `quantize` (`"immediate"|"beat"|"bar"|"bars:N"`), `loop_mode` (`"once"|"forever"|"N"` — default `"forever"`), `start_mode` (`"phase"|"boundary"` — default `"phase"`).
+
+**Iteration boundaries are locked to the song-grid**: pattern-beat-0 lands on multiples of `duration_beats` from song-beat-0, never on the moment you happened to call `queue_fugue`. `quantize` only decides the earliest moment the fugue can start; `start_mode` decides what happens between that moment and the first full iteration boundary. Default `"phase"` joins the running grid mid-pattern; `"boundary"` waits silently for the next boundary and plays from the top. Set `quantize` to match `duration_beats` (e.g. `"bars:4"` for a 16-beat pattern) if you want "always start from pattern-beat-0."
 
 ### Points — unified shape for all continuous signals
 

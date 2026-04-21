@@ -34,9 +34,18 @@ Note values accept names (preferred) or numbers: `"C3"` (middle C = 60, DAW conv
 
 ## Shared top-level fields
 
-Defaults across the batch, per-fugue can override: `duration_beats`, `quantize` (`"immediate"|"beat"|"bar"|"bars:N"`), `loop_mode` (`"once"|"forever"|"N"` — default `"forever"`).
+Defaults across the batch, per-fugue can override: `duration_beats`, `quantize` (`"immediate"|"beat"|"bar"|"bars:N"`), `loop_mode` (`"once"|"forever"|"N"` — default `"forever"`), `start_mode` (`"phase"|"boundary"` — default `"phase"`).
 
 `duration_beats` is auto-sized when not set: the smallest whole bar (4/4) that fits every note's end-beat and every CC/expression point. Values that are shorter than the content are extended to fit — silently truncating notes is almost always a bug, not intent. Set it explicitly when you want trailing silence in the loop, or a specific odd-length pattern.
+
+### Song-grid alignment — `quantize` vs `duration_beats`
+
+Fugue iteration boundaries always land on multiples of `duration_beats` from song-beat-0, regardless of when the LLM called `queue_fugue` — network / inference latency can't shift musical alignment. `quantize` only decides the **earliest moment** the fugue can begin; `start_mode` decides what happens between that moment and the first full iteration boundary.
+
+- `start_mode: "phase"` (default): fugue joins the always-running grid at the current song-phase. Example: `duration_beats: 16`, `quantize: "bar"`, queued when transport is at bar 2 (beat 5). The fugue begins at bar 3 (beat 8), plays pattern-beat-8 → pattern-beat-16 from transport 8 → 16 (second half of the pattern sounds immediately), then pattern-beat-0 at transport 16, 32, 48. Musical position is predictable regardless of queue latency.
+- `start_mode: "boundary"`: fugue waits for the next multiple of `duration_beats` ≥ quantize target, then plays from pattern-beat-0. Same setup: silent from transport 8 → 16, then pattern-beat-0 at 16, 32, 48. Use when the first beat of the pattern is musically load-bearing (a drum fill's downbeat) and you'd rather have a brief silence than a mid-pattern start.
+
+If you want the fugue to *always* start from pattern-beat-0 and iterate on the bar grid, set `quantize` to match `duration_beats` (e.g. `"bars:4"` for a 16-beat pattern) — then the quantize target is itself a multiple of `duration_beats` and both modes collapse to "start from the top on the next 4-bar boundary."
 
 ## Tag + cancel_mode
 

@@ -61,6 +61,10 @@ pub struct QueueFugueData {
     #[serde(default = "default_loop_mode_opt")]
     #[schemars(description = "Default loop mode: 'once', 'forever', or a number (default: 'forever')")]
     pub loop_mode: Option<String>,
+    /// Default start mode: "phase" (default) or "boundary"
+    #[serde(default)]
+    #[schemars(description = "Default start mode: 'phase' (default — fugue joins the implicit song-grid at current phase) or 'boundary' (delay until next multiple of duration_beats, then play from pattern-beat-0).")]
+    pub start_mode: Option<String>,
 }
 
 /// Cancel a specific fugue by ID

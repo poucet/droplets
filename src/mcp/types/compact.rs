@@ -351,6 +351,11 @@ pub struct CompactFugue {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(description = "Override loop mode: 'once', 'forever', or a number")]
     pub loop_mode: Option<String>,
+    /// How the fugue lands on the song-grid when `quantize` resolves to a
+    /// target beat that isn't a multiple of `duration_beats`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(description = "Start mode: 'phase' (default — fugue joins the implicit always-running grid at the current song-phase, may start mid-pattern) or 'boundary' (wait for the next multiple of duration_beats, then play from pattern-beat-0). Iteration boundaries always sit on multiples of duration_beats from song-beat-0 regardless of this mode; it only decides what happens between queue time and the first full iteration boundary.")]
+    pub start_mode: Option<String>,
 
     /// The fugue content (notes / CC / per-note expression)
     #[serde(flatten)]
