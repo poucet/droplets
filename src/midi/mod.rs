@@ -115,6 +115,11 @@ pub struct DropletMidiProcessor<'a> {
     midi_consumer: Consumer<MidiMessage>,
     fugue_sequencer: FugueSequencer,
     fugue_info_handle: FugueInfoHandle,
+    /// True when the last cache publish was a non-empty list. Used to force
+    /// one more publish after the active count drops to zero so the UI sees
+    /// the empty state — without this, cancelling the last fugue while the
+    /// transport is stopped leaves the old list visible forever.
+    last_publish_nonempty: bool,
     _sample_rate: f64,
 }
 
@@ -158,6 +163,7 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
             midi_consumer,
             fugue_sequencer,
             fugue_info_handle,
+            last_publish_nonempty: false,
             _sample_rate: sample_rate,
         })
     }
@@ -268,9 +274,16 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
             loop_end_beat,
         });
 
-        // Update fugue info and definitions when there are active fugues
-        if self.fugue_sequencer.active_count() > 0 || is_playing {
+        // Update fugue info and definitions. Publish whenever there's data to
+        // report OR the last publish was non-empty — that last clause flushes
+        // one empty list after the final fugue is cancelled so the UI doesn't
+        // read a stale cache indefinitely (hit when the user cancels with the
+        // transport stopped, which is otherwise a no-op for this block).
+        let active_count = self.fugue_sequencer.active_count();
+        let should_publish = active_count > 0 || is_playing || self.last_publish_nonempty;
+        if should_publish {
             let infos = self.fugue_sequencer.list_fugues(current_beat, time_sig_num);
+            self.last_publish_nonempty = !infos.is_empty();
             self.fugue_info_handle.update(infos);
 
             let definitions = self.fugue_sequencer.get_definitions();
