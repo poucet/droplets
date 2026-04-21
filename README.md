@@ -22,7 +22,7 @@ Built by [**Christophe Poucet**](https://www.simplychris.ai) (Simply Chris).
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         YOUR DAW                                 │
+│                         YOUR DAW                                │
 │  ┌─────────────────┐    MIDI     ┌─────────────────────────┐    │
 │  │                 │◄───────────►│    Your Instruments     │    │
 │  │ Simply Droplets │             │                         │    │
@@ -34,14 +34,14 @@ Built by [**Christophe Poucet**](https://www.simplychris.ai) (Simply Chris).
             │ MCP (HTTP)
             ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                        AI ASSISTANT                              │
-│                                                                  │
+│                        AI ASSISTANT                             │
+│                                                                 │
 │   🤖 Claude, GPT, or any MCP-compatible AI                      │
-│                                                                  │
-│   "Play a jazz chord progression"                                │
-│   "Create a 4-bar drum loop"                                     │
+│                                                                 │
+│   "Play a jazz chord progression"                               │
+│   "Create a 4-bar drum loop"                                    │
 │   "Sweep the filter cutoff from 20% to 80%"                     │
-│                                                                  │
+│                                                                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
