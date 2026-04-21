@@ -13,7 +13,7 @@ class DropletsExtensionDefinition : ControllerExtensionDefinition() {
     override fun getId(): UUID = DRIVER_ID
     override fun getHardwareVendor() = "Simply Chris"
     override fun getHardwareModel() = "Droplets"
-    override fun getRequiredAPIVersion() = 18
+    override fun getRequiredAPIVersion() = 22
     override fun getNumMidiInPorts() = 0
     override fun getNumMidiOutPorts() = 0
 

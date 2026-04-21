@@ -138,6 +138,13 @@ class DropletsExtension(
         val drumDev = drumBank.getItemAt(0) as Device
         drumDev.exists().markInterested()
         val padBank = drumDev.createDrumPadBank(DRUM_PADS)
+        // Iterate pads by position, not by "existing" shortlist, so pad bank
+        // index + scrollPosition = MIDI note holds for every slot.
+        padBank.setSkipDisabledItems(false)
+        // Read-access to the current scroll: we don't set it, we just need
+        // to know where Bitwig's window currently starts so we can translate
+        // bank-index → MIDI note correctly regardless of user scrolling.
+        padBank.scrollPosition().markInterested()
         trackDrumPadBanks[track] = padBank
         for (p in 0 until DRUM_PADS) wirePad(padBank.getItemAt(p) as DrumPad)
 
@@ -311,14 +318,16 @@ class DropletsExtension(
 
     private fun encodeDrumMachine(name: String, padBank: DrumPadBank): Map<String, Any?> {
         val pads = ArrayList<Map<String, Any?>>()
+        // Read the bank's current scroll — translating bank-index → MIDI note
+        // must use the actual scroll, not a constant we set at init (that
+        // `set()` call isn't always honored by the API). `setSkipDisabledItems(false)`
+        // at init guarantees bank index `p` maps to note `scroll + p`.
+        val scroll = padBank.scrollPosition().get()
         for (p in 0 until DRUM_PADS) {
             val pad = padBank.getItemAt(p) as DrumPad
             if (!pad.exists().get()) continue
-            // Bank is scroll=0 size=128, so the pad index is the MIDI note.
-            // Emit the raw number; the Rust server formats as pitch notation
-            // via its single canonical midi→name formula.
             val padJson = linkedMapOf<String, Any?>(
-                "note" to p,
+                "note" to (scroll + p),
                 "name" to pad.name().get(),
             )
             padSampleName(pad)?.let { padJson["sample_name"] = it }
