@@ -20,7 +20,7 @@
 
 mod bridge;
 pub mod project;
-mod requests;
+pub mod types;
 mod server;
 
 pub use bridge::{ActivityEvent, CcBridge, CcMessage, MidiMessage, NoteMessage, PerNoteExpressionMessage, PerNoteExpressionType};
