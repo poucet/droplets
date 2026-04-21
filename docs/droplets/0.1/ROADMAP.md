@@ -49,6 +49,7 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [ ] | P2 | 24b | clap-wrapper PR: translate `CLAP_EVENT_MIDI` out on VST3 | M | Medium — today [process.cpp:808-812](https://github.com/free-audio/clap-wrapper/blob/main/src/detail/vst3/process.cpp#L808-L812) silently swallows `CLAP_EVENT_MIDI` / `_SYSEX` / `_MIDI2` in `enqueueOutputEvent`. Fix is a surgical addition alongside the existing NOTE_ON/OFF cases: parse status byte, fan out to `kLegacyMIDICCOutEvent` / `kDataEvent`. Upstream PR against clap-wrapper (issue [#414](https://github.com/free-audio/clap-wrapper/issues/414)) |
 | [ ] | P2 | 28 | Notes-with-duration representation in the audio thread | L | High — ships a single `TimedNote { tick_offset, duration_ticks, ... }` to the audio thread instead of pre-expanded NoteOn/NoteOff pairs. Absorbs `emit_notes` overlap truncation, zero-duration guard, NoteOff left-skew, and the same-sample deconflict pass. Requires a bounded `PendingNoteOff` buffer on the audio thread (no malloc), so polyphony-cap + pre-alloc design work up front |
 | [ ] | P2 | 29 | Fold the parked `audio_debug` probe back in as a Cargo feature | S | Medium — audio-thread debug probe with lock-free ring buffer + background drainer, parked on bookmark `wip/audio-debug-probe`. Landing on trunk needs a `audio-debug` Cargo feature so call sites compile out entirely when disabled, and all DebugRecord construction moves inside `audio_debug.rs` so probes at call sites are single feature-gated lines. Keep for future sequencer debugging sessions |
+| [ ] | P2 | 30 | Intern tags on the main thread so audio thread uses integer IDs | S | Medium — `FugueCommand::CancelByTag { tag: String }` forces audio-thread string comparison per-fugue, and `tag_loop_boundaries` builds a `HashMap<String, f64>` each buffer (allocates). Replace with `TagId(u32)` assigned by a main-thread interner; `FugueDefinition.tag` and `FugueCommand::CancelByTag` carry the integer. Scheduler's tag lookups become integer compares or a fixed-capacity `[(TagId, f64); N]` linear scan |
 
 ---
 
@@ -634,6 +635,20 @@ All of these are derivative facts of "two independent events for one note." When
 **Non-goals:** replacing the raw `NoteOn` / `NoteOff` variants. They stay for the cases listed above.
 
 **Files:** [src/fugue/types.rs](../../../src/fugue/types.rs) (new `TimedNote` arm on `FugueEvent`; `PendingNoteOff` + ring state on `Fugue`), [src/fugue/fugue.rs](../../../src/fugue/fugue.rs) (ring management, dispatch), [src/fugue/sequencer.rs](../../../src/fugue/sequencer.rs) (can optionally retire the deconflict post-pass once all internally-generated events run through `TimedNote`), [src/mcp/types/emit.rs](../../../src/mcp/types/emit.rs) (`emit_notes` produces `TimedNote` instead of NoteOn/NoteOff pairs; overlap/zero-dur guards become the audio thread's responsibility), [src/mcp/types/conversion.rs](../../../src/mcp/types/conversion.rs) (read-back path reconstructs CompactNote from `TimedNote`s instead of from pair-matching).
+
+---
+
+#### Feature 30: Intern tags on the main thread; audio thread uses integer IDs
+
+**Problem:** `FugueCommand::CancelByTag { tag: String }` ships an owned `String` across the ring buffer to the audio thread, which then does a `String` equality compare for every fugue in `cancel_fugues_by_tag`. Worse, `FugueSequencer::tag_loop_boundaries` (called every buffer from `start_pending_fugues`) builds a `HashMap<String, f64>` — `HashMap::new` allocates, and insertion may further allocate. Both are realtime violations.
+
+**Solution:** introduce a `TagId(u32)` interner on the main thread. When a fugue is queued with `tag: "melody"`, the MCP-side conversion layer looks up "melody" → returns existing or assigns next ID. `FugueDefinition.tag: Option<TagId>` and `FugueCommand::CancelByTag { tag: TagId }` carry the integer. Scheduler-side lookups become:
+- `fugue.definition.tag == Some(tag_id)` — u32 compare.
+- `tag_loop_boundaries`: `[(TagId, f64); MAX_LIVE_TAGS]` linear scan, stack-allocated. `MAX_LIVE_TAGS = 32` is plenty; we can drop the tail if exceeded.
+
+**Interner design:** main-thread-only `Mutex<HashMap<String, u32>>` in [src/fugue/main/bridge.rs](../../../src/fugue/main/bridge.rs) or similar. Never deallocates tag IDs within a session — tags are cheap. Optional `Display` via a reverse lookup for read-back paths (`list_fugues`, `get_fugue`).
+
+**Files:** [src/fugue/command.rs](../../../src/fugue/command.rs), [src/fugue/types.rs](../../../src/fugue/types.rs) (`tag: Option<TagId>`), [src/fugue/main/bridge.rs](../../../src/fugue/main/bridge.rs) (interner), [src/fugue/audio/sequencer.rs](../../../src/fugue/audio/sequencer.rs) (integer compares + stack-allocated tag-boundary buffer), [src/mcp/types/conversion.rs](../../../src/mcp/types/conversion.rs) (intern at parse time, de-intern at read-back time).
 
 ---
 

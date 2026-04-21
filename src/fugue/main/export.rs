@@ -8,7 +8,7 @@ use midly::{
 };
 use std::collections::HashMap;
 
-use super::types::{FugueDefinition, FugueEvent, InterpolationMode, TimedFugueEvent};
+use super::super::types::{FugueDefinition, FugueEvent, InterpolationMode, TimedFugueEvent};
 
 /// Pulses per quarter note (standard MIDI resolution)
 const PPQ: u16 = 480;

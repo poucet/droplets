@@ -37,7 +37,7 @@ use std::collections::HashMap;
 
 use midly::{MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
 
-use super::types::{
+use super::super::types::{
     CancelMode, FugueDefinition, InterpolationMode, LoopMode, QuantizeMode, TimedFugueEvent,
     generate_fugue_id,
 };

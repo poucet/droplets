@@ -4,9 +4,9 @@
 
 use rtrb::Consumer;
 
-use super::command::FugueCommand;
+use super::super::command::FugueCommand;
 use super::fugue::Fugue;
-use super::types::{CancelMode, FugueDefinition, FugueInfo, ProcessedEvent, StartMode};
+use super::super::types::{CancelMode, FugueDefinition, FugueInfo, ProcessedEvent, StartMode};
 use crate::mcp::{MidiMessage, NoteMessage};
 
 /// Buffer capacity for output MIDI messages per process cycle
@@ -1012,7 +1012,7 @@ mod daw_loop_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::super::types::QuantizeMode;
+    use super::super::super::types::QuantizeMode;
 
     #[test]
     fn test_quantize_immediate() {

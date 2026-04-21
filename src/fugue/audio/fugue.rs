@@ -3,7 +3,7 @@
 //! A Fugue is an active instance of a FugueDefinition, tracking playback position,
 //! active notes, CC state, and handling event emission with interpolation.
 
-use super::types::{
+use super::super::types::{
     FugueDefinition, FugueEvent, FugueInfo, InterpolationMode, LoopMode, ProcessedEvent,
 };
 use crate::mcp::{CcMessage, MidiMessage, NoteMessage, PerNoteExpressionMessage};

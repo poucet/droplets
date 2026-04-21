@@ -10,8 +10,8 @@ use rtrb::{Consumer, Producer, RingBuffer};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-use super::command::FugueCommand;
-use super::types::{FugueDefinition, FugueInfo, TransportState};
+use super::super::command::FugueCommand;
+use super::super::types::{FugueDefinition, FugueInfo, TransportState};
 
 /// Ring buffer size for fugue commands
 /// Larger than MIDI ring buffer because FugueDefinition can be big
