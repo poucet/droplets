@@ -1,4 +1,4 @@
-//! Settings management for Simply Droplets
+//! Settings management for Droplets
 //!
 //! Handles persistent settings like export path, loaded from/saved to a JSON file.
 
@@ -37,7 +37,7 @@ pub fn default_export_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join("Music")
-            .join("Simply Droplets")
+            .join("Droplets")
             .join("Exports")
     }
 
@@ -45,7 +45,7 @@ pub fn default_export_path() -> PathBuf {
     {
         dirs::document_dir()
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("C:\\")))
-            .join("Simply Droplets")
+            .join("Droplets")
             .join("Exports")
     }
 
@@ -54,13 +54,13 @@ pub fn default_export_path() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
             .join("Music")
-            .join("Simply Droplets")
+            .join("Droplets")
             .join("Exports")
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
-        PathBuf::from("/tmp/simply-droplets/exports")
+        PathBuf::from("/tmp/droplets/exports")
     }
 }
 
@@ -70,7 +70,7 @@ fn settings_file_path() -> PathBuf {
     {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join(".simply-droplets")
+            .join(".droplets")
             .join("settings.json")
     }
 
@@ -78,7 +78,7 @@ fn settings_file_path() -> PathBuf {
     {
         dirs::config_dir()
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("C:\\")))
-            .join("Simply Droplets")
+            .join("Droplets")
             .join("settings.json")
     }
 
@@ -86,13 +86,13 @@ fn settings_file_path() -> PathBuf {
     {
         dirs::config_dir()
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp")))
-            .join("simply-droplets")
+            .join("droplets")
             .join("settings.json")
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     {
-        PathBuf::from("/tmp/simply-droplets/settings.json")
+        PathBuf::from("/tmp/droplets/settings.json")
     }
 }
 

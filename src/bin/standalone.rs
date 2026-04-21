@@ -1,4 +1,4 @@
-//! Standalone debugging binary for Simply Droplets
+//! Standalone debugging binary for Droplets
 //!
 //! This runs the MCP bridge, GUI server, and outputs MIDI messages to a virtual MIDI port
 //! for quick testing without needing to load the plugin in a DAW.
@@ -6,8 +6,8 @@
 use midir::{MidiOutput, MidiOutputConnection};
 #[cfg(unix)]
 use midir::os::unix::VirtualOutput;
-use simply_droplets::gui::{configure_webview, WebViewConfig, DEFAULT_GUI_SIZE};
-use simply_droplets::mcp::MidiMessage;
+use droplets::gui::{configure_webview, WebViewConfig, DEFAULT_GUI_SIZE};
+use droplets::mcp::MidiMessage;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -45,7 +45,7 @@ fn send_standalone_midi(conn: &Arc<Mutex<Option<MidiOutputConnection>>>, msg: &M
 ///    every channel — covers notes not tracked by fugues, e.g. piano-
 ///    keyboard presses from the UI.
 fn shutdown_midi(conn: &Arc<Mutex<Option<MidiOutputConnection>>>, instance_id: &str) {
-    let _ = simply_droplets::fugue::FugueBridge::clear_all(instance_id);
+    let _ = droplets::fugue::FugueBridge::clear_all(instance_id);
     thread::sleep(Duration::from_millis(80));
 
     if let Ok(mut guard) = conn.lock() {
@@ -65,14 +65,14 @@ fn main() {
         .filter_level(log::LevelFilter::Info)
         .init();
 
-    println!("=== Simply Droplets Standalone ===");
+    println!("=== Droplets Standalone ===");
     println!("Starting MCP server, GUI server, and MIDI output...\n");
 
     // Create params and register with CcBridge
-    let params_inst = Arc::new(simply_droplets::params::DropletParams::new());
+    let params_inst = Arc::new(droplets::params::DropletParams::new());
     let instance_id = "standalone";
     let mut midi_consumer =
-        simply_droplets::mcp::CcBridge::register(instance_id, Arc::clone(&params_inst));
+        droplets::mcp::CcBridge::register(instance_id, Arc::clone(&params_inst));
 
     // Register with FugueBridge for fugue sequencing. Unlike the plugin path
     // (where the DAW's audio thread drives FugueSequencer::process), standalone
@@ -81,24 +81,24 @@ fn main() {
     // this, queued fugues sit in the ring buffer forever and never appear in
     // the fugue info cache, which is the "queue fugue disappears" UI bug.
     let (fugue_consumer, fugue_info_handle) =
-        simply_droplets::fugue::FugueBridge::register(instance_id, instance_id);
+        droplets::fugue::FugueBridge::register(instance_id, instance_id);
 
     // Start MCP server (shared singleton) - use standalone port to avoid conflict with plugin
-    simply_droplets::mcp::start_server(simply_droplets::mcp::STANDALONE_MCP_PORT);
+    droplets::mcp::start_server(droplets::mcp::STANDALONE_MCP_PORT);
     println!(
         "MCP server running on port {}",
-        simply_droplets::mcp::STANDALONE_MCP_PORT
+        droplets::mcp::STANDALONE_MCP_PORT
     );
 
     // Start GUI server (shared singleton) - use standalone port to avoid conflict with plugin
-    simply_droplets::gui::server::start_server(simply_droplets::gui::server::STANDALONE_GUI_PORT);
+    droplets::gui::server::start_server(droplets::gui::server::STANDALONE_GUI_PORT);
     println!(
         "GUI server running on http://127.0.0.1:{}",
-        simply_droplets::gui::server::STANDALONE_GUI_PORT
+        droplets::gui::server::STANDALONE_GUI_PORT
     );
 
     // Setup MIDI output
-    let midi_out = match MidiOutput::new("Simply Droplets Standalone") {
+    let midi_out = match MidiOutput::new("Droplets Standalone") {
         Ok(m) => m,
         Err(e) => {
             eprintln!("Failed to create MIDI output: {}", e);
@@ -141,12 +141,12 @@ fn main() {
     println!("- GUI window will open");
     println!(
         "- Browser UI available at http://127.0.0.1:{}",
-        simply_droplets::gui::server::STANDALONE_GUI_PORT
+        droplets::gui::server::STANDALONE_GUI_PORT
     );
     println!("- Click notes on the piano keyboard");
     println!(
         "- Or use MCP tools on port {}",
-        simply_droplets::mcp::STANDALONE_MCP_PORT
+        droplets::mcp::STANDALONE_MCP_PORT
     );
     println!("\nClose the window to quit\n");
 
@@ -159,7 +159,7 @@ fn main() {
     thread::spawn(move || loop {
         while let Ok(msg) = midi_consumer.pop() {
             match msg {
-                simply_droplets::mcp::MidiMessage::Note(note) => {
+                droplets::mcp::MidiMessage::Note(note) => {
                     let note_type = if note.is_note_on { "NoteOn" } else { "NoteOff" };
                     println!(
                         "🎵 {} note={} vel={} ch={}",
@@ -181,7 +181,7 @@ fn main() {
                         }
                     }
                 }
-                simply_droplets::mcp::MidiMessage::Cc(cc) => {
+                droplets::mcp::MidiMessage::Cc(cc) => {
                     println!("🎛️  CC{} = {} ch={}", cc.cc, cc.value, cc.channel);
 
                     if let Ok(mut conn) = conn_out_clone.lock() {
@@ -194,7 +194,7 @@ fn main() {
                         }
                     }
                 }
-                simply_droplets::mcp::MidiMessage::PerNoteExpression(expr) => {
+                droplets::mcp::MidiMessage::PerNoteExpression(expr) => {
                     println!(
                         "🎚️  Per-note expression on note {} ch={}",
                         expr.note, expr.channel
@@ -213,8 +213,8 @@ fn main() {
     // drains the fugue command ring buffer and dispatches events to MIDI. Without
     // this, queued fugues never appear in the info cache and seem to "disappear."
     thread::spawn(move || {
-        use simply_droplets::fugue::{FugueSequencer, ProcessedEvent, TransportState};
-        use simply_droplets::mcp::{CcMessage, MidiMessage};
+        use droplets::fugue::{FugueSequencer, ProcessedEvent, TransportState};
+        use droplets::mcp::{CcMessage, MidiMessage};
 
         let sample_rate: f64 = 48_000.0;
         let bpm: f64 = 120.0;
@@ -305,7 +305,7 @@ fn main() {
 
     let event_loop: EventLoop<UserEvent> = EventLoopBuilder::<UserEvent>::with_user_event().build();
     let window = match WindowBuilder::new()
-        .with_title("Simply Droplets - Standalone")
+        .with_title("Droplets - Standalone")
         .with_inner_size(DEFAULT_GUI_SIZE)
         .build(&event_loop)
     {
@@ -321,7 +321,7 @@ fn main() {
     // with `None` means drag IPC messages hit the `NoWindow` fallback
     // (reveal-in-file-manager) rather than attempting a native drag
     // against a window handle we don't control cleanly here.
-    let drag_state: simply_droplets::gui::drag::DragState =
+    let drag_state: droplets::gui::drag::DragState =
         Arc::new(Mutex::new(None));
     let config = WebViewConfig::plugin(ipc_sender, instance_id, drag_state);
     let builder = configure_webview(WebViewBuilder::new(), Arc::clone(&params_inst), config);
@@ -353,7 +353,7 @@ fn main() {
     // Change-detection state for the push handler. Matches DropletGui's
     // plugin-side logic: only push when IDs or waiting flags change so we
     // don't flood the webview with identical messages every tick.
-    let mut last_transport: Option<simply_droplets::fugue::TransportState> = None;
+    let mut last_transport: Option<droplets::fugue::TransportState> = None;
     let mut last_fugue_ids: Vec<u64> = Vec::new();
     let mut last_waiting_states: Vec<bool> = Vec::new();
 
@@ -414,12 +414,12 @@ fn main() {
 fn push_state_to_webview(
     webview: &wry::WebView,
     instance_id: &str,
-    last_transport: &mut Option<simply_droplets::fugue::TransportState>,
+    last_transport: &mut Option<droplets::fugue::TransportState>,
     last_fugue_ids: &mut Vec<u64>,
     last_waiting_states: &mut Vec<bool>,
 ) {
     // Transport: push when beat advances enough to matter, or playing/tempo change.
-    if let Ok(transport) = simply_droplets::fugue::FugueBridge::get_transport(instance_id) {
+    if let Ok(transport) = droplets::fugue::FugueBridge::get_transport(instance_id) {
         let should_send = last_transport
             .map(|last| {
                 (transport.beat - last.beat).abs() > 0.001
@@ -438,11 +438,11 @@ fn push_state_to_webview(
     }
 
     // Fugues: push when the set of IDs or waiting-flags changes.
-    if let Ok(infos) = simply_droplets::fugue::FugueBridge::get_fugue_info(instance_id) {
+    if let Ok(infos) = droplets::fugue::FugueBridge::get_fugue_info(instance_id) {
         let current_ids: Vec<u64> = infos.iter().map(|f| f.id).collect();
         let current_waiting: Vec<bool> = infos.iter().map(|f| f.is_waiting).collect();
         if current_ids != *last_fugue_ids || current_waiting != *last_waiting_states {
-            let defs = simply_droplets::fugue::FugueBridge::get_definitions(instance_id)
+            let defs = droplets::fugue::FugueBridge::get_definitions(instance_id)
                 .unwrap_or_default();
             let infos_json = serde_json::to_string(&infos).unwrap_or_else(|_| "[]".into());
             let defs_json = serde_json::to_string(&defs).unwrap_or_else(|_| "[]".into());

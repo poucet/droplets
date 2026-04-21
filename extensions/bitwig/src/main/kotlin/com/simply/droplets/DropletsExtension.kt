@@ -49,7 +49,7 @@ private val DRUM_MACHINE_UUID: UUID = UUID.fromString("8ea97e45-0255-40fd-bc7e-9
 private val INSTANCE_ID_REGEX = Regex("^droplets-[0-9a-f]+$")
 
 /**
- * Controller extension for Simply Droplets.
+ * Controller extension for Droplets.
  *
  * Design choice: **poll, don't subscribe.**
  *

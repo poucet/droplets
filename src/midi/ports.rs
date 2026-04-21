@@ -1,4 +1,4 @@
-//! Port declarations for Simply Droplets
+//! Port declarations for Droplets
 //!
 //! Declares a stereo audio pass-through (required by the clap-wrapper's
 //! VST3 bridge — Ableton refuses to instantiate the plugin when it

@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Parser)]
 #[command(name = "xtask")]
-#[command(about = "Build automation for Simply Droplets plugin")]
+#[command(about = "Build automation for Droplets plugin")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -116,12 +116,12 @@ impl HostOs {
         }
     }
 
-    /// File name cargo emits for the cdylib on this OS, e.g. `libsimply_droplets.dylib`.
+    /// File name cargo emits for the cdylib on this OS, e.g. `libdroplets.dylib`.
     fn dylib_filename(self) -> &'static str {
         match self {
-            HostOs::Macos => "libsimply_droplets.dylib",
-            HostOs::Linux => "libsimply_droplets.so",
-            HostOs::Windows => "simply_droplets.dll",
+            HostOs::Macos => "libdroplets.dylib",
+            HostOs::Linux => "libdroplets.so",
+            HostOs::Windows => "droplets.dll",
         }
     }
 
@@ -211,8 +211,8 @@ impl BundleInfo {
         let pkg = meta
             .packages
             .into_iter()
-            .find(|p| p.name == "simply_droplets")
-            .ok_or_else(|| anyhow::anyhow!("simply_droplets package not found in metadata"))?;
+            .find(|p| p.name == "droplets")
+            .ok_or_else(|| anyhow::anyhow!("droplets package not found in metadata"))?;
 
         let bundle = pkg
             .metadata
@@ -356,8 +356,8 @@ fn install(format: Format) -> anyhow::Result<()> {
     // Known historical bundle names that may still be lingering from older
     // builds (nih-plug era used lowercase). Sweep them alongside the current
     // name so DAWs don't end up scanning two copies.
-    const LEGACY_CLAP_NAMES: &[&str] = &["simply_droplets.clap"];
-    const LEGACY_VST3_NAMES: &[&str] = &["simply_droplets.vst3"];
+    const LEGACY_CLAP_NAMES: &[&str] = &["droplets.clap"];
+    const LEGACY_VST3_NAMES: &[&str] = &["droplets.vst3"];
 
     if format.wants_clap() {
         let name = info.clap_bundle_name();
@@ -571,9 +571,9 @@ fn build_plugin(profile: &str, dev_gui: bool) -> anyhow::Result<()> {
 // ---------------------------------------------------------------------------
 
 /// CLAP bundle layout:
-///   macOS:   Simply Droplets.clap/Contents/MacOS/Simply Droplets
-///   Linux:   Simply Droplets.clap              (flat .so renamed)
-///   Windows: Simply Droplets.clap              (flat .dll renamed)
+///   macOS:   Droplets.clap/Contents/MacOS/Droplets
+///   Linux:   Droplets.clap              (flat .so renamed)
+///   Windows: Droplets.clap              (flat .dll renamed)
 fn create_clap_bundle(
     host: HostOs,
     info: &BundleInfo,
@@ -596,9 +596,9 @@ fn create_clap_bundle(
 }
 
 /// VST3 bundle layout (VST3 spec requires a bundle directory on all platforms):
-///   macOS:   Simply Droplets.vst3/Contents/MacOS/Simply Droplets
-///   Linux:   Simply Droplets.vst3/Contents/<arch>-linux/Simply Droplets.so
-///   Windows: Simply Droplets.vst3/Contents/<arch>-win/Simply Droplets.vst3
+///   macOS:   Droplets.vst3/Contents/MacOS/Droplets
+///   Linux:   Droplets.vst3/Contents/<arch>-linux/Droplets.so
+///   Windows: Droplets.vst3/Contents/<arch>-win/Droplets.vst3
 fn create_vst3_bundle(
     host: HostOs,
     info: &BundleInfo,

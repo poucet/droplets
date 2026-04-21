@@ -46,7 +46,7 @@ const DawLayout: React.FC<DawLayoutProps> = ({ layout, lastUpdatedAt, hostConnec
           <h2>No DAW layout received</h2>
           <p>
             Load the <strong>Droplets host extension</strong> in your DAW (Bitwig:
-            Settings → Controllers → add "Simply Droplets") and it will push the
+            Settings → Controllers → add "Droplets") and it will push the
             project's track and device tree here.
           </p>
           <p className="daw-empty-hint">

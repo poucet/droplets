@@ -1,8 +1,8 @@
-# 🎹 Simply Droplets
+# 🎹 Droplets
 
 > **Let AI make music in your DAW** — Connect Claude, GPT, or any AI to Ableton, Bitwig, Logic, and more!
 
-Simply Droplets is a VST3/CLAP plugin that bridges AI assistants and your DAW. Ask Claude to play a melody, create a drum pattern, or automate your synth — and hear it instantly in your project.
+Droplets is a VST3/CLAP plugin that bridges AI assistants and your DAW. Ask Claude to play a melody, create a drum pattern, or automate your synth — and hear it instantly in your project.
 
 Built by [**Christophe Poucet**](https://www.simplychris.ai) (Simply Chris).
 
@@ -25,7 +25,7 @@ Built by [**Christophe Poucet**](https://www.simplychris.ai) (Simply Chris).
 │                         YOUR DAW                                │
 │  ┌─────────────────┐    MIDI     ┌─────────────────────────┐    │
 │  │                 │◄───────────►│    Your Instruments     │    │
-│  │ Simply Droplets │             │                         │    │
+│  │    Droplets     │             │                         │    │
 │  │     Plugin      │             │  🎹 Synths              │    │
 │  │                 │             │  🥁 Drums               │    │
 │  └────────┬────────┘             │  🎸 Samplers            │    │
@@ -61,7 +61,7 @@ Build from source (see [Building from Source](#-building-from-source) below) and
 
 ### 2️⃣ Load in Your DAW
 
-Add Simply Droplets as a **MIDI effect** and route its output to your instruments.
+Add Droplets as a **MIDI effect** and route its output to your instruments.
 
 **Bitwig:** drop Droplets on a Note Effects chain before any instrument; MIDI flows downstream automatically.
 
@@ -76,12 +76,12 @@ Droplets still appears in the Plug-Ins browser under the Instruments list. Prope
 
 ### 3️⃣ Connect Your AI
 
-Simply Droplets speaks MCP over **streamable HTTP** on `http://localhost:9999/mcp`. MCP clients that speak HTTP directly (e.g. Claude Code, Cursor) can use that URL as-is:
+Droplets speaks MCP over **streamable HTTP** on `http://localhost:9999/mcp`. MCP clients that speak HTTP directly (e.g. Claude Code, Cursor) can use that URL as-is:
 
 ```json
 {
   "mcpServers": {
-    "simply-droplets": {
+    "droplets": {
       "url": "http://localhost:9999/mcp"
     }
   }
@@ -93,7 +93,7 @@ Simply Droplets speaks MCP over **streamable HTTP** on `http://localhost:9999/mc
 ```json
 {
   "mcpServers": {
-    "simply-droplets": {
+    "droplets": {
       "command": "npx",
       "args": [
         "-y",
@@ -239,7 +239,7 @@ Turn AI compositions into DAW clips:
 
 ```bash
 git clone https://github.com/poucet/droplets.git
-cd simply-droplets
+cd droplets
 
 # Build bundles for your platform into target/bundle/
 cargo xtask build
@@ -270,7 +270,7 @@ cargo xtask install --skip-build           # just copy existing bundles
 ## 📁 Project Structure
 
 ```
-simply-droplets/
+droplets/
 ├── 🦀 src/
 │   ├── lib.rs              # Plugin entry point
 │   ├── fugue/              # 🎼 Fugue sequencer
@@ -307,16 +307,16 @@ simply-droplets/
 ### Settings Location
 | Platform | Path |
 |----------|------|
-| 🍎 macOS | `~/.simply-droplets/settings.json` |
-| 🪟 Windows | `%APPDATA%\Simply Droplets\settings.json` |
-| 🐧 Linux | `~/.config/simply-droplets/settings.json` |
+| 🍎 macOS | `~/.droplets/settings.json` |
+| 🪟 Windows | `%APPDATA%\Droplets\settings.json` |
+| 🐧 Linux | `~/.config/droplets/settings.json` |
 
 ### Export Folder
 | Platform | Default Path |
 |----------|--------------|
-| 🍎 macOS | `~/Music/Simply Droplets/Exports/` |
-| 🪟 Windows | `Documents\Simply Droplets\Exports\` |
-| 🐧 Linux | `~/Music/Simply Droplets/Exports/` |
+| 🍎 macOS | `~/Music/Droplets/Exports/` |
+| 🪟 Windows | `Documents\Droplets\Exports\` |
+| 🐧 Linux | `~/Music/Droplets/Exports/` |
 
 ---
 

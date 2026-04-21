@@ -1,6 +1,6 @@
 # Droplets — Bitwig Controller Extension
 
-Pushes the current project's track/device layout to the Simply Droplets
+Pushes the current project's track/device layout to the Droplets
 plugin so the LLM driving it over MCP can see what's on each track:
 device names, preset names, drum-pad maps, per-track Remote Controls,
 and which track each Droplets instance sits on. Auto-renames Droplets

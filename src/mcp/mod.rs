@@ -1,4 +1,4 @@
-//! MCP Server module for Simply Droplets
+//! MCP Server module for Droplets
 //!
 //! Provides AI control of MIDI CC output via the Model Context Protocol.
 //!

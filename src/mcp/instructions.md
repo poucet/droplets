@@ -1,4 +1,4 @@
-Simply Droplets — AI-controlled MIDI 1.0/2.0 out of a DAW plugin.
+Droplets — AI-controlled MIDI 1.0/2.0 out of a DAW plugin.
 
 ## Session start (ALWAYS do this first)
 1. `get_project_state` — single call that returns:

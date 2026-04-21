@@ -7,7 +7,7 @@ import com.bitwig.extension.controller.api.ControllerHost
 import java.util.UUID
 
 class DropletsExtensionDefinition : ControllerExtensionDefinition() {
-    override fun getName() = "Simply Droplets"
+    override fun getName() = "Droplets"
     override fun getAuthor() = "Simply Chris"
     override fun getVersion() = "0.1.0"
     override fun getId(): UUID = DRIVER_ID

@@ -1,5 +1,5 @@
 [package]
-name = "simply_droplets"
+name = "droplets"
 version = "0.2.0"
 edition = "2021"
 authors = ["Christophe Poucet <simply.chris.rl@gmail.com>"]
@@ -11,10 +11,10 @@ license = "MIT"
 # bundles. Kept here (not in a separate bundler.toml) so name/version live
 # in one place and can be read via CARGO_PKG_* or parsed from Cargo.toml.
 [package.metadata.bundle]
-display_name = "Simply Droplets"
+display_name = "Droplets"
 vendor = "Simply Chris"
-clap_bundle_id = "com.simply-chris.simply-droplets"
-vst3_bundle_id = "com.simply-chris.simply-droplets.vst3"
+clap_bundle_id = "com.simply-chris.droplets"
+vst3_bundle_id = "com.simply-chris.droplets.vst3"
 
 # Build dynamic library for VST/CLAP plugin
 # Also includes "rlib" for standalone binary to link against

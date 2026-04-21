@@ -330,7 +330,7 @@ const App: React.FC = () => {
       <header className="app-header">
         <div className="header-left">
           <h1>
-            Simply Droplets
+            Droplets
             <span className="app-version">0.1.0</span>
           </h1>
           <span className="subtitle">AI Parameter Bridge</span>

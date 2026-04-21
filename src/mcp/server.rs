@@ -1,4 +1,4 @@
-//! MCP Server tool definitions for Simply Droplets.
+//! MCP Server tool definitions for Droplets.
 //!
 //! This file owns the [`DropletsMcp`] service and the [`tool_router`] that
 //! maps MCP tool calls to handler methods. Request data types, custom
@@ -24,7 +24,7 @@ use super::types::{
 };
 use crate::fugue::FugueBridge;
 
-/// MCP Server for Simply Droplets
+/// MCP Server for Droplets
 #[derive(Clone)]
 pub struct DropletsMcp {
     tool_router: ToolRouter<DropletsMcp>,
@@ -46,8 +46,8 @@ impl Default for DropletsMcp {
 
 #[tool_router]
 impl DropletsMcp {
-    /// List all connected Simply Droplets plugin instances.
-    #[tool(description = "List all connected Simply Droplets plugin instances. Returns the names that can be used to target a specific instance when queueing fugues.")]
+    /// List all connected Droplets plugin instances.
+    #[tool(description = "List all connected Droplets plugin instances. Returns the names that can be used to target a specific instance when queueing fugues.")]
     fn list_instances(&self) -> Json<Vec<InstanceHandle>> {
         Json(
             CcBridge::list_instances()
@@ -58,7 +58,7 @@ impl DropletsMcp {
     }
 
     /// Rename a plugin instance for easier reference.
-    #[tool(description = "Rename a Simply Droplets instance for easier reference. Use names like 'bass', 'pad', 'lead' to make targeting clearer.")]
+    #[tool(description = "Rename a Droplets instance for easier reference. Use names like 'bass', 'pad', 'lead' to make targeting clearer.")]
     fn set_instance_name(
         &self,
         Parameters(req): Parameters<RenameInstanceRequest>,

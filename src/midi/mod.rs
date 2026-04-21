@@ -1,4 +1,4 @@
-//! MIDI processor for Simply Droplets
+//! MIDI processor for Droplets
 //!
 //! This processor:
 //! - Forwards all incoming MIDI events to output (MIDI thru)

@@ -1,4 +1,4 @@
-//! CC Slot mapping system for Simply Droplets.
+//! CC Slot mapping system for Droplets.
 //!
 //! Each slot pairs a MIDI CC number + channel + human-readable name. When the
 //! user wiggles a slot from the UI or an MCP tool sets one, the plugin emits
