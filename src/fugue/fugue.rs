@@ -186,10 +186,23 @@ impl Fugue {
         let phase = transport_beat.rem_euclid(dur);
         self.start_beat = transport_beat - phase;
         self.current_loop = 0;
+        // Tolerate ~1 MIDI tick of float drift when finding the first event
+        // to play. Without this, a DAW transport-loop that wraps back to a
+        // beat the DAW reports as `1e-15` (instead of exactly `0`) makes
+        // `partition_point` walk past any event at beat 0 — because
+        // `0.0 < 1e-15` is true — and the iteration silently drops its
+        // beat-0 NoteOns. The symptom is "first note of the next loop
+        // iteration doesn't play" and it reproduces most easily when the
+        // DAW's loop length exactly matches the fugue's duration_beats
+        // (so this `phase_lock` jump path intercepts instead of the
+        // drift-immune `reset_for_loop`). One MIDI tick (1/960 beat) is
+        // well below audible timing resolution and safely above any
+        // plausible transport-position float error.
+        const PHASE_LOCK_TOLERANCE: f64 = 1.0 / 960.0;
         self.next_event_index = self
             .definition
             .events
-            .partition_point(|e| e.beat_offset < phase);
+            .partition_point(|e| e.beat_offset < phase - PHASE_LOCK_TOLERANCE);
         self.active_ramps.clear();
         self.clear_active_notes();
         self.cc_state = default_cc_state();
