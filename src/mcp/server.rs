@@ -295,6 +295,25 @@ impl ServerHandler for DropletsMcp {
             {
                 tool.description = Some(desc.into());
             }
+            // Some LLM providers (notably Google Gemini) only accept an
+            // OpenAPI 3.0 subset of JSON Schema — no `const`, no
+            // `prefixItems`. schemars 1.x emits both for tagged enums and
+            // custom tuple types, so we rewrite the schemas to the
+            // widely-supported forms here before handing them to MCP
+            // clients. `const: X` becomes `enum: [X]`; `prefixItems` is
+            // dropped (losing positional validation, keeping shape).
+            let mut input_val = serde_json::Value::Object((*tool.input_schema).clone());
+            sanitize_schema_in_place(&mut input_val);
+            if let serde_json::Value::Object(obj) = input_val {
+                tool.input_schema = std::sync::Arc::new(obj);
+            }
+            if let Some(out) = tool.output_schema.as_ref() {
+                let mut out_val = serde_json::Value::Object((**out).clone());
+                sanitize_schema_in_place(&mut out_val);
+                if let serde_json::Value::Object(obj) = out_val {
+                    tool.output_schema = Some(std::sync::Arc::new(obj));
+                }
+            }
         }
 
         log::info!("MCP: Returning {} tools", tools.len());
@@ -312,6 +331,122 @@ impl ServerHandler for DropletsMcp {
         log::info!("MCP: call_tool '{}' with args: {:?}", request.name, request.arguments);
         let tool_context = ToolCallContext::new(self, request, context);
         self.tool_router.call(tool_context).await
+    }
+}
+
+/// Recursively rewrite a JSON Schema emitted by `schemars` into a form the
+/// narrower OpenAPI-3.0 subset (Gemini, some other LLM APIs) accepts.
+///
+/// Concretely:
+/// - `{ "const": X }` → `{ "enum": [X] }`. Gemini's schema validator rejects
+///   `const` (emitted by schemars for tagged-enum discriminators like
+///   `FugueContent`'s `"type": "notes"`).
+/// - `prefixItems: [...]` is dropped and a generic `items` left in place.
+///   Gemini doesn't know `prefixItems` (JSON Schema Draft 2020-12); dropping
+///   it loses positional validation but keeps the overall array shape.
+/// - Descends into `properties`, `items`, `oneOf`, `anyOf`, `allOf`, and the
+///   per-element entries of `prefixItems` itself so nested violations get
+///   sanitized too.
+///
+/// No-op on anything else. Leaves `Value::Array`, `Value::Number`, etc.
+/// untouched apart from recursing through them.
+fn sanitize_schema_in_place(value: &mut serde_json::Value) {
+    use serde_json::Value;
+    match value {
+        Value::Object(map) => {
+            // const → enum: [const_value]
+            if let Some(const_val) = map.remove("const") {
+                map.insert("enum".into(), Value::Array(vec![const_val]));
+            }
+            // prefixItems → drop entirely (we lose positional validation
+            // but Gemini doesn't support it). Recurse into it first so any
+            // nested const rewrites get applied in case something else in
+            // the ecosystem does support it.
+            if let Some(prefix) = map.get_mut("prefixItems") {
+                sanitize_schema_in_place(prefix);
+            }
+            map.remove("prefixItems");
+
+            for (_, v) in map.iter_mut() {
+                sanitize_schema_in_place(v);
+            }
+        }
+        Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                sanitize_schema_in_place(v);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[cfg(test)]
+mod sanitizer_tests {
+    use super::sanitize_schema_in_place;
+    use serde_json::json;
+
+    #[test]
+    fn rewrites_const_to_single_enum() {
+        let mut v = json!({ "const": "notes" });
+        sanitize_schema_in_place(&mut v);
+        assert_eq!(v, json!({ "enum": ["notes"] }));
+    }
+
+    #[test]
+    fn rewrites_const_nested_in_properties() {
+        // Matches schemars output for tagged-enum discriminators.
+        let mut v = json!({
+            "type": "object",
+            "properties": {
+                "type": { "const": "notes" },
+                "notes": { "type": "array" }
+            }
+        });
+        sanitize_schema_in_place(&mut v);
+        assert_eq!(v["properties"]["type"], json!({ "enum": ["notes"] }));
+    }
+
+    #[test]
+    fn rewrites_const_deep_in_oneof_branches() {
+        let mut v = json!({
+            "oneOf": [
+                { "properties": { "type": { "const": "a" } } },
+                { "properties": { "type": { "const": "b" } } }
+            ]
+        });
+        sanitize_schema_in_place(&mut v);
+        assert_eq!(v["oneOf"][0]["properties"]["type"], json!({ "enum": ["a"] }));
+        assert_eq!(v["oneOf"][1]["properties"]["type"], json!({ "enum": ["b"] }));
+    }
+
+    #[test]
+    fn drops_prefix_items() {
+        let mut v = json!({
+            "type": "array",
+            "prefixItems": [{ "type": "number" }, { "type": "string" }]
+        });
+        sanitize_schema_in_place(&mut v);
+        assert!(v.get("prefixItems").is_none(), "prefixItems should be dropped");
+        assert_eq!(v["type"], "array");
+    }
+
+    #[test]
+    fn leaves_ordinary_enum_alone() {
+        let mut v = json!({ "enum": ["linear", "exp", "log", "none"] });
+        let original = v.clone();
+        sanitize_schema_in_place(&mut v);
+        assert_eq!(v, original, "plain enum arrays should pass through unchanged");
+    }
+
+    #[test]
+    fn handles_non_object_values() {
+        // Sanity: calling on a plain string / number / bool should not panic.
+        let mut s = json!("hello");
+        sanitize_schema_in_place(&mut s);
+        let mut n = json!(42);
+        sanitize_schema_in_place(&mut n);
+        let mut b = json!(true);
+        sanitize_schema_in_place(&mut b);
     }
 }
 
