@@ -122,7 +122,13 @@ impl FugueBridge {
         Ok(id)
     }
 
-    /// Cancel a specific fugue by ID
+    /// Cancel a specific fugue by ID.
+    ///
+    /// Queues the cancel command for the audio thread (which will emit
+    /// note-offs and drop the fugue from its sequencer), AND filters the
+    /// UI-facing info/definitions caches on this thread so readers see
+    /// the removal immediately — even if the transport is stopped and
+    /// the audio thread isn't ticking.
     pub fn cancel(instance: &str, id: u64) -> Result<(), &'static str> {
         let reg = registry().read().unwrap();
         let entry = find_entry(&reg, instance)?;
@@ -131,12 +137,17 @@ impl FugueBridge {
         producer
             .push(FugueCommand::Cancel { id })
             .map_err(|_| "Queue full")?;
+        drop(producer);
+
+        filter_info_cache(entry, |infos| infos.retain(|i| i.id != id));
+        filter_definitions_cache(entry, |defs| defs.retain(|d| d.id != id));
 
         log::info!("FugueBridge: Cancelled fugue {} on '{}'", id, entry.name);
         Ok(())
     }
 
-    /// Cancel all fugues with a specific tag
+    /// Cancel all fugues with a specific tag. See [`cancel`] for the
+    /// main-thread cache-filtering rationale.
     pub fn cancel_by_tag(instance: &str, tag: &str) -> Result<(), &'static str> {
         let reg = registry().read().unwrap();
         let entry = find_entry(&reg, instance)?;
@@ -145,12 +156,21 @@ impl FugueBridge {
         producer
             .push(FugueCommand::CancelByTag { tag: tag.to_string() })
             .map_err(|_| "Queue full")?;
+        drop(producer);
+
+        filter_info_cache(entry, |infos| {
+            infos.retain(|i| i.tag.as_deref() != Some(tag))
+        });
+        filter_definitions_cache(entry, |defs| {
+            defs.retain(|d| d.tag.as_deref() != Some(tag))
+        });
 
         log::info!("FugueBridge: Cancelled fugues with tag '{}' on '{}'", tag, entry.name);
         Ok(())
     }
 
-    /// Clear all fugues on an instance
+    /// Clear all fugues on an instance. See [`cancel`] for the main-thread
+    /// cache-filtering rationale.
     pub fn clear_all(instance: &str) -> Result<(), &'static str> {
         let reg = registry().read().unwrap();
         let entry = find_entry(&reg, instance)?;
@@ -159,6 +179,10 @@ impl FugueBridge {
         producer
             .push(FugueCommand::ClearAll)
             .map_err(|_| "Queue full")?;
+        drop(producer);
+
+        filter_info_cache(entry, |infos| infos.clear());
+        filter_definitions_cache(entry, |defs| defs.clear());
 
         log::info!("FugueBridge: Cleared all fugues on '{}'", entry.name);
         Ok(())
@@ -196,6 +220,27 @@ fn find_entry<'a>(
             .or_else(|| reg.get(name))
             .ok_or("Instance not found")
     }
+}
+
+/// Apply `mutate` to a fresh clone of the current info cache and store it
+/// back atomically. Main-thread only — lets cancel handlers reflect UI
+/// changes instantly without waiting on the audio thread's next publish.
+fn filter_info_cache(entry: &FugueInstanceEntry, mutate: impl FnOnce(&mut Vec<FugueInfo>)) {
+    let current = entry.info_cache.load();
+    let mut next = (**current).clone();
+    mutate(&mut next);
+    entry.info_cache.store(Arc::new(next));
+}
+
+/// Same shape as [`filter_info_cache`] for the definitions cache.
+fn filter_definitions_cache(
+    entry: &FugueInstanceEntry,
+    mutate: impl FnOnce(&mut Vec<FugueDefinition>),
+) {
+    let current = entry.definitions_cache.load();
+    let mut next = (**current).clone();
+    mutate(&mut next);
+    entry.definitions_cache.store(Arc::new(next));
 }
 
 impl FugueBridge {
