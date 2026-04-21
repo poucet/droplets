@@ -598,30 +598,42 @@ Upstream bug: [clap-wrapper #414](https://github.com/free-audio/clap-wrapper/iss
 
 **Problem:** Today each `CompactNote` gets expanded at queue time into two `TimedFugueEvent`s — a `NoteOn` at `beat` and a `NoteOff` at `beat + duration`. The audio thread iterates them as independent, pre-sorted points. That independence is the source of a recurring bug family: same-sample NoteOff/NoteOn collisions at loop boundaries, same-pitch overlap needing post-hoc truncation, zero-duration notes inverting under the NoteOff left-skew, and ad-hoc deconflict passes over the output buffer.
 
-All of these are derivative facts of "two independent events for one note." A note is logically a single thing — a pitch, scheduled at beat X, that rings for D ticks. The audio thread only needs that fact to emit correctly-ordered MIDI; pre-expanding into paired events loses information.
+All of these are derivative facts of "two independent events for one note." When the scheduler knows a note as `(pitch, onset, duration)`, it can emit correctly-ordered MIDI without any of those hacks; pre-expanding into paired events loses the information that lets the audio thread make the right decision.
 
-**Solution:** ship `TimedNote { tick_offset: i64, duration_ticks: i64, channel: u8, note: u8, velocity: u8 }` to the audio thread as a first-class scheduler primitive, alongside (not replacing) the existing CC / per-note expression event stream. The audio thread maintains a fixed-capacity ring of "notes currently playing" that it consults each buffer: any note whose scheduled NoteOn falls inside the buffer emits NoteOn; any currently-playing note whose `on_sample + duration_samples - 1` falls inside the buffer emits NoteOff at that exact sample.
+**Solution:** add `FugueEvent::TimedNote { duration_ticks, channel, note, velocity }` **alongside** the existing `NoteOn` / `NoteOff` variants — additive, not replacement. The `emit_notes` path (LLM compact schema → definition) produces `TimedNote`s; other paths keep the raw variants for cases where they're the right representation.
 
-Boundary properties fall out for free:
-- **Same-pitch retrigger:** new NoteOn for a pitch that's already playing → audio thread emits NoteOff at `new_on_sample - 1` before the NoteOn. No `emit_notes` truncation pass needed.
-- **Loop wrap + beat-0 retrigger:** NoteOff schedules at `loop_end_sample - 1` because duration expires there; next iteration's NoteOn starts at `loop_end_sample`. One-sample separation baked in.
-- **Zero-duration notes:** audio thread skips notes with `duration_ticks <= 0`. Single guard replaces the current emit-time drop + audio-thread left-skew interaction.
-- **Deconflict post-pass:** gone. The audio thread never emits a same-sample OFF/ON pair for the same pitch because it owns both scheduling decisions.
+**Raw `NoteOn` / `NoteOff` stays for:**
+- **MIDI import**: `.mid` files with dangling NoteOns, unmatched NoteOffs, or genuinely-overlapping same-pitch notes on the same channel. Forcing these through a `TimedNote` merger would lose fidelity.
+- **Cancel / panic paths**: emergency NoteOffs for held notes (fugue cancel, transport stop, phase_lock flush) aren't scoped to a duration — they're "fire this OFF now."
+- **Future immediate-MIDI MCP tools**: an LLM can ask to poke a single NoteOn without wrapping it in a fugue.
+- **Debug / wire-level callers**: occasionally you want to emit exactly the event you built, with no scheduler derivation.
 
-**Realtime design requirement:** no `Vec::push` on the audio thread. Use a fixed-capacity `[Option<ActiveNote>; N]` (N = polyphony cap, 128 is comfortable for music; 32 is tight but fine for demo content). New NoteOns find a free slot; if full, drop the oldest or the lowest-velocity voice (voice-stealing policy, TBD). Design explicitly addresses this before implementation — the malloc-on-audio-thread pitfall is the main reason this is Phase 02 rather than being folded into the pre-demo work.
+**Audio thread dispatch:**
+- Sees a mixed event list per fugue, iterates by time (same shape as today).
+- `NoteOn` / `NoteOff`: emit verbatim — the raw-event path is unchanged and doesn't interact with the active-note ring.
+- `TimedNote`: emit NoteOn, push a `PendingNoteOff { end_tick, ch, note, from_fugue_id }` into a fixed-capacity ring. Each buffer, drain the ring for any entry whose end_tick falls inside the window.
+- `Cc` / `PerNotePitchBend` / `PerNotePressure`: emit verbatim — they're intrinsically point-in-time and not note-scoped.
 
-**Subsumes:**
-- `emit_notes` same-pitch overlap truncation (the current safety pass at compact-schema → definition).
+**Realtime design requirement:** no `Vec::push` on the audio thread. Use a fixed-capacity `[Option<PendingNoteOff>; N]` (N = polyphony cap, 128 is comfortable for music). New TimedNote → find a free slot; if the ring is full, steal the oldest slot (drop its NoteOff) or the slot holding the lowest-velocity voice. Voice-stealing policy is the primary design decision; the malloc-free implementation is the main reason this is Phase 02 rather than being bundled with the pre-demo work.
+
+**Boundary properties that fall out for free** (for `emit_notes`-originated `TimedNote`s only — raw events still behave as today):
+- **Same-pitch retrigger:** new TimedNote for an already-playing pitch → audio thread emits NoteOff at `new_on_sample - 1` before the NoteOn. No `emit_notes` truncation pass.
+- **Loop wrap + beat-0 retrigger:** NoteOff schedules at `loop_end_sample - 1`; next iteration's TimedNote NoteOn lands at `loop_end_sample`. One-sample separation baked in.
+- **Zero-duration notes:** audio thread skips `TimedNote`s with `duration_ticks <= 0`. Single guard replaces the current emit-time drop + audio-thread left-skew interaction.
+- **Deconflict post-pass:** `FugueSequencer::deconflict_same_sample_note_retriggers` goes away for `TimedNote`-originated events; the raw-event path retains whatever semantics it needs.
+
+**Subsumes (only along the `emit_notes` path):**
+- same-pitch overlap truncation in `emit_notes`.
 - `emit_notes` zero-duration drop.
-- `Fugue::process_buffer` NoteOff left-skew via `sample_offset.saturating_sub(1)`.
-- `FugueSequencer::deconflict_same_sample_note_retriggers` post-pass.
-- Loop-boundary NoteOff-at-`local_end`-is-dropped handling inside `process_buffer`.
+- `Fugue::process_buffer` NoteOff left-skew.
+- `FugueSequencer::deconflict_same_sample_note_retriggers`.
+- Loop-boundary NoteOff-at-`local_end`-is-dropped handling for notes whose duration expires at the boundary.
 
-Pairs with Feature 27 (integer ticks) cleanly — the `ActiveNote` state is keyed by ticks, and the per-buffer "does this note end here?" check is a single integer comparison.
+**Pairs with Feature 27** (integer ticks) cleanly — `PendingNoteOff::end_tick` is `i64`, per-buffer "does any note end in this window?" is a single `end_tick < buffer_end_tick` comparison.
 
-**Non-goals:** CC and per-note expression stay as instant points — they're intrinsically point-in-time, not note-scoped. The audio thread sees a mixed queue: time-ordered `Note { tick, dur }` + `Cc { tick, value }` + `PerNoteExpr { tick, value }`.
+**Non-goals:** replacing the raw `NoteOn` / `NoteOff` variants. They stay for the cases listed above.
 
-**Files:** [src/fugue/types.rs](../../../src/fugue/types.rs) (new `TimedNote` variant or type; event enum gains a "Note" arm alongside the existing one-shot variants), [src/fugue/fugue.rs](../../../src/fugue/fugue.rs) (active-note ring, scheduling logic), [src/fugue/sequencer.rs](../../../src/fugue/sequencer.rs) (delete the deconflict post-pass, delete NoteOff left-skew), [src/mcp/types/emit.rs](../../../src/mcp/types/emit.rs) (delete overlap truncation + zero-dur drop — move to audio-thread scheduler), [src/mcp/types/conversion.rs](../../../src/mcp/types/conversion.rs) (emit `TimedNote`s instead of NoteOn/NoteOff pairs).
+**Files:** [src/fugue/types.rs](../../../src/fugue/types.rs) (new `TimedNote` arm on `FugueEvent`; `PendingNoteOff` + ring state on `Fugue`), [src/fugue/fugue.rs](../../../src/fugue/fugue.rs) (ring management, dispatch), [src/fugue/sequencer.rs](../../../src/fugue/sequencer.rs) (can optionally retire the deconflict post-pass once all internally-generated events run through `TimedNote`), [src/mcp/types/emit.rs](../../../src/mcp/types/emit.rs) (`emit_notes` produces `TimedNote` instead of NoteOn/NoteOff pairs; overlap/zero-dur guards become the audio thread's responsibility), [src/mcp/types/conversion.rs](../../../src/mcp/types/conversion.rs) (read-back path reconstructs CompactNote from `TimedNote`s instead of from pair-matching).
 
 ---
 
