@@ -262,7 +262,12 @@ impl FugueSequencer {
             // Calculate sample offset for when this fugue starts
             let fugue = &self.fugues[idx];
             let target = fugue.target_start_beat.unwrap_or(current_beat);
-            let sample_offset = ((target - current_beat) / beats_per_sample).round().max(0.0) as u32;
+            // Floor, not round — the `target < end_beat` check above
+            // guarantees `(target - current_beat) / beats_per_sample < frames`,
+            // and rounding UP could push sample_offset to `frames` which
+            // the CLAP host drops as out-of-buffer. Same bug pattern as
+            // event emission in Fugue::process_buffer.
+            let sample_offset = ((target - current_beat) / beats_per_sample).floor().max(0.0) as u32;
 
             // Apply cancel mode at the same sample offset as the new fugue starts
             self.apply_cancel_mode_at_offset(&cancel_mode, sample_offset);

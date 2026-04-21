@@ -270,10 +270,22 @@ impl Fugue {
             }
 
             if beat_offset >= local_start {
-                // Event is in this buffer - calculate sample offset
+                // Event is in this buffer - calculate sample offset.
+                //
+                // `.floor()`, not `.round()`: the iteration gate above
+                // guarantees `beat_offset < local_end`, so mathematically
+                // `beat_delta / beats_per_sample < frames`. But `.round()`
+                // can round a value like `frames - 0.01` UP to `frames`,
+                // which is one past the buffer end — the CLAP host drops
+                // the event. In practice that silently ate the iteration-2
+                // beat-0 NoteOn whenever floating-point drift put the buffer
+                // boundary a hair past the fugue's duration boundary.
+                // Floor keeps the offset strictly in `[0, frames)` while
+                // losing at most one sample of timing precision (~20 µs at
+                // 48 kHz, inaudible).
                 let event_absolute_beat = self.start_beat + beat_offset;
                 let beat_delta = event_absolute_beat - current_beat;
-                let raw_sample_offset = (beat_delta / beats_per_sample).round().max(0.0) as u32;
+                let raw_sample_offset = (beat_delta / beats_per_sample).floor().max(0.0) as u32;
 
                 // Clone event to avoid borrow issues
                 let event = timed_event.event;
