@@ -36,6 +36,8 @@ Note values accept names (preferred) or numbers: `"C3"` (middle C = 60, DAW conv
 
 Defaults across the batch, per-fugue can override: `duration_beats`, `quantize` (`"immediate"|"beat"|"bar"|"bars:N"`), `loop_mode` (`"once"|"forever"|"N"` — default `"forever"`).
 
+`duration_beats` is auto-sized when not set: the smallest whole bar (4/4) that fits every note's end-beat and every CC/expression point. Values that are shorter than the content are extended to fit — silently truncating notes is almost always a bug, not intent. Set it explicitly when you want trailing silence in the loop, or a specific odd-length pattern.
+
 ## Tag + cancel_mode
 
 Update one part without disturbing others: `tag:"melody"` + `cancel_mode:"tag:melody"` replaces just the melody.

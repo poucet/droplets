@@ -38,7 +38,7 @@ pub struct QueueFugueData {
     pub quantize: Option<String>,
     /// Default duration in beats
     #[serde(default = "default_duration")]
-    #[schemars(description = "Default duration in beats (default: 4.0)")]
+    #[schemars(description = "Default duration in beats. If omitted, duration is auto-sized to the smallest whole number of bars (4/4) that fits the content. Explicit values shorter than the content are also extended to fit — a duration that would truncate notes is almost always a bug.")]
     pub duration_beats: Option<f64>,
     /// Default loop mode: "once", "forever", or a number
     #[serde(default = "default_loop_mode_opt")]
@@ -166,7 +166,7 @@ pub(super) fn default_fugue_channel() -> Option<u8> {
 }
 
 pub(super) fn default_duration() -> Option<f64> {
-    Some(4.0)
+    None
 }
 
 pub(super) fn default_loop_mode_opt() -> Option<String> {

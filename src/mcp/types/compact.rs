@@ -345,7 +345,7 @@ pub struct CompactFugue {
     pub quantize: Option<String>,
     /// Override duration for this fugue
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[schemars(description = "Override duration in beats")]
+    #[schemars(description = "Override duration in beats. Omit to auto-size to the smallest whole bar that fits the content; explicit values shorter than the content are extended to fit.")]
     pub duration_beats: Option<f64>,
     /// Override loop mode for this fugue
     #[serde(skip_serializing_if = "Option::is_none")]

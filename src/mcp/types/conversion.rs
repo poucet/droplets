@@ -153,21 +153,56 @@ fn point_with_curve(
 /// Shared defaults (top-level on `QueueFugueData`) that fill in when a
 /// `CompactFugue` doesn't override them. Precomputed once per batch so the
 /// per-fugue path stays a pure fn that doesn't re-parse the shared strings.
+///
+/// `duration_beats` is `Option` rather than a concrete f64 so the per-fugue
+/// resolver can tell "unset" (→ auto-size from content) from "explicitly 4".
 pub struct QueueFugueDefaults {
     pub quantize_str: String,
-    pub duration_beats: f64,
+    pub duration_beats: Option<f64>,
     pub loop_mode_str: String,
 }
 
 impl QueueFugueDefaults {
     /// Build from the outer `QueueFugueData`. Missing fields get the
-    /// documented defaults (`bar`, `4.0 beats`, `forever`).
+    /// documented defaults (`bar`, auto-sized, `forever`).
     pub fn from_data(data: &QueueFugueData) -> Self {
         Self {
             quantize_str: data.quantize.as_deref().unwrap_or("bar").to_string(),
-            duration_beats: data.duration_beats.unwrap_or(4.0),
+            duration_beats: data.duration_beats,
             loop_mode_str: data.loop_mode.as_deref().unwrap_or("forever").to_string(),
         }
+    }
+}
+
+/// Beats per bar assumed when auto-sizing `duration_beats`. Time signature
+/// isn't known at conversion time (lives on the transport), so we use 4/4 —
+/// matches the default quantize grid and the dominant case.
+const AUTO_DURATION_BAR_BEATS: f64 = 4.0;
+
+/// Pick a `duration_beats` that cleanly contains every event in `events`.
+///
+/// Rounds up to the smallest whole bar (`AUTO_DURATION_BAR_BEATS`-beat
+/// multiple) that fits the latest event's `beat_offset` — for notes that's
+/// `beat + duration` (the auto-emitted NoteOff beat), for CC / per-note
+/// expression it's the last point. Empty content falls back to one bar so
+/// a content-less fugue still has a sensible loop length.
+///
+/// `explicit` takes precedence when it's already long enough; when it's
+/// shorter than the content the content wins. Silently truncating notes
+/// to honour a too-short explicit value is almost always an LLM mistake,
+/// not a feature — the only cost of extending is a bit of trailing silence.
+fn resolve_duration_beats(explicit: Option<f64>, events: &[TimedFugueEvent]) -> f64 {
+    let required = {
+        let max_end = events
+            .iter()
+            .map(|e| e.beat_offset)
+            .fold(0.0_f64, f64::max);
+        let rounded = (max_end / AUTO_DURATION_BAR_BEATS).ceil() * AUTO_DURATION_BAR_BEATS;
+        rounded.max(AUTO_DURATION_BAR_BEATS)
+    };
+    match explicit {
+        Some(v) if v >= required => v,
+        _ => required,
     }
 }
 
@@ -181,7 +216,7 @@ pub fn compact_to_definition(
     defaults: &QueueFugueDefaults,
 ) -> FugueDefinition {
     let quantize_str = compact.quantize.as_deref().unwrap_or(&defaults.quantize_str);
-    let duration_beats = compact.duration_beats.unwrap_or(defaults.duration_beats);
+    let explicit_duration = compact.duration_beats.or(defaults.duration_beats);
     let loop_mode_str = compact.loop_mode.as_deref().unwrap_or(&defaults.loop_mode_str);
     let fugue_channel = compact.channel.unwrap_or(1).saturating_sub(1).min(15);
 
@@ -238,6 +273,8 @@ pub fn compact_to_definition(
     events.sort_by(|a, b| {
         a.beat_offset.partial_cmp(&b.beat_offset).unwrap_or(std::cmp::Ordering::Equal)
     });
+
+    let duration_beats = resolve_duration_beats(explicit_duration, &events);
 
     let mut definition = FugueDefinition::new(events, duration_beats)
         .with_loop_mode(loop_mode)
@@ -435,7 +472,7 @@ mod tests {
     fn defaults_bar_forever() -> QueueFugueDefaults {
         QueueFugueDefaults {
             quantize_str: "bar".into(),
-            duration_beats: 4.0,
+            duration_beats: Some(4.0),
             loop_mode_str: "forever".into(),
         }
     }
@@ -523,13 +560,128 @@ mod tests {
         }));
         let defaults = QueueFugueDefaults {
             quantize_str: "bar".into(),
-            duration_beats: 8.0,
+            duration_beats: Some(8.0),
             loop_mode_str: "once".into(),
         };
         let def = compact_to_definition(&input, &defaults);
         let out = definition_to_compact(&def);
         assert_eq!(out.duration_beats, Some(8.0));
         assert_eq!(out.loop_mode.as_deref(), Some("once"));
+    }
+
+    fn defaults_unset_duration() -> QueueFugueDefaults {
+        QueueFugueDefaults {
+            quantize_str: "bar".into(),
+            duration_beats: None,
+            loop_mode_str: "forever".into(),
+        }
+    }
+
+    #[test]
+    fn auto_duration_rounds_up_to_whole_bar() {
+        // 6-beat melody → 8-beat (2-bar) pattern, not the prior 4-beat default.
+        let input = compact_from_json(serde_json::json!({
+            "type": "notes",
+            "notes": [
+                { "beat": 0.0, "note": 60, "duration": 1.0 },
+                { "beat": 5.5, "note": 62, "duration": 0.5 },
+            ],
+        }));
+        let def = compact_to_definition(&input, &defaults_unset_duration());
+        assert_eq!(def.duration_beats, 8.0);
+    }
+
+    #[test]
+    fn auto_duration_uses_note_off_end_not_note_on_beat() {
+        // A single 5-beat note must size the pattern to 8 (2 bars), since
+        // the NoteOff lands at beat 5 — not 4 (its NoteOn beat).
+        let input = compact_from_json(serde_json::json!({
+            "type": "notes",
+            "notes": [{ "beat": 0.0, "note": 60, "duration": 5.0 }],
+        }));
+        let def = compact_to_definition(&input, &defaults_unset_duration());
+        assert_eq!(def.duration_beats, 8.0);
+    }
+
+    #[test]
+    fn auto_duration_empty_content_falls_back_to_one_bar() {
+        let input = compact_from_json(serde_json::json!({
+            "type": "notes",
+            "notes": [],
+        }));
+        let def = compact_to_definition(&input, &defaults_unset_duration());
+        assert_eq!(def.duration_beats, 4.0);
+    }
+
+    #[test]
+    fn auto_duration_snaps_exact_bar_end_up_unchanged() {
+        // A note ending exactly on a bar boundary fits in that bar — no extra
+        // slack added.
+        let input = compact_from_json(serde_json::json!({
+            "type": "notes",
+            "notes": [{ "beat": 0.0, "note": 60, "duration": 4.0 }],
+        }));
+        let def = compact_to_definition(&input, &defaults_unset_duration());
+        assert_eq!(def.duration_beats, 4.0);
+    }
+
+    #[test]
+    fn auto_duration_considers_cc_lane_last_point() {
+        // No notes, but CC automation runs to beat 12 → 3-bar pattern.
+        let input = compact_from_json(serde_json::json!({
+            "type": "cc",
+            "cc": 74,
+            "points": [[0, 0], [12, 127]],
+        }));
+        let def = compact_to_definition(&input, &defaults_unset_duration());
+        assert_eq!(def.duration_beats, 12.0);
+    }
+
+    #[test]
+    fn explicit_duration_longer_than_content_is_respected() {
+        // User asks for trailing silence — don't shrink.
+        let input = compact_from_json(serde_json::json!({
+            "type": "notes",
+            "duration_beats": 16.0,
+            "notes": [{ "beat": 0.0, "note": 60, "duration": 1.0 }],
+        }));
+        let def = compact_to_definition(&input, &defaults_unset_duration());
+        assert_eq!(def.duration_beats, 16.0);
+    }
+
+    #[test]
+    fn explicit_duration_too_short_is_extended_to_fit() {
+        // The "LLM forgot to set duration and its default=4 truncates a
+        // 6-beat melody" case this fix is meant to cover. Even when the value
+        // was explicit, a too-short duration is treated as a mistake and
+        // extended to the smallest whole bar that fits.
+        let input = compact_from_json(serde_json::json!({
+            "type": "notes",
+            "duration_beats": 4.0,
+            "notes": [
+                { "beat": 0.0, "note": 60, "duration": 1.0 },
+                { "beat": 6.0, "note": 62, "duration": 1.0 },
+            ],
+        }));
+        let def = compact_to_definition(&input, &defaults_unset_duration());
+        assert_eq!(def.duration_beats, 8.0, "7-beat content must live in an 8-beat pattern, not the explicit 4");
+    }
+
+    #[test]
+    fn batch_default_duration_applies_when_per_fugue_unset() {
+        // Batch-level override still works — the per-fugue resolver only
+        // auto-sizes when neither layer supplied a value.
+        let input = compact_from_json(serde_json::json!({
+            "type": "notes",
+            "notes": [{ "beat": 0.0, "note": 60, "duration": 1.0 }],
+        }));
+        let defaults = QueueFugueDefaults {
+            quantize_str: "bar".into(),
+            duration_beats: Some(16.0),
+            loop_mode_str: "forever".into(),
+        };
+        let def = compact_to_definition(&input, &defaults);
+        assert_eq!(def.duration_beats, 16.0);
     }
 
     #[test]
