@@ -12,4 +12,13 @@ export type ProjectState = { instances: Array<InstanceSummary>, other_tracks: Ar
  * True when a host controller extension has pushed a layout; false when
  * the LLM should fall back to asking the user / using GM conventions.
  */
-layout_available: boolean, };
+layout_available: boolean, 
+/**
+ * User-authored context from the Settings tab. Piped through here so
+ * LLMs see the latest content on every `get_project_state` call —
+ * MCP's initialize-time instructions are baked once per session and
+ * don't pick up edits the user makes mid-conversation. Skipped from
+ * the wire when empty so the common "nothing configured" case adds
+ * zero bytes to the response.
+ */
+custom_instructions: string, };

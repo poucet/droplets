@@ -107,6 +107,14 @@ pub struct ProjectState {
     /// True when a host controller extension has pushed a layout; false when
     /// the LLM should fall back to asking the user / using GM conventions.
     pub layout_available: bool,
+    /// User-authored context from the Settings tab. Piped through here so
+    /// LLMs see the latest content on every `get_project_state` call —
+    /// MCP's initialize-time instructions are baked once per session and
+    /// don't pick up edits the user makes mid-conversation. Skipped from
+    /// the wire when empty so the common "nothing configured" case adds
+    /// zero bytes to the response.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub custom_instructions: String,
 }
 
 #[derive(Debug, Clone, Serialize, TS, schemars::JsonSchema)]
@@ -135,6 +143,7 @@ impl ProjectState {
     pub fn build(
         layout: Option<&ProjectLayout>,
         registered_instances: &[(String, String)],
+        custom_instructions: String,
     ) -> Self {
         let layout_available = layout.is_some();
         let empty = ProjectLayout::default();
@@ -162,7 +171,12 @@ impl ProjectState {
             .map(|t| OtherTrackSummary { name: t.track_name.clone() })
             .collect();
 
-        Self { instances, other_tracks, layout_available }
+        Self {
+            instances,
+            other_tracks,
+            layout_available,
+            custom_instructions,
+        }
     }
 }
 
@@ -240,7 +254,7 @@ mod tests {
     #[test]
     fn drum_primary_flows_pads_through() {
         let layout = sample_layout();
-        let state = ProjectState::build(Some(&layout), &sample_instances());
+        let state = ProjectState::build(Some(&layout), &sample_instances(), String::new());
         let drums = &state.instances[0];
         assert_eq!(drums.track_name.as_deref(), Some("Drums"));
         let Some(PrimaryDevice::DrumMachine { pads, .. }) = &drums.primary_device else {
@@ -254,7 +268,7 @@ mod tests {
     #[test]
     fn instrument_primary_carries_preset() {
         let layout = sample_layout();
-        let state = ProjectState::build(Some(&layout), &sample_instances());
+        let state = ProjectState::build(Some(&layout), &sample_instances(), String::new());
         let bass = &state.instances[1];
         let Some(PrimaryDevice::Instrument { name, preset_name, .. }) = &bass.primary_device else {
             panic!("expected instrument primary");
@@ -266,14 +280,14 @@ mod tests {
     #[test]
     fn includes_tracks_without_droplets() {
         let layout = sample_layout();
-        let state = ProjectState::build(Some(&layout), &sample_instances());
+        let state = ProjectState::build(Some(&layout), &sample_instances(), String::new());
         assert_eq!(state.other_tracks.len(), 1);
         assert_eq!(state.other_tracks[0].name, "Vocals");
     }
 
     #[test]
     fn without_layout_still_lists_instances() {
-        let state = ProjectState::build(None, &sample_instances());
+        let state = ProjectState::build(None, &sample_instances(), String::new());
         assert!(!state.layout_available);
         assert_eq!(state.instances.len(), 2);
         assert!(state.instances[0].primary_device.is_none());
@@ -287,5 +301,27 @@ mod tests {
         let json = serde_json::to_string(&layout).unwrap();
         let back: ProjectLayout = serde_json::from_str(&json).unwrap();
         assert_eq!(back.tracks.len(), 3);
+    }
+
+    #[test]
+    fn custom_instructions_flow_through_and_omit_when_empty() {
+        // Non-empty instructions end up in the serialized payload so the
+        // LLM sees the user's latest Settings text on every get_project_state.
+        let layout = sample_layout();
+        let state = ProjectState::build(
+            Some(&layout),
+            &sample_instances(),
+            "prefer bass-heavy mixes".into(),
+        );
+        assert_eq!(state.custom_instructions, "prefer bass-heavy mixes");
+        let json = serde_json::to_string(&state).unwrap();
+        assert!(json.contains("custom_instructions"));
+        assert!(json.contains("bass-heavy"));
+
+        // Empty string should be skipped — keeps the wire clean for users
+        // who never configure custom instructions.
+        let empty = ProjectState::build(Some(&layout), &sample_instances(), String::new());
+        let empty_json = serde_json::to_string(&empty).unwrap();
+        assert!(!empty_json.contains("custom_instructions"));
     }
 }

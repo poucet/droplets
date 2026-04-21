@@ -49,23 +49,6 @@ impl Default for DropletsMcp {
     }
 }
 
-/// Build the system-instructions blob for this MCP session:
-/// base markdown (compile-time) + the user's custom text from the GUI
-/// Settings panel (runtime, if non-empty). Kept as a separate fn so the
-/// ServerHandler::get_info caller stays short and the assembly is one place.
-fn build_instructions() -> String {
-    const BASE: &str = include_str!("instructions.md");
-    let custom = crate::fugue::settings::get_settings().custom_instructions;
-    let trimmed = custom.trim();
-    if trimmed.is_empty() {
-        return BASE.to_string();
-    }
-    format!(
-        "{}\n\n## Custom context (set in Settings)\n\n{}\n",
-        BASE, trimmed
-    )
-}
-
 /// Per-instance row returned by the `list_instances` MCP tool. Kept
 /// deliberately minimal — id + name — since this tool exists to enable
 /// the LLM to pick a target before calling `queue_fugue`. Richer
@@ -358,11 +341,16 @@ impl DropletsMcp {
 
     /// Get the minimal project-state summary — which Droplets instances are
     /// connected and what each track's primary sound source is.
-    #[tool(description = "Call this FIRST when composing. Returns a compact summary of which Droplets instances are connected, their track names, each track's primary device, and per-instance slot hints. For drum tracks, includes pad notes (as pitch notation like 'C2') with pad names and loaded sample names — so you can write a drum pattern with correct note mapping instead of guessing GM conventions. For synth tracks, includes the instrument name and preset. The `slots` field on each instance lists which slot params have been user-configured and what each controls. If `layout_available` is false, no host controller extension is running (e.g. Ableton without the script); fall back to asking the user or GM conventions.")]
+    #[tool(description = "Call this FIRST when composing. Returns a compact summary of which Droplets instances are connected, their track names, each track's primary device, per-instance slot hints, and the user's current `custom_instructions` from the Settings tab (refreshed on each call — edits land here without needing to restart the session). For drum tracks, includes pad notes (as pitch notation like 'C2') with pad names and loaded sample names — so you can write a drum pattern with correct note mapping instead of guessing GM conventions. For synth tracks, includes the instrument name and preset. If `layout_available` is false, no host controller extension is running (e.g. Ableton without the script); fall back to asking the user or GM conventions.")]
     fn get_project_state(&self) -> Json<super::project::ProjectState> {
         let layout = CcBridge::get_project_layout();
         let instances = CcBridge::list_instances();
-        Json(super::project::ProjectState::build(layout.as_ref(), &instances))
+        let custom_instructions = crate::fugue::settings::get_settings().custom_instructions;
+        Json(super::project::ProjectState::build(
+            layout.as_ref(),
+            &instances,
+            custom_instructions,
+        ))
     }
 }
 
@@ -374,12 +362,13 @@ impl ServerHandler for DropletsMcp {
                 .enable_tools()
                 .build(),
             server_info: Implementation::from_build_env(),
-            // The MCP system prompt base lives in instructions.md next to this
-            // file — edit there, not here. If the user has set custom
-            // instructions in the GUI Settings panel, append them so the LLM
-            // gets per-setup context (synth CC mappings, stylistic constraints,
-            // etc.) without anyone having to rebuild.
-            instructions: Some(build_instructions()),
+            // The MCP system prompt base lives in instructions.md next to
+            // this file — edit there, not here. User-authored custom context
+            // from the Settings tab is delivered via the `custom_instructions`
+            // field of `get_project_state` (refreshed on every call) rather
+            // than baked in at initialize time; settings edits land without
+            // the session needing to restart.
+            instructions: Some(include_str!("instructions.md").to_string()),
         }
     }
 
