@@ -22,10 +22,12 @@ import java.util.UUID
 private const val NUM_TRACKS = 128
 private const val DEVICES_PER_TRACK = 32
 
-// Drum-kit pads: 64 slots scrolled to MIDI 36 covers C1–D#6, catching every
-// realistic kit placement and a couple octaves of headroom above.
-private const val DRUM_PADS = 64
-private const val DRUM_BANK_SCROLL = 36
+// Drum pads: one bank slot per MIDI note (0-127). Using the full range with
+// scroll=0 means pad index *is* the MIDI note — no offset math, no dependence
+// on `scrollPosition().set()` actually being honored by the API. The extra
+// JVM scaffolding (128 vs 64 slots) costs a few MB per drum track, which
+// matters less than eliminating a whole class of "is the scroll active?" bugs.
+private const val DRUM_PADS = 128
 private const val DEVICES_PER_PAD = 4
 
 /// Period between project-layout rebuilds. The plugin side caches the last
@@ -45,14 +47,6 @@ private val DRUM_MACHINE_UUID: UUID = UUID.fromString("8ea97e45-0255-40fd-bc7e-9
 
 // Cached display strings matching this shape are the Droplets instance ID.
 private val INSTANCE_ID_REGEX = Regex("^droplets-[0-9a-f]+$")
-
-private val NOTE_NAMES = arrayOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
-
-/// DAW pitch notation (C3 = middle C = MIDI 60) matching Bitwig/Ableton/Logic.
-private fun midiToPitchName(note: Int): String {
-    val octave = (note / 12) - 2
-    return "${NOTE_NAMES[note % 12]}$octave"
-}
 
 /**
  * Controller extension for Simply Droplets.
@@ -135,8 +129,8 @@ class DropletsExtension(
         for (d in 0 until DEVICES_PER_TRACK) wireDevice(devices.getItemAt(d) as Device)
 
         // Drum-machine-filtered bank (1 slot per track). The filter keeps the drum pad
-        // bank attached to at most one device per track — 32 pad proxies × 2 nested
-        // devs = 64 pad proxies per track, rather than 512 × 32 × 2 = 32K for the
+        // bank attached to at most one device per track — 128 pad proxies × 4 nested
+        // devs = 512 pad proxies per track, rather than 512 × 32 × 4 = 65K for the
         // unfiltered case.
         val drumMatcher = host.createBitwigDeviceMatcher(DRUM_MACHINE_UUID)
         val drumBank = track.createDeviceBank(1)
@@ -144,7 +138,6 @@ class DropletsExtension(
         val drumDev = drumBank.getItemAt(0) as Device
         drumDev.exists().markInterested()
         val padBank = drumDev.createDrumPadBank(DRUM_PADS)
-        padBank.scrollPosition().set(DRUM_BANK_SCROLL)
         trackDrumPadBanks[track] = padBank
         for (p in 0 until DRUM_PADS) wirePad(padBank.getItemAt(p) as DrumPad)
 
@@ -321,9 +314,11 @@ class DropletsExtension(
         for (p in 0 until DRUM_PADS) {
             val pad = padBank.getItemAt(p) as DrumPad
             if (!pad.exists().get()) continue
-            val note = DRUM_BANK_SCROLL + p
+            // Bank is scroll=0 size=128, so the pad index is the MIDI note.
+            // Emit the raw number; the Rust server formats as pitch notation
+            // via its single canonical midi→name formula.
             val padJson = linkedMapOf<String, Any?>(
-                "note" to midiToPitchName(note),
+                "note" to p,
                 "name" to pad.name().get(),
             )
             padSampleName(pad)?.let { padJson["sample_name"] = it }

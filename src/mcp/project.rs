@@ -15,6 +15,15 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::mcp::types::midi_to_name;
+
+/// Serialize a raw MIDI note as DAW pitch notation (`"C1"`, C3=60). Paired
+/// with the default `u8` deserializer so the controller extension sends
+/// integers only — a single canonical midi→name formula lives here in Rust.
+fn serialize_midi_as_name<S: serde::Serializer>(note: &u8, s: S) -> Result<S::Ok, S::Error> {
+    s.serialize_str(&midi_to_name(*note))
+}
+
 
 /// Project-wide snapshot pushed by the host controller extension.
 ///
@@ -77,13 +86,18 @@ pub enum PrimaryDevice {
     },
 }
 
-/// One pad on a drum machine. `note` is DAW pitch notation (`"C1"`, C3=60)
-/// — the extension renders it so the LLM reads the same format it already
-/// uses in fugue notes.
+/// One pad on a drum machine. Stored as a raw MIDI note; serializes out as
+/// DAW pitch notation (`"C1"`, C3=60) so MCP consumers (LLMs) and the frontend
+/// read the same format they use for fugue notes. The controller extension
+/// posts the integer directly — a single canonical midi→name formula lives
+/// in `midi_to_name`, so the extension can't drift from the plugin's convention.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 pub struct PadSummary {
-    pub note: String,
+    #[serde(serialize_with = "serialize_midi_as_name")]
+    #[ts(type = "string")]
+    #[schemars(with = "String")]
+    pub note: u8,
     pub name: String,
     /// Preset / sample name surfaced from the pad's nested instrument when
     /// available. For Bitwig's Sampler this is the loaded audio file name,
@@ -212,12 +226,12 @@ mod tests {
                         name: "Drum Machine".into(),
                         pads: vec![
                             PadSummary {
-                                note: "C1".into(),
+                                note: 36, // C1
                                 name: "Kick".into(),
                                 sample_name: Some("kick_808.wav".into()),
                             },
                             PadSummary {
-                                note: "D1".into(),
+                                note: 38, // D1
                                 name: "Snare".into(),
                                 sample_name: Some("snare.wav".into()),
                             },
@@ -260,9 +274,9 @@ mod tests {
         let Some(PrimaryDevice::DrumMachine { pads, .. }) = &drums.primary_device else {
             panic!("expected drum machine primary");
         };
-        assert_eq!(pads[0].note, "C1");
+        assert_eq!(pads[0].note, 36);
         assert_eq!(pads[0].sample_name.as_deref(), Some("kick_808.wav"));
-        assert_eq!(pads[1].note, "D1");
+        assert_eq!(pads[1].note, 38);
     }
 
     #[test]
@@ -296,11 +310,27 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_serde() {
-        let layout = sample_layout();
-        let json = serde_json::to_string(&layout).unwrap();
-        let back: ProjectLayout = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.tracks.len(), 3);
+    fn pad_note_wire_format_is_asymmetric() {
+        // Inbound (Bitwig → plugin): integer MIDI only — the extension emits
+        // raw numbers so the plugin's midi→name formula is the single source
+        // of truth.
+        let inbound = r#"{"tracks":[{"track_name":"Drums","droplets_instance_id":null,
+            "remote_controls":[],"primary_device":{"type":"drum_machine","name":"DM",
+            "pads":[{"note":36,"name":"Kick"}]}}]}"#;
+        let layout: ProjectLayout = serde_json::from_str(inbound).unwrap();
+        let Some(PrimaryDevice::DrumMachine { pads, .. }) = &layout.tracks[0].primary_device
+        else { panic!("expected drum machine"); };
+        assert_eq!(pads[0].note, 36);
+
+        // String notes are rejected — keeps the contract tight so a misbehaving
+        // extension can't sneak in a name that disagrees with midi_to_name.
+        let with_string = inbound.replace("36", "\"C1\"");
+        assert!(serde_json::from_str::<ProjectLayout>(&with_string).is_err());
+
+        // Outbound (plugin → MCP/frontend): pitch name — LLMs and the UI read
+        // names better than numbers.
+        let outbound = serde_json::to_string(&layout).unwrap();
+        assert!(outbound.contains("\"note\":\"C1\""));
     }
 
     #[test]
