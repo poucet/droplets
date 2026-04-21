@@ -479,6 +479,221 @@ fn send_note_offs_for_fugue_at_offset(
 }
 
 #[cfg(test)]
+mod daw_loop_tests {
+    //! End-to-end tests for `FugueSequencer::process`, targeting the
+    //! "first note drops on DAW transport loop" bug. These run entirely
+    //! on the main thread — we drive the sequencer via its public
+    //! interface with synthetic transport positions and inspect
+    //! `ProcessedEvent` output, so we can reproduce the DAW-loop path
+    //! without a plugin host.
+    //!
+    //! The core scenario is: DAW transport loop length equals the
+    //! fugue's `duration_beats`, so when the DAW wraps, our
+    //! `phase_lock_all` jump-handling path runs in the same buffer that
+    //! would fire the new iteration's beat-0 NoteOn. If the beat-0
+    //! NoteOn goes missing or lands wrong, the test catches it.
+    use super::*;
+    use crate::fugue::types::{FugueEvent, LoopMode, TimedFugueEvent};
+    use rtrb::RingBuffer;
+
+    const TEMPO: f64 = 120.0;
+    const SAMPLE_RATE: f64 = 48_000.0;
+    const TIME_SIG: u32 = 4;
+    const BUFFER_FRAMES: u32 = 512;
+
+    fn beats_per_sample() -> f64 {
+        TEMPO / 60.0 / SAMPLE_RATE
+    }
+
+    fn buffer_beats() -> f64 {
+        BUFFER_FRAMES as f64 * beats_per_sample()
+    }
+
+    /// Build a fugue with a NoteOn at each given `(beat, pitch, duration)`.
+    /// Channel 0, velocity 100. The NoteOff lands at `beat + duration`.
+    fn make_notes_fugue(notes: &[(f64, u8, f64)], duration_beats: f64) -> FugueDefinition {
+        let mut events = Vec::new();
+        for &(beat, pitch, dur) in notes {
+            events.push(TimedFugueEvent::new(
+                beat,
+                FugueEvent::NoteOn { channel: 0, note: pitch, velocity: 100 },
+            ));
+            events.push(TimedFugueEvent::new(
+                beat + dur,
+                FugueEvent::NoteOff { channel: 0, note: pitch },
+            ));
+        }
+        events.sort_by(|a, b| a.beat_offset.partial_cmp(&b.beat_offset).unwrap());
+        FugueDefinition::new(events, duration_beats).with_loop_mode(LoopMode::Forever)
+    }
+
+    /// Queue a fugue + build a sequencer, bypassing the full `FugueBridge`
+    /// global registry. Returns the sequencer with the fugue already
+    /// active (the first `process` call consumes the Queue command).
+    fn sequencer_with_fugue(def: FugueDefinition) -> FugueSequencer {
+        let (mut prod, cons) = RingBuffer::<FugueCommand>::new(16);
+        prod.push(FugueCommand::Queue(def)).expect("queue must fit");
+        FugueSequencer::new(cons, SAMPLE_RATE)
+    }
+
+    /// Collect every `(sample_offset, channel, note, is_on)` note event
+    /// in the buffer. Lets tests assert on concrete event lists.
+    fn collect_notes(events: &[ProcessedEvent]) -> Vec<(u32, u8, u8, bool)> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                ProcessedEvent::Instant { sample_offset, message: MidiMessage::Note(n) } => {
+                    Some((*sample_offset, n.channel, n.note, n.is_note_on))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Play `beats_to_play` worth of buffers on `seq`, returning the
+    /// concatenated ProcessedEvents so the caller can assert on them.
+    /// The final buffer is *not* included — use this to warm the
+    /// sequencer up to a known transport position before the scenario
+    /// under test.
+    fn play_until(seq: &mut FugueSequencer, start_beat: f64, beats_to_play: f64) -> f64 {
+        let mut current = start_beat;
+        let end = start_beat + beats_to_play;
+        while current < end {
+            let _events: Vec<_> = seq
+                .process(true, current, TEMPO, BUFFER_FRAMES, TIME_SIG)
+                .collect();
+            current += buffer_beats();
+        }
+        current
+    }
+
+    #[test]
+    fn beat_zero_note_fires_on_daw_loop_wrap_matching_fugue_duration() {
+        // DAW loops a 4-beat region. Fugue is 4 beats with a note at
+        // beat 0. After the DAW wraps, the new iteration's beat-0 NoteOn
+        // must appear in the output buffer — that's the exact note the
+        // bug report says is missing.
+        let def = make_notes_fugue(
+            &[(0.0, 60, 0.5), (1.0, 62, 0.5), (2.0, 64, 0.5), (3.0, 65, 0.5)],
+            4.0,
+        );
+        let mut seq = sequencer_with_fugue(def);
+
+        // Warm through one full fugue iteration at transport beats [0, 4).
+        play_until(&mut seq, 0.0, 4.0);
+
+        // DAW wraps back to 0. This is the buffer under test.
+        let events: Vec<_> = seq
+            .process(true, 0.0, TEMPO, BUFFER_FRAMES, TIME_SIG)
+            .collect();
+
+        let notes = collect_notes(&events);
+        let beat_zero_on = notes
+            .iter()
+            .find(|(_, ch, note, on)| *on && *ch == 0 && *note == 60);
+        assert!(
+            beat_zero_on.is_some(),
+            "beat-0 NoteOn (ch=0, note=60) missing after DAW loop wrap. Events: {:?}",
+            notes
+        );
+    }
+
+    #[test]
+    fn beat_zero_note_fires_on_daw_loop_wrap_with_held_prior_note_same_pitch() {
+        // Tighter version: the last note of the iteration holds the
+        // same pitch that the next iteration opens with, so
+        // `phase_lock_all` emits a NoteOff for pitch 60 at sample 0 of
+        // the wrap buffer AND the fugue's beat-0 NoteOn is also for
+        // pitch 60 at sample 0. Synths collapsing the pair is the exact
+        // race the deconflict pass is meant to prevent.
+        let def = make_notes_fugue(
+            &[
+                (0.0, 60, 0.5),
+                // A long sustain whose NoteOff lands at 4.0 = duration,
+                // so it's excluded from the old iteration and the pitch
+                // is still "active" at wrap time.
+                (2.0, 60, 2.0),
+            ],
+            4.0,
+        );
+        let mut seq = sequencer_with_fugue(def);
+
+        play_until(&mut seq, 0.0, 4.0);
+
+        let events: Vec<_> = seq
+            .process(true, 0.0, TEMPO, BUFFER_FRAMES, TIME_SIG)
+            .collect();
+
+        let notes = collect_notes(&events);
+        let note_on_for_60 = notes
+            .iter()
+            .find(|(_, ch, note, on)| *on && *ch == 0 && *note == 60);
+        assert!(
+            note_on_for_60.is_some(),
+            "beat-0 NoteOn (ch=0, note=60) missing on wrap when the prior iteration left \
+             pitch 60 held. Events: {:?}",
+            notes
+        );
+
+        // Sanity: if a NoteOff for 60 also appears, it must come at a
+        // sample offset strictly before the NoteOn. Otherwise the synth
+        // eats the retrigger.
+        if let Some(note_off) = notes
+            .iter()
+            .find(|(_, ch, note, on)| !*on && *ch == 0 && *note == 60)
+        {
+            let (off_sample, _, _, _) = *note_off;
+            let (on_sample, _, _, _) = *note_on_for_60.unwrap();
+            assert!(
+                off_sample < on_sample,
+                "NoteOff for pitch 60 at sample {} must precede NoteOn at sample {} \
+                 in the wrap buffer; same-sample pairs race on real synths. Events: {:?}",
+                off_sample,
+                on_sample,
+                notes
+            );
+        }
+    }
+
+    #[test]
+    fn beat_zero_note_fires_on_each_fugue_internal_loop_without_daw_loop() {
+        // Control case: no DAW loop. Fugue is 4 beats, transport runs
+        // continuously. Every iteration boundary should fire a beat-0
+        // NoteOn. If this fails, the bug is internal to the fugue's
+        // reset_for_loop path, not the DAW-jump path.
+        let def = make_notes_fugue(
+            &[(0.0, 60, 0.5), (1.0, 62, 0.5)],
+            4.0,
+        );
+        let mut seq = sequencer_with_fugue(def);
+
+        // Play through iterations 1, 2, 3 of the fugue. We stop the
+        // transport before it reaches beat 12 so iteration 4's beat-0
+        // NoteOn doesn't sneak in. Each buffer advances ~0.02 beats, so
+        // 11.9 gives ~560 buffers and three complete iterations.
+        let mut all: Vec<(u32, u8, u8, bool)> = Vec::new();
+        let mut current = 0.0;
+        while current + buffer_beats() <= 11.9 {
+            let events: Vec<_> = seq
+                .process(true, current, TEMPO, BUFFER_FRAMES, TIME_SIG)
+                .collect();
+            all.extend(collect_notes(&events));
+            current += buffer_beats();
+        }
+
+        let note_on_60_count = all
+            .iter()
+            .filter(|(_, ch, note, on)| *on && *ch == 0 && *note == 60)
+            .count();
+        assert_eq!(
+            note_on_60_count, 3,
+            "expected 3 beat-0 NoteOns across 3 fugue iterations; got {}. All events: {:?}",
+            note_on_60_count, all
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::super::types::QuantizeMode;
 
