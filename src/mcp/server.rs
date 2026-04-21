@@ -17,10 +17,10 @@ use rmcp::{
 
 use super::bridge::CcBridge;
 use super::types::{
-    CancelFugueRequest, CancelFuguesByTagRequest, GetFugueRequest, GetSlotsRequest,
-    ImportFugueRequest, InstanceHandle, QueueFugueDefaults, QueueFugueRequest, QueueFugueSummary,
-    RenameInstanceRequest, compact_to_definition, definition_to_compact, parse_loop_mode_str,
-    parse_quantize_str,
+    CancelFugueRequest, CancelFuguesByTagRequest, ClearFuguesRequest, GetFugueRequest,
+    GetSlotsRequest, ImportFugueRequest, InstanceHandle, ListFuguesRequest, ListedFugue,
+    QueueFugueDefaults, QueueFugueRequest, QueueFugueSummary, RenameInstanceRequest,
+    compact_to_definition, definition_to_compact, parse_loop_mode_str, parse_quantize_str,
 };
 use crate::fugue::FugueBridge;
 
@@ -122,15 +122,36 @@ impl DropletsMcp {
         }))
     }
 
-    /// List all active and pending fugues.
-    #[tool(description = "List all active and pending fugues on a plugin instance. Shows fugue IDs, tags, loop progress, and timing information.")]
+    /// List all active and pending fugues across one or every instance.
+    #[tool(description = "List active and pending fugues. Omit `instance` to list across every connected Droplets instance; pass a name or id to scope to one. Each row carries its own `instance_id` + `instance_name`, so follow-up calls (cancel_fugue, get_fugue) don't need a second list_instances hop.")]
     fn list_fugues(
         &self,
-        Parameters(req): Parameters<GetSlotsRequest>,
-    ) -> Json<Vec<crate::fugue::FugueInfo>> {
-        // Empty vec is the right "nothing queued" signal — no need to
-        // branch on the Err path since that also means "nothing to list".
-        Json(FugueBridge::get_fugue_info(&req.instance).unwrap_or_default())
+        Parameters(req): Parameters<ListFuguesRequest>,
+    ) -> Json<Vec<ListedFugue>> {
+        // Fan-out on None: walk every registered instance and concat their
+        // infos with the instance metadata stapled on. A single-instance
+        // scope uses the same code path, just with a one-element iterator,
+        // so the output shape is uniform.
+        let targets: Vec<(String, String)> = match req.instance.as_deref() {
+            None => FugueBridge::list_all_instances(),
+            Some(name) => CcBridge::list_instances()
+                .into_iter()
+                .find(|(id, nm)| id == name || nm == name)
+                .into_iter()
+                .collect(),
+        };
+        let mut rows = Vec::new();
+        for (instance_id, instance_name) in targets {
+            let infos = FugueBridge::get_fugue_info(&instance_id).unwrap_or_default();
+            for info in infos {
+                rows.push(ListedFugue {
+                    instance_id: instance_id.clone(),
+                    instance_name: instance_name.clone(),
+                    info,
+                });
+            }
+        }
+        Json(rows)
     }
 
     /// Fetch one fugue's current definition — notes, CC lanes, per-note
@@ -193,39 +214,101 @@ impl DropletsMcp {
         )))
     }
 
-    /// Cancel a specific fugue by ID.
-    #[tool(description = "Cancel a specific fugue by its ID. Sends note-offs for any active notes and stops playback. Use the fugue_id returned by queue_fugue.")]
+    /// Cancel a specific fugue by ID, searching every instance if unscoped.
+    #[tool(description = "Cancel a fugue by ID. Omit `instance` to search every connected instance for the id (fugue ids are globally unique); pass a name or id to scope. Sends note-offs for any active notes and stops playback.")]
     fn cancel_fugue(
         &self,
         Parameters(req): Parameters<CancelFugueRequest>,
     ) -> Result<String, String> {
-        FugueBridge::cancel(&req.instance, req.data.id).map_err(|e| e.to_string())?;
-        // Wait for the audio thread to process the cancel so a follow-up
-        // list_fugues / UI fetch reflects the removal.
-        FugueBridge::wait_for_fugue_gone(&req.instance, req.data.id, 100);
-        Ok(format!("Cancelled fugue {}", req.data.id))
+        let id = req.data.id;
+        // Scoped: pass through to the existing per-instance cancel.
+        if let Some(name) = req.instance.as_deref() {
+            FugueBridge::cancel(name, id).map_err(|e| e.to_string())?;
+            FugueBridge::wait_for_fugue_gone(name, id, 100);
+            return Ok(format!("Cancelled fugue {} on '{}'", id, name));
+        }
+        // Unscoped: try every instance. Fugue ids are random u64 so at
+        // most one hit is expected; stop at the first that succeeds.
+        // "Not found" is rolled up to a single error so the LLM gets a
+        // clean actionable message.
+        let mut matched_instance: Option<String> = None;
+        for (instance_id, _) in FugueBridge::list_all_instances() {
+            let infos = FugueBridge::get_fugue_info(&instance_id).unwrap_or_default();
+            if infos.iter().any(|i| i.id == id) {
+                FugueBridge::cancel(&instance_id, id).map_err(|e| e.to_string())?;
+                FugueBridge::wait_for_fugue_gone(&instance_id, id, 100);
+                matched_instance = Some(instance_id);
+                break;
+            }
+        }
+        match matched_instance {
+            Some(name) => Ok(format!("Cancelled fugue {} on '{}'", id, name)),
+            None => Err(format!(
+                "No fugue with id {} across any connected instance. Call list_fugues to see active ids.",
+                id
+            )),
+        }
     }
 
-    /// Cancel all fugues with a specific tag.
-    #[tool(description = "Cancel all fugues with a matching tag. Sends note-offs for any active notes. Use this to stop all instances of a pattern, like all 'melody' fugues.")]
+    /// Cancel fugues by tag across one or every instance.
+    #[tool(description = "Cancel all fugues with a matching tag. Omit `instance` to cancel across every connected instance; pass a name or id to scope. Sends note-offs for any active notes.")]
     fn cancel_fugues_by_tag(
         &self,
         Parameters(req): Parameters<CancelFuguesByTagRequest>,
     ) -> Result<String, String> {
-        FugueBridge::cancel_by_tag(&req.instance, &req.data.tag).map_err(|e| e.to_string())?;
-        FugueBridge::wait_for_tag_gone(&req.instance, &req.data.tag, 100);
-        Ok(format!("Cancelled all fugues with tag '{}'", req.data.tag))
+        let tag = &req.data.tag;
+        let targets: Vec<String> = match req.instance.as_deref() {
+            Some(name) => vec![name.to_string()],
+            None => FugueBridge::list_all_instances()
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect(),
+        };
+        // Collect errors but still process every instance — one bad
+        // entry shouldn't block the rest of the fan-out.
+        let mut errors: Vec<String> = Vec::new();
+        for instance_id in &targets {
+            if let Err(e) = FugueBridge::cancel_by_tag(instance_id, tag) {
+                errors.push(format!("{}: {}", instance_id, e));
+                continue;
+            }
+            FugueBridge::wait_for_tag_gone(instance_id, tag, 100);
+        }
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
+        }
+        Ok(format!(
+            "Cancelled all fugues with tag '{}' across {} instance(s)",
+            tag,
+            targets.len()
+        ))
     }
 
-    /// Emergency stop - clear all fugues.
-    #[tool(description = "Emergency stop: cancel all fugues on a plugin instance. Sends note-offs for all active notes and clears the queue. Use when you need to stop everything immediately.")]
+    /// Emergency stop — clear all fugues on one or every instance.
+    #[tool(description = "Emergency stop: cancel every fugue. Omit `instance` to clear across every connected instance; pass a name or id to scope. Sends note-offs for all active notes and empties the queue.")]
     fn clear_fugues(
         &self,
-        Parameters(req): Parameters<GetSlotsRequest>,
+        Parameters(req): Parameters<ClearFuguesRequest>,
     ) -> Result<String, String> {
-        FugueBridge::clear_all(&req.instance).map_err(|e| e.to_string())?;
-        FugueBridge::wait_for_no_fugues(&req.instance, 100);
-        Ok("Cleared all fugues".into())
+        let targets: Vec<String> = match req.instance.as_deref() {
+            Some(name) => vec![name.to_string()],
+            None => FugueBridge::list_all_instances()
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect(),
+        };
+        let mut errors: Vec<String> = Vec::new();
+        for instance_id in &targets {
+            if let Err(e) = FugueBridge::clear_all(instance_id) {
+                errors.push(format!("{}: {}", instance_id, e));
+                continue;
+            }
+            FugueBridge::wait_for_no_fugues(instance_id, 100);
+        }
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
+        }
+        Ok(format!("Cleared all fugues across {} instance(s)", targets.len()))
     }
 
     /// Get the current DAW transport state for an instance.

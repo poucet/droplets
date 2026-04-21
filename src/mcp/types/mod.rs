@@ -36,7 +36,8 @@ pub use note::{midi_to_name, parse_note_name, Note};
 pub use point::Point;
 pub use request::{
     CancelFugueData, CancelFugueRequest, CancelFuguesByTagData, CancelFuguesByTagRequest,
-    GetFugueData, GetFugueRequest, GetSlotsRequest, ImportFugueData, ImportFugueRequest,
-    InstanceRequest, QueueFugueData, QueueFugueRequest, RenameInstanceRequest,
+    ClearFuguesRequest, GetFugueData, GetFugueRequest, GetSlotsRequest, ImportFugueData,
+    ImportFugueRequest, InstanceRequest, ListFuguesRequest, OptionalInstanceOnlyRequest,
+    OptionalInstanceRequest, QueueFugueData, QueueFugueRequest, RenameInstanceRequest,
 };
-pub use response::{InstanceHandle, QueueFugueSummary};
+pub use response::{InstanceHandle, ListedFugue, QueueFugueSummary};

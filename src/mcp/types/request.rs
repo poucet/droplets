@@ -24,6 +24,23 @@ pub struct InstanceRequest<T> {
     pub data: T,
 }
 
+/// Wrapper for fugue tools where targeting every connected instance is
+/// the useful default — listing, clearing, cancelling. Omit `instance`
+/// (or send null) to fan out across every registered instance; pass a
+/// name or id to scope to one.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct OptionalInstanceRequest<T> {
+    /// Instance name or id to scope to. Omit to operate on every
+    /// connected Droplets instance.
+    #[serde(default)]
+    #[schemars(description = "Optional instance name or id. Omit to operate on every connected Droplets instance.")]
+    pub instance: Option<String>,
+
+    /// The actual request data
+    #[serde(flatten)]
+    pub data: T,
+}
+
 /// Queue one or more fugues for transport-synchronized playback
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct QueueFugueData {
@@ -139,15 +156,29 @@ pub struct GetSlotsRequest {
     pub instance: String,
 }
 
+/// Request body for `list_fugues` and `clear_fugues` — both fan out to
+/// every connected instance when `instance` is omitted. Separate from
+/// [`GetSlotsRequest`] so `get_transport` / `get_slots` keep their
+/// required-instance semantics (those tools are inherently per-instance;
+/// cross-instance listing/clearing isn't).
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct OptionalInstanceOnlyRequest {
+    #[serde(default)]
+    #[schemars(description = "Optional instance name or id. Omit to operate on every connected Droplets instance.")]
+    pub instance: Option<String>,
+}
+
 // =============================================================================
 // Type aliases for the MCP tool interface
 // =============================================================================
 
 pub type QueueFugueRequest = InstanceRequest<QueueFugueData>;
-pub type CancelFugueRequest = InstanceRequest<CancelFugueData>;
-pub type CancelFuguesByTagRequest = InstanceRequest<CancelFuguesByTagData>;
+pub type CancelFugueRequest = OptionalInstanceRequest<CancelFugueData>;
+pub type CancelFuguesByTagRequest = OptionalInstanceRequest<CancelFuguesByTagData>;
 pub type GetFugueRequest = InstanceRequest<GetFugueData>;
 pub type ImportFugueRequest = InstanceRequest<ImportFugueData>;
+pub type ListFuguesRequest = OptionalInstanceOnlyRequest;
+pub type ClearFuguesRequest = OptionalInstanceOnlyRequest;
 
 // =============================================================================
 // Default value functions

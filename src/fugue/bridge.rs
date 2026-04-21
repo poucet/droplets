@@ -205,6 +205,21 @@ impl FugueBridge {
             .map(|reg| find_entry(&reg, instance).is_ok())
             .unwrap_or(false)
     }
+
+    /// Every registered instance as `(id, name)` pairs. Used by the
+    /// cross-instance `list_fugues` / `clear_fugues` / `cancel_*` fan-out
+    /// paths — they enumerate here then dispatch per id.
+    pub fn list_all_instances() -> Vec<(String, String)> {
+        registry()
+            .read()
+            .ok()
+            .map(|reg| {
+                reg.iter()
+                    .map(|(id, e)| (id.clone(), e.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 /// Find an instance entry by name or ID

@@ -12,6 +12,8 @@
 use rmcp::schemars;
 use serde::Serialize;
 
+use crate::fugue::FugueInfo;
+
 /// Per-instance row returned by the `list_instances` MCP tool. Kept
 /// deliberately minimal — id + name — since this tool exists to enable
 /// the LLM to pick a target before calling `queue_fugue`. Richer
@@ -21,6 +23,24 @@ use serde::Serialize;
 pub struct InstanceHandle {
     pub id: String,
     pub name: String,
+}
+
+/// One row of `list_fugues` output — a [`FugueInfo`] with the instance
+/// it's playing on stapled on. `list_fugues` returns a flat `Vec` of
+/// these across every connected instance (or one, when scoped), so
+/// follow-up calls like `cancel_fugue` / `get_fugue` get the id +
+/// instance pair without a second `list_instances` round-trip.
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct ListedFugue {
+    /// Stable id of the instance the fugue is playing on. Use this as
+    /// the `instance` argument when scoping follow-up calls.
+    pub instance_id: String,
+    /// Human-readable instance name (track name when the host controller
+    /// extension is connected, otherwise the id prefix).
+    pub instance_name: String,
+    /// The fugue's info row.
+    #[serde(flatten)]
+    pub info: FugueInfo,
 }
 
 /// `queue_fugue` result summary. `fugue_ids` are stringified to match the

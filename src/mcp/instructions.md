@@ -153,7 +153,8 @@ notes:[[0.00,"C2",0.2,100],[0.25,"E2",0.2,90],
 
 ## Other tools
 - `get_transport` — current {beat, tempo, playing, time_sig, loop bounds}; use before scheduling if you need to know where the playhead is.
-- `list_fugues` / `get_fugue` / `cancel_fugue` / `cancel_fugues_by_tag` / `clear_fugues`
+- `list_fugues` / `clear_fugues` / `cancel_fugue` / `cancel_fugues_by_tag` — these all default to **every** connected instance when `instance` is omitted, so you don't need a separate `list_instances` hop first. Scope to a single instance by passing its name or id. `list_fugues` rows carry their `instance_id` + `instance_name` so any follow-up call has the target at hand. `cancel_fugue(id)` searches every instance for the id (ids are globally unique).
+- `get_fugue` — per-instance content read (see "Read-modify-write" below).
 - `import_fugue` — queue fugues from a base64-encoded `.mid` the user edited in their DAW (see "Drag round-trip" below).
 - `list_slots` — parameter-slot listing
 
