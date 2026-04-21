@@ -11,6 +11,7 @@ import {
   cancelFugue,
   exportFugue,
   importFugueBytes,
+  startDrag,
   RealtimeConnection,
 } from './api';
 import type {
@@ -28,7 +29,7 @@ import type {
 // thrash on every render.
 const EMPTY_INFOS: FugueInfo[] = [];
 const EMPTY_DEFS: Map<string, FugueDefinition> = new Map();
-import { FugueList, FugueViewer, MidiMapping, Settings, DawLayout } from './components';
+import { FugueViewer, MidiMapping, Settings, DawLayout } from './components';
 import { useTransport, useTimingSync } from './timing';
 
 type TabView = 'sequencer' | 'midi' | 'settings' | 'daw';
@@ -51,7 +52,6 @@ const App: React.FC = () => {
   // instance's entry here. Switching the dropdown is then instant (no
   // WS reconnect, no REST round-trip).
   const [fuguesByInstance, setFuguesByInstance] = useState<Map<string, { infos: FugueInfo[]; definitions: Map<string, FugueDefinition> }>>(new Map());
-  const [selectedFugueId, setSelectedFugueId] = useState<string | undefined>();
 
   // Per-instance transport cache — used to re-sync the timing manager on
   // instance switch without a refetch. Effect below runs the re-sync; it
@@ -162,24 +162,14 @@ const App: React.FC = () => {
     }
   }, [selectedInstance, syncTiming]);
 
-  // Fugue handlers
-  const handleSelectFugue = useCallback((id: string) => {
-    setSelectedFugueId(id);
-  }, []);
-
   const handleCancelFugue = useCallback(async (id: string) => {
     try {
       await cancelFugue(id, selectedInstance);
-      // Clear selection if we cancelled the selected fugue
-      if (selectedFugueId === id) {
-        setSelectedFugueId(undefined);
-      }
-      // Refresh fugue list
       await fetchFugues();
     } catch (e) {
       console.error('Failed to cancel fugue:', e);
     }
-  }, [selectedInstance, selectedFugueId, fetchFugues]);
+  }, [selectedInstance, fetchFugues]);
 
   const handleExportFugue = useCallback(async (id: string) => {
     try {
@@ -335,10 +325,6 @@ const App: React.FC = () => {
     fetchTransport();
   }, [selectedInstance, fetchFugues, fetchTransport]);
 
-  // Get selected fugue definition
-  const selectedFugue = selectedFugueId ? fugueDefinitions.get(selectedFugueId) : undefined;
-  const selectedInfo = selectedFugueId ? fugueInfos.find(f => f.id === selectedFugueId) : undefined;
-
   return (
     <div className="app">
       <header className="app-header">
@@ -476,19 +462,27 @@ const App: React.FC = () => {
               )}
             </div>
             <div className="sequencer-content">
-              <FugueList
-                fugues={fugueInfos}
-                selectedId={selectedFugueId}
-                instance={selectedInstance}
-                tempoBpm={transport.tempo}
-                onSelect={handleSelectFugue}
-                onCancel={handleCancelFugue}
-                onExport={handleExportFugue}
-              />
-
-              {/* Render every active fugue expanded. Previously only the
-                  selected one showed its grid; users found the click-to-expand
-                  workflow annoying when they just want to see what's playing. */}
+              {fugueInfos.length === 0 && (
+                <div className="fugue-empty">
+                  <p className="empty-message">No active fugues</p>
+                  <p className="empty-hint">Queue a fugue to see it here</p>
+                </div>
+              )}
+              {fugueInfos.length > 1 && (
+                <div className="fugue-toolbar">
+                  <button
+                    className="drag-all-btn"
+                    onMouseDown={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      startDrag({ instance: selectedInstance, active: true, tempo_bpm: transport.tempo });
+                    }}
+                    title={`Drag all ${fugueInfos.length} fugues as one .mid into your DAW`}
+                  >
+                    ⇣ Drag all <span className="drag-all-count">{fugueInfos.length}</span>
+                  </button>
+                </div>
+              )}
               {fugueInfos.map(info => {
                 const def = fugueDefinitions.get(info.id);
                 return def ? (
@@ -498,6 +492,8 @@ const App: React.FC = () => {
                     info={info}
                     instance={selectedInstance}
                     tempoBpm={transport.tempo}
+                    onCancel={handleCancelFugue}
+                    onExport={handleExportFugue}
                   />
                 ) : null;
               })}

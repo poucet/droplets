@@ -275,6 +275,57 @@
   overflow: auto;
 }
 
+.fugue-empty {
+  padding: 24px;
+  text-align: center;
+  background: #16162a;
+  border: 1px solid #2d2d44;
+  border-radius: 8px;
+}
+
+.fugue-empty .empty-message {
+  color: #888;
+  margin: 0 0 4px;
+}
+
+.fugue-empty .empty-hint {
+  color: #555;
+  font-size: 12px;
+  margin: 0;
+}
+
+.fugue-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.fugue-toolbar .drag-all-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  background: rgba(79, 195, 247, 0.08);
+  border: 1px dashed rgba(79, 195, 247, 0.4);
+  border-radius: 4px;
+  color: #4fc3f7;
+  font-size: 0.75rem;
+  cursor: grab;
+  user-select: none;
+}
+
+.fugue-toolbar .drag-all-btn:hover {
+  background: rgba(79, 195, 247, 0.15);
+  border-color: rgba(79, 195, 247, 0.7);
+}
+
+.fugue-toolbar .drag-all-btn:active {
+  cursor: grabbing;
+}
+
+.fugue-toolbar .drag-all-count {
+  font-weight: 600;
+}
+
 /* Drag-in highlight — only applied while the user is dragging a file over
    the sequencer panel. Dashed outline + subtle tint so the region reads
    as "drop here" without needing a separate always-visible dropzone. */

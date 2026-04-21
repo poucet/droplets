@@ -41,8 +41,11 @@
   font-style: italic;
 }
 
+.viewer-spacer {
+  flex: 1;
+}
+
 .edit-btn {
-  margin-left: auto;
   padding: 4px 12px;
   background: transparent;
   border: 1px solid #4fc3f7;
@@ -55,4 +58,33 @@
 
 .edit-btn:hover {
   background: rgba(79, 195, 247, 0.1);
+}
+
+.fugue-viewer .export-btn,
+.fugue-viewer .cancel-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  border: 1px solid #3d3d5c;
+  border-radius: 4px;
+  color: #888;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.fugue-viewer .export-btn:hover {
+  background: #4fc3f7;
+  border-color: #4fc3f7;
+  color: #fff;
+}
+
+.fugue-viewer .cancel-btn:hover {
+  background: #f44336;
+  border-color: #f44336;
+  color: #fff;
 }

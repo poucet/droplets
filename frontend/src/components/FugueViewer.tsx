@@ -15,6 +15,8 @@ export interface FugueViewerProps {
   fugue: FugueDefinition;
   info?: FugueInfo;
   onEdit?: (fugue: FugueDefinition) => void;
+  onCancel?: (id: string) => void;
+  onExport?: (id: string) => void;
   /** Instance id for the drag IPC so Rust finds the right definitions. */
   instance?: string;
   /** Session tempo forwarded into the exported MIDI tempo meta. */
@@ -25,6 +27,8 @@ export const FugueViewer: React.FC<FugueViewerProps> = ({
   fugue,
   info,
   onEdit,
+  onCancel,
+  onExport,
   instance,
   tempoBpm,
 }) => {
@@ -83,9 +87,36 @@ export const FugueViewer: React.FC<FugueViewerProps> = ({
         {info?.is_waiting && (
           <span className="viewer-waiting">Waiting for quantize...</span>
         )}
+        <span className="viewer-spacer" />
         {onEdit && (
           <button className="edit-btn" onClick={() => onEdit(fugue)}>
             Edit
+          </button>
+        )}
+        {onExport && info && (
+          <button
+            className="export-btn"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onExport(info.id);
+            }}
+            title="Export as MIDI file to the exports folder"
+          >
+            ↓
+          </button>
+        )}
+        {onCancel && info && (
+          <button
+            className="cancel-btn"
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onCancel(info.id);
+            }}
+            title="Cancel this fugue"
+          >
+            ×
           </button>
         )}
       </div>

@@ -378,39 +378,22 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
       const line = playheadRef.current;
       if (!line) return;
 
-      // Calculate local beat position within this fugue
-      // Account for DAW looping: if currentBeat < startBeat, the DAW has looped
-      // and the fugue is still playing from where it was
-      const transport = timing.getTransport();
-      let localBeat = currentBeat - startBeat;
-
-      // If DAW is looping and we appear to be before start, we're actually
-      // in a later iteration. Calculate how many loop cycles have passed.
-      if (localBeat < 0 && transport.is_looping) {
-        const loopLength = transport.loop_end_beat - transport.loop_start_beat;
-        if (loopLength > 0) {
-          // The fugue started at startBeat, DAW looped back, so add loop length
-          // to get the effective elapsed beats
-          const loopsPassed = Math.ceil((startBeat - currentBeat) / loopLength);
-          localBeat += loopsPassed * loopLength;
-        }
-      }
-
-      // Still negative means fugue hasn't started yet
-      if (localBeat < 0) {
-        line.style.display = 'none';
-        return;
-      }
-
-      // Wrap within duration for looping
-      const wrappedBeat = ((localBeat % durationBeats) + durationBeats) % durationBeats;
+      // Fugues are phase-locked to the song grid: the pattern's beat 0 always
+      // lands on transport beats that are multiples of durationBeats, offset
+      // from startBeat. So the playhead position is simply (currentBeat -
+      // startBeat) mod durationBeats. JS `%` can be negative; the double-mod
+      // normalizes that. This works across DAW loops, tempo changes, and
+      // stale startBeat sync without special-casing is_looping — any stale
+      // startBeat still produces the same answer as long as the fugue is
+      // actually playing (which showPlayhead gates on via !is_waiting).
+      const diff = currentBeat - startBeat;
+      const wrappedBeat = ((diff % durationBeats) + durationBeats) % durationBeats;
       const x = wrappedBeat * pixelsPerBeat;
 
       line.style.display = '';
       line.setAttribute('x1', String(x));
       line.setAttribute('x2', String(x));
 
-      // Update playing class based on transport state
       if (timing.isPlaying()) {
         line.classList.add('playing');
       } else {
