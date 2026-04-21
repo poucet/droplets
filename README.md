@@ -10,11 +10,11 @@ Built by [**Christophe Poucet**](https://www.simplychris.ai) (Simply Chris).
 
 ## ✨ What Can It Do?
 
-🎵 **Real-time MIDI** — AI sends notes and CC messages directly to your instruments
-🔁 **Looping Patterns** — Create "fugues" that sync to your DAW's transport
-🎛️ **Parameter Control** — Automate any plugin via MIDI CC or parameter slots
-📤 **MIDI Export** — Drag AI-created patterns into your arrangement as clips
-🎚️ **MIDI 2.0** — Per-note pitch bend, pressure, and 16-bit velocity
+ - 🎵 **Real-time MIDI** — AI sends notes and CC messages directly to your instruments
+ - 🔁 **Looping Patterns** — Create "fugues" that sync to your DAW's transport
+ - 🎛️ **Parameter Control** — Automate any plugin via MIDI CC or parameter slots
+ - 📤 **MIDI Export** — Drag AI-created patterns into your arrangement as clips
+ - 🎚️ **MIDI 2.0** — Per-note pitch bend, pressure, and 16-bit velocity
 
 ---
 
