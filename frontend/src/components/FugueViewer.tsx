@@ -4,12 +4,32 @@
  * Uses client-side timing interpolation for smooth playhead animation.
  */
 
-import React, { useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { FugueGrid } from './FugueGrid';
 import type { FugueDefinition, FugueInfo } from '../types';
-import { useTimingManager } from '../timing';
+import { getTimingManager, useTimingManager } from '../timing';
 import { startDrag } from '../api';
 import './FugueViewer.css';
+
+// Persist the debug-overlay toggle across reloads without touching server
+// settings. localStorage is a pragmatic choice for a dev-only affordance.
+const DEBUG_OVERLAY_KEY = 'droplets.debug.playhead-overlay';
+
+function readDebugOverlayPref(): boolean {
+  try {
+    return localStorage.getItem(DEBUG_OVERLAY_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function writeDebugOverlayPref(enabled: boolean) {
+  try {
+    localStorage.setItem(DEBUG_OVERLAY_KEY, enabled ? '1' : '0');
+  } catch {
+    // Storage disabled (private mode, etc.) — fall back to session-only.
+  }
+}
 
 export interface FugueViewerProps {
   fugue: FugueDefinition;
@@ -36,6 +56,48 @@ export const FugueViewer: React.FC<FugueViewerProps> = ({
 
   // Show playhead only when fugue is actively playing (not waiting)
   const showPlayhead = info !== undefined && !info.is_waiting;
+
+  // Dev-only overlay: live-display the numbers feeding FugueGrid's
+  // playhead math so drift/misalignment bugs are debuggable without a
+  // REPL. Persisted per-browser via localStorage; ignore in production
+  // if you want by never clicking the toggle.
+  const [debugOverlay, setDebugOverlay] = useState<boolean>(() =>
+    readDebugOverlayPref()
+  );
+  const toggleDebugOverlay = () => {
+    setDebugOverlay(v => {
+      writeDebugOverlayPref(!v);
+      return !v;
+    });
+  };
+  const debugRef = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!debugOverlay) return;
+    const mgr = getTimingManager();
+    const startBeat = info?.start_beat;
+    const dur = fugue.duration_beats;
+    const update = (currentBeat: number) => {
+      const el = debugRef.current;
+      if (!el) return;
+      const parts: string[] = [];
+      parts.push(`now ${currentBeat.toFixed(3)}`);
+      if (typeof startBeat === 'number') {
+        const diff = currentBeat - startBeat;
+        const phase =
+          dur > 0 ? ((diff % dur) + dur) % dur : diff;
+        parts.push(`start ${startBeat.toFixed(3)}`);
+        parts.push(`dur ${dur.toFixed(3)}`);
+        parts.push(`phase ${phase.toFixed(3)}`);
+      } else {
+        parts.push('start —');
+      }
+      el.textContent = parts.join(' · ');
+    };
+    // Immediately paint current values so the overlay isn't blank while
+    // the transport is stopped (subscribe only pings while playing).
+    update(mgr.getBeat());
+    return mgr.subscribe(update);
+  }, [debugOverlay, info?.start_beat, fugue.duration_beats]);
 
   const loopDisplay = useMemo(() => {
     if (!info) return null;
@@ -87,7 +149,24 @@ export const FugueViewer: React.FC<FugueViewerProps> = ({
         {info?.is_waiting && (
           <span className="viewer-waiting">Waiting for quantize...</span>
         )}
+        {debugOverlay && (
+          <span className="viewer-debug" ref={debugRef} onMouseDown={(e) => e.stopPropagation()}>
+            …
+          </span>
+        )}
         <span className="viewer-spacer" />
+        <button
+          className="debug-btn"
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            toggleDebugOverlay();
+          }}
+          title={debugOverlay ? 'Hide playhead debug overlay' : 'Show playhead debug overlay'}
+          aria-pressed={debugOverlay}
+        >
+          🐞
+        </button>
         {onEdit && (
           <button className="edit-btn" onClick={() => onEdit(fugue)}>
             Edit

@@ -60,6 +60,43 @@
   background: rgba(79, 195, 247, 0.1);
 }
 
+.viewer-debug {
+  font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
+  font-size: 11px;
+  color: #ffa94d;
+  background: rgba(255, 169, 77, 0.08);
+  padding: 2px 6px;
+  border-radius: 3px;
+  user-select: text;
+  cursor: text;
+  white-space: nowrap;
+}
+
+.fugue-viewer .debug-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  border: 1px solid #3d3d5c;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+  opacity: 0.5;
+}
+
+.fugue-viewer .debug-btn[aria-pressed="true"] {
+  opacity: 1;
+  border-color: #ffa94d;
+}
+
+.fugue-viewer .debug-btn:hover {
+  opacity: 1;
+}
+
 .fugue-viewer .export-btn,
 .fugue-viewer .cancel-btn {
   display: flex;
