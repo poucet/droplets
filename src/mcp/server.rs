@@ -9,7 +9,7 @@ use rmcp::{
     ErrorData as McpError, RoleServer, ServerHandler,
     handler::server::router::tool::ToolRouter,
     handler::server::tool::ToolCallContext,
-    handler::server::wrapper::Parameters,
+    handler::server::wrapper::{Json, Parameters},
     model::*,
     tool, tool_router,
     service::RequestContext,
@@ -66,60 +66,62 @@ fn build_instructions() -> String {
     )
 }
 
+/// Per-instance row returned by the `list_instances` MCP tool. Kept
+/// deliberately minimal — id + name — since this tool exists to enable
+/// the LLM to pick a target before calling `queue_fugue`. Richer
+/// per-instance data (track name, primary device) comes from
+/// `get_project_state`'s [`project::InstanceSummary`].
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+pub struct InstanceHandle {
+    pub id: String,
+    pub name: String,
+}
+
+/// `queue_fugue` result summary. `fugue_ids` are stringified to match the
+/// JS-side convention (u64 doesn't round-trip through JSON numbers); the
+/// redundant `count` saves the LLM from counting ids back.
+#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
+pub struct QueueFugueSummary {
+    pub fugue_ids: Vec<String>,
+    pub count: usize,
+    pub duration_beats: f64,
+    pub quantize: String,
+    pub loop_mode: String,
+}
+
 #[tool_router]
 impl DropletsMcp {
     /// List all connected Simply Droplets plugin instances.
     #[tool(description = "List all connected Simply Droplets plugin instances. Returns the names that can be used to target a specific instance when queueing fugues.")]
-    fn list_instances(&self) -> Result<CallToolResult, McpError> {
-        let instances = CcBridge::list_instances();
-
-        let result = if instances.is_empty() {
-            "No plugin instances connected. Load Simply Droplets in your DAW first.".to_string()
-        } else {
-            let objs: Vec<serde_json::Value> = instances
+    fn list_instances(&self) -> Json<Vec<InstanceHandle>> {
+        Json(
+            CcBridge::list_instances()
                 .into_iter()
-                .map(|(id, name)| serde_json::json!({ "id": id, "name": name }))
-                .collect();
-            serde_json::to_string_pretty(&objs)
-                .unwrap_or_else(|_| "error serializing instances".to_string())
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
+                .map(|(id, name)| InstanceHandle { id, name })
+                .collect(),
+        )
     }
 
     /// Rename a plugin instance for easier reference.
     #[tool(description = "Rename a Simply Droplets instance for easier reference. Use names like 'bass', 'pad', 'lead' to make targeting clearer.")]
-    fn set_instance_name(&self, Parameters(req): Parameters<RenameInstanceRequest>) -> Result<CallToolResult, McpError> {
-        let result = match CcBridge::rename(&req.instance, &req.name) {
-            Ok(old_name) => format!("Renamed '{}' to '{}'", old_name, req.name),
-            Err(e) => format!("Error: {}", e),
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
+    fn set_instance_name(
+        &self,
+        Parameters(req): Parameters<RenameInstanceRequest>,
+    ) -> Result<String, String> {
+        CcBridge::rename(&req.instance, &req.name)
+            .map(|old_name| format!("Renamed '{}' to '{}'", old_name, req.name))
+            .map_err(|e| e.to_string())
     }
 
     /// List all parameter slots for an instance with their names, CC mappings, and current values.
     #[tool(description = "List all parameter slots for an instance with their names, CC mappings, and values. Shows which slots are mapped to MIDI CC and can output CC when set.")]
-    fn list_slots(&self, Parameters(req): Parameters<GetSlotsRequest>) -> Result<CallToolResult, McpError> {
-        let result = match CcBridge::get_slots(&req.instance) {
-            Ok(slots) => {
-                if slots.is_empty() {
-                    "No slots available.".to_string()
-                } else {
-                    let formatted: Vec<String> = slots
-                        .iter()
-                        .map(|s| {
-                            let cc_info = match s.cc {
-                                Some(cc) => format!("CC{} ch{}", cc, s.channel + 1),
-                                None => "unmapped".to_string(),
-                            };
-                            format!("  [{}] {} ({}) = {:.2} ({:.0}%)", s.index, s.name, cc_info, s.value, s.value * 100.0)
-                        })
-                        .collect();
-                    format!("Parameter slots on '{}':\n{}", req.instance, formatted.join("\n"))
-                }
-            }
-            Err(e) => format!("Error: {}", e),
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
+    fn list_slots(
+        &self,
+        Parameters(req): Parameters<GetSlotsRequest>,
+    ) -> Result<Json<Vec<crate::params::SlotInfo>>, String> {
+        CcBridge::get_slots(&req.instance)
+            .map(Json)
+            .map_err(|e| e.to_string())
     }
 
     // =========================================================================
@@ -128,7 +130,10 @@ impl DropletsMcp {
 
     /// Queue one or more fugues for transport-synchronized playback.
     #[tool(description = "Queue fugues for transport-synced playback. See tool description for the full spec (content types, points shape, curves, worked examples).")]
-    fn queue_fugue(&self, Parameters(req): Parameters<QueueFugueRequest>) -> Result<CallToolResult, McpError> {
+    fn queue_fugue(
+        &self,
+        Parameters(req): Parameters<QueueFugueRequest>,
+    ) -> Result<Json<QueueFugueSummary>, String> {
         // Get shared defaults
         let default_quantize_str = req.data.quantize.as_deref().unwrap_or("bar");
         let default_duration = req.data.duration_beats.unwrap_or(4.0);
@@ -230,72 +235,65 @@ impl DropletsMcp {
             FugueBridge::wait_for_fugue_visible(&req.instance, last_id, 100);
         }
 
-        let result = if errors.is_empty() {
-            let json = serde_json::json!({
-                "fugue_ids": fugue_ids,
-                "count": fugue_ids.len(),
-                "duration_beats": default_duration,
-                "quantize": default_quantize_str,
-                "loop_mode": default_loop_mode_str,
-            });
-            serde_json::to_string_pretty(&json).unwrap_or_else(|_| format!("{{\"fugue_ids\": {:?}}}", fugue_ids))
-        } else {
-            format!("Errors: {:?}", errors)
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
+        }
+        Ok(Json(QueueFugueSummary {
+            fugue_ids: fugue_ids.iter().map(|id| id.to_string()).collect(),
+            count: fugue_ids.len(),
+            duration_beats: default_duration,
+            quantize: default_quantize_str.to_string(),
+            loop_mode: default_loop_mode_str.to_string(),
+        }))
     }
 
     /// List all active and pending fugues.
     #[tool(description = "List all active and pending fugues on a plugin instance. Shows fugue IDs, tags, loop progress, and timing information.")]
-    fn list_fugues(&self, Parameters(req): Parameters<GetSlotsRequest>) -> Result<CallToolResult, McpError> {
-        let result = match FugueBridge::get_fugue_info(&req.instance) {
-            Ok(infos) => {
-                if infos.is_empty() {
-                    "No active fugues.".to_string()
-                } else {
-                    serde_json::to_string_pretty(&infos).unwrap_or_else(|_| format!("{:?}", infos))
-                }
-            }
-            Err(_) => "No active fugues.".to_string(),
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
+    fn list_fugues(
+        &self,
+        Parameters(req): Parameters<GetSlotsRequest>,
+    ) -> Json<Vec<crate::fugue::FugueInfo>> {
+        // Empty vec is the right "nothing queued" signal — no need to
+        // branch on the Err path since that also means "nothing to list".
+        Json(FugueBridge::get_fugue_info(&req.instance).unwrap_or_default())
     }
 
     /// Fetch one fugue's current definition — notes, CC lanes, per-note
     /// expression lanes, loop/tag/quantize metadata. Enables a read-modify-write
     /// pattern: read a fugue, mutate one lane, re-queue with the same tag.
     #[tool(description = "Fetch a single fugue's full content by ID. Returns the same compact lane-grouped shape the LLM writes to queue_fugue (notes + cc + pitch_bends + pressures), so you can read a fugue, mutate a lane, and re-queue with the same tag + cancel_mode:'tag:...' to replace it. Use `compact: false` to get the raw event stream instead (useful for debugging or inspecting server-side expansion of per-note expression).")]
-    fn get_fugue(&self, Parameters(req): Parameters<GetFugueRequest>) -> Result<CallToolResult, McpError> {
-        let result = match FugueBridge::get_definition(&req.instance, req.data.id) {
-            Ok(Some(def)) => {
-                let body = if req.data.compact {
-                    serde_json::to_string_pretty(&compact_fugue_view(&def))
-                } else {
-                    serde_json::to_string_pretty(&def)
-                };
-                body.unwrap_or_else(|_| "error serializing fugue".to_string())
-            }
-            Ok(None) => format!(
+    fn get_fugue(
+        &self,
+        Parameters(req): Parameters<GetFugueRequest>,
+    ) -> Result<Json<serde_json::Value>, String> {
+        // Compact/raw produce differently-shaped JSON, so the return type
+        // stays `Value`. A typed CompactFugueView would pin the schema
+        // tighter but the compact shape's lane sets vary per fugue —
+        // Value is the honest ceiling on what can be schema'd here.
+        let def = FugueBridge::get_definition(&req.instance, req.data.id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!(
                 "No fugue with id {} on instance '{}'. Call list_fugues to see active IDs.",
                 req.data.id, req.instance
-            ),
-            Err(e) => format!("Error: {}", e),
+            ))?;
+        let value = if req.data.compact {
+            compact_fugue_view(&def)
+        } else {
+            serde_json::to_value(&def).map_err(|e| e.to_string())?
         };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
+        Ok(Json(value))
     }
 
     /// Import a `.mid` file as one or more fugues queued on an instance.
     #[tool(description = "Import a Standard MIDI File as fugues on an instance. The body must be base64-encoded SMF bytes. Each MIDI track becomes one fugue (format 0 files produce one fugue). Track names become fugue tags (with optional `tag_prefix` prepended); tracks without names get synthetic `imported-N` tags. Notes + CC are preserved exactly; per-note pitch bend and polyphonic aftertouch are dropped because MIDI 1.0 can't represent them per-note (set `strict: true` to error instead). Returns the queued fugue IDs. Typical workflow: user drags a .mid out of a DAW, edits it in the piano roll, and hands it back to the LLM who imports it as the new canonical version of a part.")]
-    fn import_fugue(&self, Parameters(req): Parameters<ImportFugueRequest>) -> Result<CallToolResult, McpError> {
+    fn import_fugue(
+        &self,
+        Parameters(req): Parameters<ImportFugueRequest>,
+    ) -> Result<Json<crate::gui::api::ImportFugueResponse>, String> {
         use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
-        let bytes = match B64.decode(req.data.base64_mid.as_bytes()) {
-            Ok(b) => b,
-            Err(e) => {
-                return Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Error: failed to decode base64 payload: {}", e
-                ))]));
-            }
-        };
+        let bytes = B64
+            .decode(req.data.base64_mid.as_bytes())
+            .map_err(|e| format!("failed to decode base64 payload: {}", e))?;
 
         let query = crate::gui::api::ImportFugueQuery {
             instance: req.instance.clone(),
@@ -305,74 +303,66 @@ impl DropletsMcp {
             cancel_mode: None,
             strict: req.data.strict,
         };
-        let response = crate::gui::api::import_fugue(&req.instance, &bytes, query);
-        let body = serde_json::to_string_pretty(&response)
-            .unwrap_or_else(|_| "error serializing import response".to_string());
-        Ok(CallToolResult::success(vec![Content::text(body)]))
+        Ok(Json(crate::gui::api::import_fugue(
+            &req.instance,
+            &bytes,
+            query,
+        )))
     }
 
     /// Cancel a specific fugue by ID.
     #[tool(description = "Cancel a specific fugue by its ID. Sends note-offs for any active notes and stops playback. Use the fugue_id returned by queue_fugue.")]
-    fn cancel_fugue(&self, Parameters(req): Parameters<CancelFugueRequest>) -> Result<CallToolResult, McpError> {
-        let result = match FugueBridge::cancel(&req.instance, req.data.id) {
-            Ok(()) => {
-                // Wait for the audio thread to process the cancel so a
-                // follow-up list_fugues / UI fetch reflects the removal.
-                FugueBridge::wait_for_fugue_gone(&req.instance, req.data.id, 100);
-                format!("Cancelled fugue {}", req.data.id)
-            }
-            Err(e) => format!("Error: {}", e),
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
+    fn cancel_fugue(
+        &self,
+        Parameters(req): Parameters<CancelFugueRequest>,
+    ) -> Result<String, String> {
+        FugueBridge::cancel(&req.instance, req.data.id).map_err(|e| e.to_string())?;
+        // Wait for the audio thread to process the cancel so a follow-up
+        // list_fugues / UI fetch reflects the removal.
+        FugueBridge::wait_for_fugue_gone(&req.instance, req.data.id, 100);
+        Ok(format!("Cancelled fugue {}", req.data.id))
     }
 
     /// Cancel all fugues with a specific tag.
     #[tool(description = "Cancel all fugues with a matching tag. Sends note-offs for any active notes. Use this to stop all instances of a pattern, like all 'melody' fugues.")]
-    fn cancel_fugues_by_tag(&self, Parameters(req): Parameters<CancelFuguesByTagRequest>) -> Result<CallToolResult, McpError> {
-        let result = match FugueBridge::cancel_by_tag(&req.instance, &req.data.tag) {
-            Ok(()) => {
-                FugueBridge::wait_for_tag_gone(&req.instance, &req.data.tag, 100);
-                format!("Cancelled all fugues with tag '{}'", req.data.tag)
-            }
-            Err(e) => format!("Error: {}", e),
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
+    fn cancel_fugues_by_tag(
+        &self,
+        Parameters(req): Parameters<CancelFuguesByTagRequest>,
+    ) -> Result<String, String> {
+        FugueBridge::cancel_by_tag(&req.instance, &req.data.tag).map_err(|e| e.to_string())?;
+        FugueBridge::wait_for_tag_gone(&req.instance, &req.data.tag, 100);
+        Ok(format!("Cancelled all fugues with tag '{}'", req.data.tag))
     }
 
     /// Emergency stop - clear all fugues.
     #[tool(description = "Emergency stop: cancel all fugues on a plugin instance. Sends note-offs for all active notes and clears the queue. Use when you need to stop everything immediately.")]
-    fn clear_fugues(&self, Parameters(req): Parameters<GetSlotsRequest>) -> Result<CallToolResult, McpError> {
-        let result = match FugueBridge::clear_all(&req.instance) {
-            Ok(()) => {
-                FugueBridge::wait_for_no_fugues(&req.instance, 100);
-                "Cleared all fugues".to_string()
-            }
-            Err(e) => format!("Error: {}", e),
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
+    fn clear_fugues(
+        &self,
+        Parameters(req): Parameters<GetSlotsRequest>,
+    ) -> Result<String, String> {
+        FugueBridge::clear_all(&req.instance).map_err(|e| e.to_string())?;
+        FugueBridge::wait_for_no_fugues(&req.instance, 100);
+        Ok("Cleared all fugues".into())
     }
 
     /// Get the current DAW transport state for an instance.
     #[tool(description = "Get the current DAW transport state for an instance: {beat, tempo, playing, time_sig_numerator, is_looping, loop_start_beat, loop_end_beat}. Use this to reason about where we are in the song before scheduling — e.g. 'queue starting at bar 8, we're on bar 6 now'. In standalone mode, reports the simulated 120 BPM always-playing transport.")]
-    fn get_transport(&self, Parameters(req): Parameters<GetSlotsRequest>) -> Result<CallToolResult, McpError> {
-        let result = match FugueBridge::get_transport(&req.instance) {
-            Ok(state) => serde_json::to_string_pretty(&state)
-                .unwrap_or_else(|_| format!("{:?}", state)),
-            Err(e) => format!("Error: {}", e),
-        };
-        Ok(CallToolResult::success(vec![Content::text(result)]))
+    fn get_transport(
+        &self,
+        Parameters(req): Parameters<GetSlotsRequest>,
+    ) -> Result<Json<crate::fugue::TransportState>, String> {
+        FugueBridge::get_transport(&req.instance)
+            .map(Json)
+            .map_err(|e| e.to_string())
     }
 
     /// Get the minimal project-state summary — which Droplets instances are
     /// connected and what each track's primary sound source is.
     #[tool(description = "Call this FIRST when composing. Returns a compact summary of which Droplets instances are connected, their track names, each track's primary device, and per-instance slot hints. For drum tracks, includes pad notes (as pitch notation like 'C2') with pad names and loaded sample names — so you can write a drum pattern with correct note mapping instead of guessing GM conventions. For synth tracks, includes the instrument name and preset. The `slots` field on each instance lists which slot params have been user-configured and what each controls. If `layout_available` is false, no host controller extension is running (e.g. Ableton without the script); fall back to asking the user or GM conventions.")]
-    fn get_project_state(&self) -> Result<CallToolResult, McpError> {
+    fn get_project_state(&self) -> Json<super::project::ProjectState> {
         let layout = CcBridge::get_project_layout();
         let instances = CcBridge::list_instances();
-        let state = super::project::ProjectState::build(layout.as_ref(), &instances);
-        let body = serde_json::to_string_pretty(&state)
-            .unwrap_or_else(|_| "error serializing project state".to_string());
-        Ok(CallToolResult::success(vec![Content::text(body)]))
+        Json(super::project::ProjectState::build(layout.as_ref(), &instances))
     }
 }
 

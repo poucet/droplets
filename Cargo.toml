@@ -74,6 +74,13 @@ arc-swap = "1.7"
 # TypeScript type generation from Rust types
 ts-rs = "10"
 
+# JSON Schema generation for MCP tool output types. Pulled in transitively
+# by rmcp anyway; declared directly so non-mcp modules can derive JsonSchema
+# on shared output types (TransportState, FugueInfo, SlotInfo, etc.) without
+# having to route through `use rmcp::schemars;`. Version is pinned to what
+# rmcp 0.9 uses to avoid two-schemars weirdness.
+schemars = "1"
+
 # MIDI file generation for fugue export
 midly = "0.5"
 

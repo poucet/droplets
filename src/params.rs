@@ -311,7 +311,7 @@ impl Default for DropletParams {
 }
 
 /// Slot info for serialization (internal use - API type in gui::api::SlotInfo)
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, serde::Serialize, schemars::JsonSchema)]
 pub struct SlotInfo {
     pub index: usize,
     pub name: String,

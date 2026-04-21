@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 /// How a fugue should loop
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum LoopMode {
@@ -29,7 +29,7 @@ impl Default for LoopMode {
 /// Defines a grid that the fugue aligns to. The fugue will start when the
 /// transport reaches a grid line (where current_beat % interval == 0).
 /// Beat 0 is always a valid grid line for all intervals.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum QuantizeMode {
@@ -106,7 +106,7 @@ impl Default for QuantizeMode {
 }
 
 /// What to cancel when this fugue starts
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum CancelMode {
@@ -129,7 +129,7 @@ impl Default for CancelMode {
 /// New curves extend this enum and add one line to [`InterpolationMode::apply_curve`];
 /// every interpolator site routes through that function so new variants propagate
 /// automatically to CC audio-thread ramps and per-note server-side expansion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum InterpolationMode {
@@ -161,7 +161,7 @@ impl InterpolationMode {
 }
 
 /// A single musical event in a fugue
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FugueEvent {
@@ -253,7 +253,7 @@ impl FugueEvent {
 }
 
 /// A fugue event with timing information
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 pub struct TimedFugueEvent {
     /// Beat offset relative to fugue start (0.0 = start of fugue)
@@ -285,12 +285,13 @@ impl TimedFugueEvent {
 }
 
 /// A complete fugue definition ready for playback
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 pub struct FugueDefinition {
     /// Unique ID for this fugue instance (serialized as string for JS compatibility)
     #[serde(with = "crate::serde_u64_string")]
     #[ts(type = "string")]
+    #[schemars(with = "String")]
     pub id: u64,
     /// Optional tag for grouping/cancellation
     pub tag: Option<String>,
@@ -367,12 +368,13 @@ pub fn generate_fugue_id() -> u64 {
 }
 
 /// Information about an active fugue for listing
-#[derive(Debug, Clone, Serialize, TS)]
+#[derive(Debug, Clone, Serialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 pub struct FugueInfo {
     /// Serialized as string for JS compatibility
     #[serde(with = "crate::serde_u64_string")]
     #[ts(type = "string")]
+    #[schemars(with = "String")]
     pub id: u64,
     pub tag: Option<String>,
     pub current_loop: u32,
@@ -388,7 +390,7 @@ pub struct FugueInfo {
 }
 
 /// Transport state for UI synchronization
-#[derive(Debug, Clone, Copy, Serialize, TS)]
+#[derive(Debug, Clone, Copy, Serialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 pub struct TransportState {
     /// Current beat position in the song

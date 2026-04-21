@@ -21,7 +21,7 @@ use ts_rs::TS;
 /// Keyed by track name. Tracks without a Droplets device are included too —
 /// the LLM benefits from seeing the full project context ("there's a Vocals
 /// track I can't play, but the user may ask about it").
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 pub struct ProjectLayout {
     pub tracks: Vec<TrackContext>,
@@ -31,7 +31,7 @@ pub struct ProjectLayout {
 /// sound source (first instrument on the chain, or a drum machine) and
 /// encodes only that — nested racks, chain selectors, effects aren't
 /// surfaced because the LLM never actually used them.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 pub struct TrackContext {
     pub track_name: String,
@@ -50,7 +50,7 @@ pub struct TrackContext {
 }
 
 /// One parameter on the primary instrument's Remote Controls Page 1.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 pub struct RemoteControlInfo {
     pub index: u8,
@@ -60,7 +60,7 @@ pub struct RemoteControlInfo {
 /// The track's primary sound source. Either a single instrument (synth or
 /// sampler) or a drum machine whose pads we enumerate so the LLM can target
 /// the right MIDI note for each sound.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PrimaryDevice {
@@ -80,7 +80,7 @@ pub enum PrimaryDevice {
 /// One pad on a drum machine. `note` is DAW pitch notation (`"C1"`, C3=60)
 /// — the extension renders it so the LLM reads the same format it already
 /// uses in fugue notes.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 pub struct PadSummary {
     pub note: String,
@@ -99,7 +99,7 @@ pub struct PadSummary {
 /// Result of `get_project_state`. Instances listed in registration order.
 /// `other_tracks` covers tracks without a Droplets device, so the LLM has
 /// full project context even for tracks it can't directly play.
-#[derive(Debug, Clone, Serialize, TS)]
+#[derive(Debug, Clone, Serialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 pub struct ProjectState {
     pub instances: Vec<InstanceSummary>,
@@ -109,7 +109,7 @@ pub struct ProjectState {
     pub layout_available: bool,
 }
 
-#[derive(Debug, Clone, Serialize, TS)]
+#[derive(Debug, Clone, Serialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 pub struct InstanceSummary {
     pub id: String,
@@ -122,7 +122,7 @@ pub struct InstanceSummary {
     pub primary_device: Option<PrimaryDevice>,
 }
 
-#[derive(Debug, Clone, Serialize, TS)]
+#[derive(Debug, Clone, Serialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 pub struct OtherTrackSummary {
     pub name: String,
@@ -174,7 +174,7 @@ impl ProjectState {
 /// `/ws/controller`. No variants beyond a no-op keepalive yet; when MCP tools
 /// start enqueuing real commands, add variants here without changing the
 /// wire framing.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ControllerCommand {

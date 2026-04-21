@@ -279,13 +279,14 @@ pub struct QueueFugueRequest {
 }
 
 /// Response from queuing a fugue
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct QueueFugueResponse {
     pub ok: bool,
     #[serde(
         skip_serializing_if = "Option::is_none",
         serialize_with = "serialize_option_u64_string"
     )]
+    #[schemars(with = "Option<String>")]
     pub fugue_id: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -556,7 +557,7 @@ pub struct ImportFugueQuery {
     pub strict: Option<bool>,
 }
 
-#[derive(Debug, Clone, Serialize, TS)]
+#[derive(Debug, Clone, Serialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 pub struct ImportFugueResponse {
     pub ok: bool,
