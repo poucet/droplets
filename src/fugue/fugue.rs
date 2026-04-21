@@ -186,23 +186,18 @@ impl Fugue {
         let phase = transport_beat.rem_euclid(dur);
         self.start_beat = transport_beat - phase;
         self.current_loop = 0;
-        // Tolerate ~1 MIDI tick of float drift when finding the first event
-        // to play. Without this, a DAW transport-loop that wraps back to a
-        // beat the DAW reports as `1e-15` (instead of exactly `0`) makes
-        // `partition_point` walk past any event at beat 0 — because
-        // `0.0 < 1e-15` is true — and the iteration silently drops its
-        // beat-0 NoteOns. The symptom is "first note of the next loop
-        // iteration doesn't play" and it reproduces most easily when the
-        // DAW's loop length exactly matches the fugue's duration_beats
-        // (so this `phase_lock` jump path intercepts instead of the
-        // drift-immune `reset_for_loop`). One MIDI tick (1/960 beat) is
-        // well below audible timing resolution and safely above any
-        // plausible transport-position float error.
-        const PHASE_LOCK_TOLERANCE: f64 = 1.0 / 960.0;
-        self.next_event_index = self
-            .definition
-            .events
-            .partition_point(|e| e.beat_offset < phase - PHASE_LOCK_TOLERANCE);
+        // Always scan from event 0, not `partition_point(|e| e.beat_offset < phase)`.
+        // The partition approach was drift-sensitive: a DAW loop wrap that
+        // reports `transport_beat = 1e-15` instead of exactly `0` makes
+        // `phase = 1e-15`, and `0.0 < 1e-15` being true walks past the
+        // beat-0 event — its iteration-2 NoteOn is silently dropped. The
+        // per-buffer iterator (`process_buffer`) harmlessly skips past
+        // already-in-the-past events by advancing `next_event_index`
+        // without firing them, so starting from 0 costs at most one extra
+        // O(n) walk through the first buffer after a phase_lock — cheap at
+        // the event counts we deal with, and removes the whole class of
+        // float-drift bugs at the first-event boundary.
+        self.next_event_index = 0;
         self.active_ramps.clear();
         self.clear_active_notes();
         self.cc_state = default_cc_state();
@@ -273,6 +268,18 @@ impl Fugue {
             &mut events,
         );
 
+        // Tolerance for the `>= local_start` gate below. `local_start` is
+        // computed as `current_beat - start_beat`, and both terms can carry
+        // up to a sample's worth of float drift (DAW transport reporting,
+        // rem_euclid, phase_lock `transport_beat - phase`). Without slack
+        // here, a beat-0 event whose `local_start` resolves to `+epsilon`
+        // fails `0 >= epsilon` and is silently advanced past — the
+        // classic "first note of the next iteration doesn't play" bug on
+        // DAW loop-wrap. Accepting events within one frame of `local_start`
+        // pulls boundary-hit events into the current buffer with
+        // `sample_offset = 0` via the `.max(0.0)` clamp below.
+        let start_tolerance = beats_per_sample;
+
         // Process events in this range
         while self.next_event_index < self.definition.events.len() {
             let timed_event = &self.definition.events[self.next_event_index];
@@ -282,7 +289,7 @@ impl Fugue {
                 break; // Event is in the future
             }
 
-            if beat_offset >= local_start {
+            if beat_offset >= local_start - start_tolerance {
                 // Event is in this buffer - calculate sample offset.
                 //
                 // `.floor()`, not `.round()`: the iteration gate above
