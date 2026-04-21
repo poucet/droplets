@@ -25,6 +25,9 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [x] | P1 | 12 | UI lanes for per-note bend/pressure | M | Medium — composite fugues aren't useful if the UI can't render half their content |
 | [x] | P0 | 13 | Transport phase-locking (fugues resume from correct phase on stop/play/relocate) | S | High — without this, every stop/play kills the demo |
 | [x] | P0 | 14 | DAW track context (drum maps, device names) via host extension | L | Very High — AI currently picks random notes for drums because it has no way to know which sample is on which pad. **Rust side + Bitwig extension shipped 2026-04-20; walkthrough verified same day.** |
+| [ ] | P0 | 25 | Align fugue iteration boundaries to song-grid at promotion time | S | High — `start_pending_fugues` uses the quantize target as `start_beat`, so first iteration sits off-grid and `phase_lock` shifts it on any later transport jump. Symptom: "queue while transport plays" plays at one offset, then a DAW wrap snaps every subsequent bar to a different offset |
+| [ ] | P0 | 26 | Widen `process_buffer` `local_start` tolerance to cover DAW wrap drift | S | High — DAWs report transport ~half a buffer into the new loop on wrap, dropping beat-0 events. Pairs with 25 to close the first-note-on-loop bug |
+| [ ] | P1 | 27 | Integer-tick (PPQ 960) representation in sequencer hot path | M | Very High — eliminates the entire float-drift bug class in `phase_lock` / `process_buffer` / `reset_for_loop`. Replaces `beat_offset: f64` with `tick_offset: i64` inside the audio thread; LLM and UI surfaces stay in beats via conversion at boundaries |
 
 ### Phase 02: Post-Demo Polish
 
@@ -44,6 +47,8 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [ ] | P3 | 23 | `.bwclip` (dawproject) export/import alongside `.mid` | M | Medium (Bitwig-only) — lets users round-trip launcher clips via Bitwig's "Save Launcher Clip to Library" (which Bitwig refuses to emit as `.mid`). Preserves per-note expression, tag, color, and timing metadata that MIDI 1.0 drops. Format is Bitwig's open dawproject spec (XML in a zip). Settings toggle chooses `.mid` vs `.bwclip` for drag-out |
 | [ ] | P2 | 24a | Expose `CLAP_PLUGIN_AS_VST3` extension (Rust side) | S | Medium — the clap-wrapper already honours `vst3info->features` as a direct SubCategories override ([wrapasvst3_entry.cpp:269-276](https://github.com/free-audio/clap-wrapper/blob/main/src/wrapasvst3_entry.cpp#L269-L276)). Wire this on the Rust side (clack patch or raw FFI), emit `Fx\|Tools`, drop VST3 audio bus. Ableton stops treating Droplets as an instrument. Notes flow through fine; CC output stays broken until 24b |
 | [ ] | P2 | 24b | clap-wrapper PR: translate `CLAP_EVENT_MIDI` out on VST3 | M | Medium — today [process.cpp:808-812](https://github.com/free-audio/clap-wrapper/blob/main/src/detail/vst3/process.cpp#L808-L812) silently swallows `CLAP_EVENT_MIDI` / `_SYSEX` / `_MIDI2` in `enqueueOutputEvent`. Fix is a surgical addition alongside the existing NOTE_ON/OFF cases: parse status byte, fan out to `kLegacyMIDICCOutEvent` / `kDataEvent`. Upstream PR against clap-wrapper (issue [#414](https://github.com/free-audio/clap-wrapper/issues/414)) |
+| [ ] | P2 | 28 | Notes-with-duration representation in the audio thread | L | High — ships a single `TimedNote { tick_offset, duration_ticks, ... }` to the audio thread instead of pre-expanded NoteOn/NoteOff pairs. Absorbs `emit_notes` overlap truncation, zero-duration guard, NoteOff left-skew, and the same-sample deconflict pass. Requires a bounded `PendingNoteOff` buffer on the audio thread (no malloc), so polyphony-cap + pre-alloc design work up front |
+| [ ] | P2 | 29 | Fold the parked `audio_debug` probe back in as a Cargo feature | S | Medium — audio-thread debug probe with lock-free ring buffer + background drainer, parked on bookmark `wip/audio-debug-probe`. Landing on trunk needs a `audio-debug` Cargo feature so call sites compile out entirely when disabled, and all DebugRecord construction moves inside `audio_debug.rs` so probes at call sites are single feature-gated lines. Keep for future sequencer debugging sessions |
 
 ---
 
@@ -230,6 +235,89 @@ The existing jump-detector heuristic in `FugueSequencer::process` (comparing `cu
 **Files (Bitwig extension, shipped):** [extensions/bitwig/DropletsExtension.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsExtension.kt) (observer wiring + rebuild), [DropletsClient.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsClient.kt) (HTTP + WS), [DropletsExtensionDefinition.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/DropletsExtensionDefinition.kt), [Json.kt](../../../extensions/bitwig/src/main/kotlin/com/simply/droplets/Json.kt), [build.sh](../../../extensions/bitwig/build.sh) + [install.sh](../../../extensions/bitwig/install.sh) + [README.md](../../../extensions/bitwig/README.md).
 
 See [TASKS.md](TASKS.md) for the detailed task breakdown and resolved design decisions.
+
+---
+
+#### Feature 25: Align fugue iteration boundaries to song-grid at promotion time
+
+**Problem:** The fugue scheduler has two places that place a fugue on the transport timeline: `start_pending_fugues` in [src/fugue/sequencer.rs](../../../src/fugue/sequencer.rs) (when a waiting fugue is first promoted to active), and `phase_lock` in [src/fugue/fugue.rs](../../../src/fugue/fugue.rs) (on transport start / jump). They disagree:
+
+- `start_pending_fugues` sets `start_beat = target`, where `target` is the quantize grid line the fugue naturally falls on (next bar, next beat, etc.). For a fugue with `dur = 16` queued at transport 5, `target = 8` (next bar in 4/4) — **not a multiple of 16**. Iteration boundaries land at 8, 24, 40, … — **off the song-grid**.
+- `phase_lock` sets `start_beat = transport_beat - transport_beat.rem_euclid(dur)`, which forces a multiple of `dur` from song-zero. For the same fugue at the first transport jump, iteration boundaries snap to 0, 16, 32, …
+
+Observable symptom (from an audio-thread debug trace of the real bug):
+- User queues a 16-beat drum pattern. LLM latency puts `target = 8`. Fugue plays with kick on bars 3, 7, 11.
+- DAW transport wraps back to 0. `phase_lock` fires, `old_start_beat=8 → new_start_beat=0`. Kick is now on bars 1, 5, 9 — **shifted by 8 beats (2 bars) for the rest of the session.**
+
+The right fix is not "preserve the queue-time position across jumps" (the user is right to reject that) — LLM latency is arbitrary, so using the moment-of-queue as an anchor makes the fugue's musical position depend on call latency. The correct semantics: **iterations are always at `k · duration_beats` from song-start, regardless of when the fugue was queued.**
+
+**Solution:** make `start_pending_fugues` do the same song-grid snap that `phase_lock` already does.
+
+```rust
+let target = fugue.target_start_beat.unwrap_or(current_beat);
+let dur = fugue.definition.duration_beats;
+let phase = target.rem_euclid(dur);
+fugue.start_beat = target - phase;                           // virtual start, on song-grid
+fugue.next_event_index = fugue.definition.events
+    .partition_point(|e| e.beat_offset < phase);             // skip events before the current phase
+```
+
+Under these semantics, a fugue queued at `target = 8` with `dur = 16` plays pattern-beat-8 at transport 8 (the second half of the pattern plays "immediately"), and pattern-beat-0 fires at transport 16 — when the song-grid iteration actually begins. Every subsequent iteration is at 32, 48, 64 — consistent with `phase_lock`'s behavior under transport jumps. No shift on DAW wrap.
+
+If the LLM wants pattern-beat-0 to fire at the queue moment, it sets `quantize` to match `duration_beats` (e.g. `bars:4` for a 16-beat pattern) — then `target` is guaranteed to be a multiple of `dur` and `phase = 0`.
+
+**Tradeoff:** this changes the semantics of `quantize` for fugues whose `quantize interval < dur`. The LLM-facing docs need to state explicitly that the fugue plays "the slice of the pattern matching current song-phase" when queued off its own grid. Update [src/mcp/instructions.md](../../../src/mcp/instructions.md) and the `queue_fugue` tool description with one example.
+
+**Obsoleted by Feature 27:** once timing is in integer ticks, the `rem_euclid` here is exact and this fix is a one-line change inside the tick-based code path. The fix lands in the beat-based world first so the demo has correct behavior regardless of whether Feature 27 ships in time.
+
+**Files:** [src/fugue/sequencer.rs](../../../src/fugue/sequencer.rs) (`start_pending_fugues`), [src/mcp/instructions.md](../../../src/mcp/instructions.md), [src/mcp/tools/queue_fugue.md](../../../src/mcp/tools/queue_fugue.md).
+
+---
+
+#### Feature 26: Widen `process_buffer` `local_start` tolerance for DAW wrap drift
+
+**Problem:** When a DAW transport wraps (loop end → loop start), the plugin is typically called with `current_beat` reporting *into* the new loop iteration rather than exactly on its start — observed in a real trace as `transport = 0.015` (≈7 ms / ≈350 samples) after a wrap. The previous buffer already consumed that slice of the new iteration's samples internally; the DAW just advances its reported transport.
+
+`process_buffer` computes `local_start = current_beat - start_beat`. After `phase_lock` with the wrap's drift-shifted transport, `local_start ≈ 0.015` instead of `0`. The existing tolerance (`beats_per_sample ≈ 0.00002`) is ~1000× too small, so events at `beat_offset = 0` fail `0 >= local_start - tolerance` and are silently advanced past. Symptom: pattern-beat-0 NoteOns don't fire on DAW loop wrap.
+
+**Solution:** Widen the `>= local_start` tolerance to one full buffer (`frames * beats_per_sample`). The `next_event_index`-forward-only invariant in `process_buffer` prevents double-firing: events already fired in a prior buffer have `next_event_index` past them and aren't re-checked, so widening the look-back gate only rescues events whose "scheduled time" falls in the slice the DAW ate during its wrap.
+
+**Pairs with:** Feature 25. Together they close the "first note doesn't play on DAW loop" bug for both anchor-at-0 and anchor-mid-song cases.
+
+**Note:** Feature 27 (integer ticks) makes this tolerance cleaner — it becomes a fixed number of ticks rather than a computed f64. The underlying cause (DAW mid-buffer wrap reporting) is independent of numeric representation.
+
+**Files:** [src/fugue/fugue.rs](../../../src/fugue/fugue.rs) (`process_buffer` tolerance).
+
+---
+
+#### Feature 27: Integer-tick representation in sequencer hot path
+
+**Problem:** Every bug this demo cycle has surfaced in the sequencer has been some shape of f64 drift: `rem_euclid` producing `1e-15` off, `local_start = 0.015` after DAW wrap, `partition_point` with `<` excluding beat-0 events, `.round()` pushing `sample_offset` past `frames`, tolerance-vs-strict-comparison juggling at every boundary check. Each one individually is ~5 lines to patch, but the class is unbounded because floating-point arithmetic isn't associative and the scheduler threads the transport through many comparison gates.
+
+**Solution:** Represent all sequencer-internal timing as **integer ticks** at 960 PPQ (the MIDI standard). One f64→i64 conversion at the buffer boundary; everything inside is exact integer comparison.
+
+- `TimedFugueEvent.beat_offset: f64` → `tick_offset: i64`
+- `FugueDefinition.duration_beats: f64` → `duration_ticks: i64`
+- `Fugue.start_beat: f64` → `start_tick: i64`
+- `Fugue.anchor_start_beat: f64` (from Feature 25) → `anchor_tick: i64`
+- Per-buffer: `current_tick = (transport_beat * 960.0).round() as i64` — bounded rounding error per buffer, never accumulates because the DAW's transport is re-read fresh each call.
+- Sample-offset emission still does one f64 op per fired event (`(tick_delta as f64 / ticks_per_sample).floor()`), but the gate comparisons (`beat_offset >= local_end`, `beat_offset >= local_start - tolerance`, phase math, reset boundary) are all i64.
+
+**Scope:**
+- [src/fugue/types.rs](../../../src/fugue/types.rs): `TICKS_PER_BEAT: i64 = 960`, `beats_to_ticks` / `ticks_to_beats` helpers. Change `TimedFugueEvent` / `FugueDefinition` fields.
+- [src/fugue/fugue.rs](../../../src/fugue/fugue.rs): `Fugue` state, `process_buffer` gates, `phase_lock`, `reset_for_loop`, `process_active_ramps`.
+- [src/fugue/sequencer.rs](../../../src/fugue/sequencer.rs): `process`, `start_pending_fugues`, `process_active_fugues`, `tag_loop_boundaries`.
+- [src/fugue/bridge.rs](../../../src/fugue/bridge.rs): `FugueInfo` derivation (converts ticks back to beats for UI).
+- [src/mcp/types/conversion.rs](../../../src/mcp/types/conversion.rs) + [src/mcp/types/emit.rs](../../../src/mcp/types/emit.rs): convert LLM-input beats → ticks at queue time; inverse for `definition_to_compact`.
+- Frontend: `TimedFugueEvent` has a new `tick_offset` field (ts-rs regenerates); `FugueGrid` converts via `tick / 960` for rendering. Or: custom serde to keep wire format as `beat_offset: f64` (decide based on UI-side churn budget).
+- [src/fugue/import.rs](../../../src/fugue/import.rs) + [src/fugue/export.rs](../../../src/fugue/export.rs): MIDI PPQ → 960 ticks conversion.
+- Tests: update `sequencer.rs::daw_loop_tests` harness, `conversion.rs` round-trips, `emit.rs` unit tests.
+
+**Obsoletes:** the `partition_point` tolerance in `phase_lock`, the `.floor()` guard in `sample_offset` calc (becomes unambiguous in integer space), and the ad-hoc `beats_per_sample` tolerance in `process_buffer` (becomes a fixed integer tick budget).
+
+**Non-goals:** integer-tick representation of CC ramp state (`ActiveCcRamp`) — those carry start/end *beats* which the audio thread interpolates per sample; refactoring them follows the same pattern but is independent of the event-scheduling fix.
+
+**Files:** above.
 
 ---
 
@@ -503,6 +591,59 @@ Upstream bug: [clap-wrapper #414](https://github.com/free-audio/clap-wrapper/iss
 **Files (when picked up):**
 - 24a: [src/lib.rs](../../../src/lib.rs) (extension registration), [src/midi/ports.rs](../../../src/midi/ports.rs) (conditional zero audio buses for VST3), either a clack upstream patch or new `src/vst3_extension.rs` for raw FFI.
 - 24b: upstream PR against `free-audio/clap-wrapper`, specifically `src/detail/vst3/process.cpp::ProcessAdapter::enqueueOutputEvent`.
+
+---
+
+#### Feature 28: Notes-with-duration representation in the audio thread
+
+**Problem:** Today each `CompactNote` gets expanded at queue time into two `TimedFugueEvent`s — a `NoteOn` at `beat` and a `NoteOff` at `beat + duration`. The audio thread iterates them as independent, pre-sorted points. That independence is the source of a recurring bug family: same-sample NoteOff/NoteOn collisions at loop boundaries, same-pitch overlap needing post-hoc truncation, zero-duration notes inverting under the NoteOff left-skew, and ad-hoc deconflict passes over the output buffer.
+
+All of these are derivative facts of "two independent events for one note." A note is logically a single thing — a pitch, scheduled at beat X, that rings for D ticks. The audio thread only needs that fact to emit correctly-ordered MIDI; pre-expanding into paired events loses information.
+
+**Solution:** ship `TimedNote { tick_offset: i64, duration_ticks: i64, channel: u8, note: u8, velocity: u8 }` to the audio thread as a first-class scheduler primitive, alongside (not replacing) the existing CC / per-note expression event stream. The audio thread maintains a fixed-capacity ring of "notes currently playing" that it consults each buffer: any note whose scheduled NoteOn falls inside the buffer emits NoteOn; any currently-playing note whose `on_sample + duration_samples - 1` falls inside the buffer emits NoteOff at that exact sample.
+
+Boundary properties fall out for free:
+- **Same-pitch retrigger:** new NoteOn for a pitch that's already playing → audio thread emits NoteOff at `new_on_sample - 1` before the NoteOn. No `emit_notes` truncation pass needed.
+- **Loop wrap + beat-0 retrigger:** NoteOff schedules at `loop_end_sample - 1` because duration expires there; next iteration's NoteOn starts at `loop_end_sample`. One-sample separation baked in.
+- **Zero-duration notes:** audio thread skips notes with `duration_ticks <= 0`. Single guard replaces the current emit-time drop + audio-thread left-skew interaction.
+- **Deconflict post-pass:** gone. The audio thread never emits a same-sample OFF/ON pair for the same pitch because it owns both scheduling decisions.
+
+**Realtime design requirement:** no `Vec::push` on the audio thread. Use a fixed-capacity `[Option<ActiveNote>; N]` (N = polyphony cap, 128 is comfortable for music; 32 is tight but fine for demo content). New NoteOns find a free slot; if full, drop the oldest or the lowest-velocity voice (voice-stealing policy, TBD). Design explicitly addresses this before implementation — the malloc-on-audio-thread pitfall is the main reason this is Phase 02 rather than being folded into the pre-demo work.
+
+**Subsumes:**
+- `emit_notes` same-pitch overlap truncation (the current safety pass at compact-schema → definition).
+- `emit_notes` zero-duration drop.
+- `Fugue::process_buffer` NoteOff left-skew via `sample_offset.saturating_sub(1)`.
+- `FugueSequencer::deconflict_same_sample_note_retriggers` post-pass.
+- Loop-boundary NoteOff-at-`local_end`-is-dropped handling inside `process_buffer`.
+
+Pairs with Feature 27 (integer ticks) cleanly — the `ActiveNote` state is keyed by ticks, and the per-buffer "does this note end here?" check is a single integer comparison.
+
+**Non-goals:** CC and per-note expression stay as instant points — they're intrinsically point-in-time, not note-scoped. The audio thread sees a mixed queue: time-ordered `Note { tick, dur }` + `Cc { tick, value }` + `PerNoteExpr { tick, value }`.
+
+**Files:** [src/fugue/types.rs](../../../src/fugue/types.rs) (new `TimedNote` variant or type; event enum gains a "Note" arm alongside the existing one-shot variants), [src/fugue/fugue.rs](../../../src/fugue/fugue.rs) (active-note ring, scheduling logic), [src/fugue/sequencer.rs](../../../src/fugue/sequencer.rs) (delete the deconflict post-pass, delete NoteOff left-skew), [src/mcp/types/emit.rs](../../../src/mcp/types/emit.rs) (delete overlap truncation + zero-dur drop — move to audio-thread scheduler), [src/mcp/types/conversion.rs](../../../src/mcp/types/conversion.rs) (emit `TimedNote`s instead of NoteOn/NoteOff pairs).
+
+---
+
+#### Feature 29: Fold the parked `audio_debug` probe back in as a Cargo feature
+
+**Problem:** The audio-thread debug probe built for tracing the phase_lock / wrap-drift bugs is parked on bookmark `wip/audio-debug-probe`. It needs a clean landing so future sequencer debugging sessions don't rebuild it from scratch, but landing on trunk in its current shape (inline `DebugRecord` construction sprinkled through `FugueSequencer::process` and `Fugue::process_buffer`) pollutes the hot path and adds API noise (seq parameters threaded through internal methods).
+
+**Solution:** gate the probe behind a Cargo feature `audio-debug`. When the feature is off, every call site compiles out entirely — zero cost in release builds, no API shape changes on `Fugue` / `FugueSequencer`. When on, a lock-free `mpsc::sync_channel`-backed drainer writes one record per event to `~/droplets_audio.log` via a background thread (not the audio thread).
+
+Call-site design rule: **one feature-gated line per probe point.** All `DebugRecord` construction lives inside `audio_debug.rs` helper functions that take raw values (references to `Fugue`, `FugueEvent`, primitives). Sequence correlation (which records came from the same `process()` call) lives in a thread-local inside `audio_debug.rs`, set by `on_process_start` and read by subsequent helpers — call sites never pass a `seq` parameter.
+
+Landing checklist:
+- [ ] Add `audio-debug = []` to [Cargo.toml](../../../Cargo.toml) `[features]`.
+- [ ] Feature-gate `pub mod audio_debug;` in [src/fugue/mod.rs](../../../src/fugue/mod.rs).
+- [ ] Feature-gate `fugue::audio_debug::init_if_enabled()` in [src/lib.rs](../../../src/lib.rs).
+- [ ] Replace each inline `audio_debug::log(DebugRecord::…)` in `sequencer.rs` / `fugue.rs` with a single-line call to a helper in `audio_debug.rs` (e.g. `audio_debug::on_phase_lock_fugue(fugue, transport_beat)`), gated by `#[cfg(feature = "audio-debug")]`.
+- [ ] Delete `seq` parameters from `phase_lock_all`, `start_pending_fugues`, `process_active_fugues`, `Fugue::process_buffer` — `audio_debug.rs` owns the counter via thread-local.
+- [ ] Default log path stays `~/droplets_audio.log` (home-relative for DAW sandbox compat).
+
+**Why post-demo, not now:** not bug-fixing — refactor. The probe works as-is on its bookmark; reviving it means `jj new wip/audio-debug-probe` and building from there. Landing cleanly on trunk is worthwhile but not demo-blocking.
+
+**Files:** [Cargo.toml](../../../Cargo.toml), [src/fugue/mod.rs](../../../src/fugue/mod.rs), [src/fugue/audio_debug.rs](../../../src/fugue/audio_debug.rs) (exists on bookmark), [src/fugue/sequencer.rs](../../../src/fugue/sequencer.rs), [src/fugue/fugue.rs](../../../src/fugue/fugue.rs), [src/lib.rs](../../../src/lib.rs).
 
 ---
 
