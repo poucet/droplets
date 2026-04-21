@@ -273,10 +273,6 @@ async fn handle_project_layout(
 ) -> impl IntoResponse {
     match serde_json::from_slice::<project::ProjectLayout>(&body) {
         Ok(layout) => {
-            log::info!(
-                "project_layout received: {} tracks",
-                layout.tracks.len()
-            );
             CcBridge::set_project_layout(layout.clone());
             // Also push to the GUI WebSocket broadcast so any open UI tab
             // updates without polling. Deliberately a direct call rather
