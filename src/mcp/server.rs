@@ -18,8 +18,9 @@ use rmcp::{
 use super::bridge::CcBridge;
 use super::types::{
     CancelFugueRequest, CancelFuguesByTagRequest, GetFugueRequest, GetSlotsRequest,
-    ImportFugueRequest, QueueFugueDefaults, QueueFugueRequest, RenameInstanceRequest,
-    compact_to_definition, definition_to_compact, parse_loop_mode_str, parse_quantize_str,
+    ImportFugueRequest, InstanceHandle, QueueFugueDefaults, QueueFugueRequest, QueueFugueSummary,
+    RenameInstanceRequest, compact_to_definition, definition_to_compact, parse_loop_mode_str,
+    parse_quantize_str,
 };
 use crate::fugue::FugueBridge;
 
@@ -41,29 +42,6 @@ impl Default for DropletsMcp {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Per-instance row returned by the `list_instances` MCP tool. Kept
-/// deliberately minimal — id + name — since this tool exists to enable
-/// the LLM to pick a target before calling `queue_fugue`. Richer
-/// per-instance data (track name, primary device) comes from
-/// `get_project_state`'s [`project::InstanceSummary`].
-#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
-pub struct InstanceHandle {
-    pub id: String,
-    pub name: String,
-}
-
-/// `queue_fugue` result summary. `fugue_ids` are stringified to match the
-/// JS-side convention (u64 doesn't round-trip through JSON numbers); the
-/// redundant `count` saves the LLM from counting ids back.
-#[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema)]
-pub struct QueueFugueSummary {
-    pub fugue_ids: Vec<String>,
-    pub count: usize,
-    pub duration_beats: f64,
-    pub quantize: String,
-    pub loop_mode: String,
 }
 
 #[tool_router]

@@ -19,6 +19,7 @@ pub mod emit;
 pub mod note;
 pub mod point;
 pub mod request;
+pub mod response;
 
 pub use compact::{
     CompactCc, CompactFugue, CompactNote, CompactPitchBend, CompactPressure, FugueContent,
@@ -38,3 +39,4 @@ pub use request::{
     GetFugueData, GetFugueRequest, GetSlotsRequest, ImportFugueData, ImportFugueRequest,
     InstanceRequest, QueueFugueData, QueueFugueRequest, RenameInstanceRequest,
 };
+pub use response::{InstanceHandle, QueueFugueSummary};
