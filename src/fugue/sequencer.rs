@@ -916,27 +916,45 @@ mod daw_loop_tests {
         }
     }
 
-    /// Feature 26 regression: some DAWs report a transport wrap with
-    /// `current_beat` already inside the new loop iteration — not at
-    /// exactly 0 but at `small positive`, as if they consumed part of
-    /// the wrap buffer before calling us. The tolerance in
-    /// `process_buffer` must be wide enough to rescue the beat-0 event
-    /// in that case; without this fix, a ~half-buffer drift at the
-    /// wrap moment silently drops the first note of the next
-    /// iteration. Exact reproduction came from a real log with
-    /// `transport = 0.015` right after a `beat_jump = 16` wrap.
+    /// Feature 26 — case 1: DAW loop length == fugue duration,
+    /// transport wraps *cleanly* (reported current_beat = 0.0 exactly).
+    /// No drift, tolerance isn't what rescues the beat-0 event here —
+    /// this passes with or without the Feature 26 widening. Kept as
+    /// the "control" sibling of the drift test so both shapes of wrap
+    /// are locked down.
+    #[test]
+    fn beat_zero_fires_on_wrap_dur_matches_cleanly() {
+        let def = make_notes_fugue(&[(0.0, 60, 0.5)], 16.0);
+        let mut seq = sequencer_with_fugue(def);
+        play_until(&mut seq, 0.0, 17.0);
+
+        let wrap_out: Vec<_> = seq
+            .process(true, 0.0, TEMPO, BUFFER_FRAMES, TIME_SIG)
+            .collect();
+        let wrap_note_on = collect_notes(&wrap_out)
+            .into_iter()
+            .find(|(_, ch, note, on)| *on && *ch == 0 && *note == 60);
+        assert!(
+            wrap_note_on.is_some(),
+            "beat-0 NoteOn missing after clean DAW wrap (current_beat = 0.0). \
+             Events in wrap buffer: {:?}",
+            collect_notes(&wrap_out)
+        );
+    }
+
+    /// Feature 26 — case 2: same setup, but the DAW reports the wrap
+    /// with `current_beat` already inside the new loop iteration (the
+    /// host consumed ~half a buffer before calling us back). The
+    /// per-sample tolerance the old code used couldn't rescue this;
+    /// the widened buffer-sized tolerance has to. Reproduction came
+    /// from a real log with `transport = 0.015` right after a
+    /// `beat_jump = 16` wrap.
     #[test]
     fn beat_zero_fires_on_wrap_with_mid_buffer_drift() {
         let def = make_notes_fugue(&[(0.0, 60, 0.5)], 16.0);
         let mut seq = sequencer_with_fugue(def);
-
-        // Warm through one full 16-beat iteration.
         play_until(&mut seq, 0.0, 17.0);
 
-        // Simulate the DAW wrap with the mid-buffer drift the user saw
-        // in real logs: transport comes back as 0.015, not 0.0. The
-        // jump is still huge (jump detector fires), and phase_lock
-        // sets local_start ≈ 0.015. The beat-0 event must still emit.
         let drift = buffer_beats() * 0.5; // ~10.7 ms at 120 BPM 512-frame buffer
         let wrap_out: Vec<_> = seq
             .process(true, drift, TEMPO, BUFFER_FRAMES, TIME_SIG)
