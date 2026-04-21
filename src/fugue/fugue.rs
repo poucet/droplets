@@ -268,17 +268,25 @@ impl Fugue {
             &mut events,
         );
 
-        // Tolerance for the `>= local_start` gate below. `local_start` is
-        // computed as `current_beat - start_beat`, and both terms can carry
-        // up to a sample's worth of float drift (DAW transport reporting,
-        // rem_euclid, phase_lock `transport_beat - phase`). Without slack
-        // here, a beat-0 event whose `local_start` resolves to `+epsilon`
-        // fails `0 >= epsilon` and is silently advanced past — the
-        // classic "first note of the next iteration doesn't play" bug on
-        // DAW loop-wrap. Accepting events within one frame of `local_start`
-        // pulls boundary-hit events into the current buffer with
-        // `sample_offset = 0` via the `.max(0.0)` clamp below.
-        let start_tolerance = beats_per_sample;
+        // Tolerance for the `>= local_start` gate below. Widened to one
+        // full buffer's worth of beats — **not** one sample — because the
+        // problem we're absorbing isn't f64 epsilon drift, it's DAWs
+        // reporting a transport-loop wrap with the new `current_beat`
+        // already inside the new iteration. Concretely: host loops
+        // [0, 16] and reports `current_beat = 0.015` after the wrap
+        // because it consumed ~half a buffer before the callback; our
+        // `phase_lock` produces `local_start = 0.015`, and the
+        // beat-0 event of the new iteration fails `0 >= 0.015` by a
+        // meaningful amount. A sample-granular tolerance can't rescue
+        // it. A buffer-granular one does — and the forward-only
+        // `next_event_index` invariant means we never double-fire an
+        // event we already emitted in a prior buffer: past events
+        // have their index already advanced past them and aren't
+        // revisited. The cost is at most a few samples of "late"
+        // firing at the wrap boundary, which is imperceptible.
+        //
+        // Events clamp to `sample_offset = 0` via `.max(0.0)` below.
+        let start_tolerance = end_beat - current_beat;
 
         // Process events in this range
         while self.next_event_index < self.definition.events.len() {

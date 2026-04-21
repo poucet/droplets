@@ -916,6 +916,43 @@ mod daw_loop_tests {
         }
     }
 
+    /// Feature 26 regression: some DAWs report a transport wrap with
+    /// `current_beat` already inside the new loop iteration — not at
+    /// exactly 0 but at `small positive`, as if they consumed part of
+    /// the wrap buffer before calling us. The tolerance in
+    /// `process_buffer` must be wide enough to rescue the beat-0 event
+    /// in that case; without this fix, a ~half-buffer drift at the
+    /// wrap moment silently drops the first note of the next
+    /// iteration. Exact reproduction came from a real log with
+    /// `transport = 0.015` right after a `beat_jump = 16` wrap.
+    #[test]
+    fn beat_zero_fires_on_wrap_with_mid_buffer_drift() {
+        let def = make_notes_fugue(&[(0.0, 60, 0.5)], 16.0);
+        let mut seq = sequencer_with_fugue(def);
+
+        // Warm through one full 16-beat iteration.
+        play_until(&mut seq, 0.0, 17.0);
+
+        // Simulate the DAW wrap with the mid-buffer drift the user saw
+        // in real logs: transport comes back as 0.015, not 0.0. The
+        // jump is still huge (jump detector fires), and phase_lock
+        // sets local_start ≈ 0.015. The beat-0 event must still emit.
+        let drift = buffer_beats() * 0.5; // ~10.7 ms at 120 BPM 512-frame buffer
+        let wrap_out: Vec<_> = seq
+            .process(true, drift, TEMPO, BUFFER_FRAMES, TIME_SIG)
+            .collect();
+        let wrap_note_on = collect_notes(&wrap_out)
+            .into_iter()
+            .find(|(_, ch, note, on)| *on && *ch == 0 && *note == 60);
+        assert!(
+            wrap_note_on.is_some(),
+            "beat-0 NoteOn missing after DAW wrap reported with mid-buffer drift \
+             (current_beat = {:.4}). Events in wrap buffer: {:?}",
+            drift,
+            collect_notes(&wrap_out)
+        );
+    }
+
     /// Queue-offset stability across a DAW wrap: queue mid-play so
     /// `target` ≠ multiple of dur, play one iteration, then simulate
     /// a DAW transport wrap back to 0. Pattern-beat-0 must fire again
