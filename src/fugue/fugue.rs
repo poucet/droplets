@@ -273,10 +273,33 @@ impl Fugue {
                 // Event is in this buffer - calculate sample offset
                 let event_absolute_beat = self.start_beat + beat_offset;
                 let beat_delta = event_absolute_beat - current_beat;
-                let sample_offset = (beat_delta / beats_per_sample).round().max(0.0) as u32;
+                let raw_sample_offset = (beat_delta / beats_per_sample).round().max(0.0) as u32;
 
                 // Clone event to avoid borrow issues
                 let event = timed_event.event;
+
+                // Left-skew NoteOffs by one audio frame so a NoteOff landing
+                // at the same sample as a following NoteOn — adjacent
+                // repeat notes mid-pattern, or the last NoteOff of one
+                // loop iteration meeting the next iteration's beat-0
+                // NoteOn within the same buffer — resolves to a strictly
+                // earlier audio sample. Same-sample pairs otherwise reach
+                // the synth as simultaneous events and several synths
+                // collapse them, dropping the retrigger. emit_notes drops
+                // zero-duration notes so this skew can never push a
+                // NoteOff before its own NoteOn.
+                //
+                // Edge case not handled here: when the NoteOff's natural
+                // sample_offset is already 0 (buffer start aligned with
+                // the beat), saturating_sub leaves it at 0 and the race
+                // falls through to output-buffer ordering. Rare in
+                // practice — audio buffers aren't beat-aligned. A proper
+                // fix would stash these NoteOffs for emission at
+                // `frames - 1` of the previous buffer; deferred.
+                let sample_offset = match event {
+                    FugueEvent::NoteOff { .. } => raw_sample_offset.saturating_sub(1),
+                    _ => raw_sample_offset,
+                };
 
                 // Process the event based on type
                 self.process_event(
