@@ -275,13 +275,14 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
             loop_end_beat,
         });
 
-        // Update fugue info and definitions when there are active fugues.
-        // The audio-thread side of this publish is best-effort: it reflects
-        // what's playing right now. Main-thread cancel handlers update the
-        // cache synchronously themselves (see FugueBridge::remove_from_info_cache),
-        // so the UI doesn't depend on the audio thread ticking to see a
-        // cancel reflected — which matters when the transport is stopped.
-        if self.fugue_sequencer.active_count() > 0 || is_playing {
+        // Structural publish is gated on `take_state_dirty` — list_fugues
+        // and get_definitions both clone per-fugue state (tags, event
+        // Vecs) and wrap them in a fresh Arc, which is *the* biggest
+        // per-buffer allocation on the audio thread. Stable forever-
+        // loops don't mutate FugueInfo / FugueDefinition between loop
+        // boundaries, so the prior cache stays correct and the UI
+        // derives live progress from transport_cache + start_beat.
+        if self.fugue_sequencer.take_state_dirty() {
             let infos = self.fugue_sequencer.list_fugues(current_beat, time_sig_num);
             self.fugue_info_handle.update(infos);
 

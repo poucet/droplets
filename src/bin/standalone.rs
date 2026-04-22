@@ -252,8 +252,10 @@ fn main() {
                 loop_start_beat: 0.0,
                 loop_end_beat: 0.0,
             });
-            fugue_info_handle.update(sequencer.list_fugues(current_beat, time_sig_num));
-            fugue_info_handle.update_definitions(sequencer.get_definitions());
+            if sequencer.take_state_dirty() {
+                fugue_info_handle.update(sequencer.list_fugues(current_beat, time_sig_num));
+                fugue_info_handle.update_definitions(sequencer.get_definitions());
+            }
 
             current_beat += beats_per_step;
             thread::sleep(Duration::from_millis(step_ms));

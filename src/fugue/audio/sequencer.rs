@@ -26,6 +26,15 @@ pub struct FugueSequencer {
     output_buffer: Vec<ProcessedEvent>,
     /// Whether transport was playing in the previous cycle
     was_playing: bool,
+    /// Set any time fugue state mutates in ways a UI / MCP reader
+    /// would care about (queue, cancel, promote, loop, drop). The
+    /// MIDI processor's publish path reads + clears this via
+    /// [`Self::take_state_dirty`] so a forever-looping fugue in
+    /// steady state doesn't re-clone its definition every buffer.
+    /// Progress within an iteration is derivable from the already-
+    /// published transport + `start_beat`, so gating structural
+    /// publishes doesn't lose UI information.
+    state_dirty: bool,
 }
 
 impl FugueSequencer {
@@ -38,7 +47,17 @@ impl FugueSequencer {
             last_beat: 0.0,
             output_buffer: Vec::with_capacity(OUTPUT_BUFFER_CAPACITY),
             was_playing: false,
+            state_dirty: false,
         }
+    }
+
+    /// Read-and-clear the state-changed flag. Publish paths call
+    /// this once per buffer and only reallocate the info / definition
+    /// snapshots when the sequencer says something meaningful changed.
+    pub fn take_state_dirty(&mut self) -> bool {
+        let dirty = self.state_dirty;
+        self.state_dirty = false;
+        dirty
     }
 
     /// Process one audio buffer cycle.
@@ -115,6 +134,7 @@ impl FugueSequencer {
         //    forever because the predicate never became false, so cancelled or
         //    finite-loop fugues lingered in the UI list.
         let output_buffer = &mut self.output_buffer;
+        let mut any_dropped = false;
         self.fugues.retain_mut(|f| {
             if !f.is_finished() {
                 return true;
@@ -122,8 +142,12 @@ impl FugueSequencer {
             if !f.get_active_notes().is_empty() {
                 send_note_offs_for_fugue(f, output_buffer);
             }
+            any_dropped = true;
             false
         });
+        if any_dropped {
+            self.state_dirty = true;
+        }
 
         // The deconflict post-pass that used to run here (shifting
         // NoteOns one sample forward when they collided with a
@@ -149,6 +173,9 @@ impl FugueSequencer {
     /// Process incoming commands from the ring buffer
     fn process_commands(&mut self) {
         while let Ok(cmd) = self.command_consumer.pop() {
+            // Every command mutates visible fugue state (add, cancel,
+            // or clear), so any command drains the dirty flag high.
+            self.state_dirty = true;
             match cmd {
                 FugueCommand::Queue(def) => {
                     // Don't apply cancel mode here - defer until the fugue actually starts
@@ -212,6 +239,9 @@ impl FugueSequencer {
     /// resume, so they're dropped. Emits note-offs for all held notes first so
     /// the synth doesn't get stuck.
     fn phase_lock_all(&mut self, transport_beat: f64) {
+        // Start-beats, active notes, and (for one-shots) membership
+        // all change here — flag dirty unconditionally.
+        self.state_dirty = true;
         let output_buffer = &mut self.output_buffer;
         self.fugues.retain_mut(|f| {
             if !f.get_active_notes().is_empty() {
@@ -301,6 +331,13 @@ impl FugueSequencer {
             if target >= current_beat && target < end_beat {
                 starting_fugues.push((idx, fugue.definition.cancel_mode.clone()));
             }
+        }
+
+        // Any promotion flips `waiting_for_start` to false and moves
+        // start_beat to the song-grid — both surface in FugueInfo —
+        // so mark dirty once before the loop.
+        if !starting_fugues.is_empty() {
+            self.state_dirty = true;
         }
 
         // Apply cancel modes and start fugues
@@ -403,6 +440,7 @@ impl FugueSequencer {
         end_beat: f64,
         beats_per_sample: f64,
     ) {
+        let mut any_looped = false;
         for fugue in &mut self.fugues {
             if fugue.waiting_for_start || fugue.is_finished() {
                 continue;
@@ -419,6 +457,7 @@ impl FugueSequencer {
             if local_end >= fugue.definition.duration_beats && !fugue.is_finished() {
                 // Reset for next loop
                 fugue.reset_for_loop();
+                any_looped = true;
 
                 // Process events from the start of the new loop if buffer extends into it
                 let new_local_end = end_beat - fugue.start_beat;
@@ -426,6 +465,11 @@ impl FugueSequencer {
                     fugue.process_buffer(current_beat, end_beat, beats_per_sample, &mut self.output_buffer);
                 }
             }
+        }
+        if any_looped {
+            // current_loop and start_beat both advance here; readers
+            // tracking "loop 3 of 5" UI need the fresh snapshot.
+            self.state_dirty = true;
         }
     }
 
