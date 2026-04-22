@@ -61,6 +61,8 @@ If you want the fugue to *always* start from pattern-beat-0 and iterate on the b
 
 With a `tag`, `cancel_mode` defaults to `"tag:<tag>"` — so the next call that re-uses the same tag replaces the previous fugue automatically. No need to set `cancel_mode` explicitly for the common "iterate on one part" workflow. Set it to `"none"` when you genuinely want to layer (e.g. a new percussion line on top of kick+snare), or `"cancel_all"` when starting a brand new section.
 
+**Don't want to wait for the old loop to finish?** Tag replacements default to aligning with the old fugue's next loop boundary — musically clean, but a 16-bar pad can keep playing for up to 15 more bars after the request. Set `quantize: "immediate"` on the replacement to cut over on the next audio buffer. The old fugue's held notes are released at the same sample, and the new fugue drops into its current song-grid phase (not a restart from pattern-beat-0), so the iteration timing of the new pattern stays locked to the song grid.
+
 Tags are cheap — use descriptive names (`"drums"`, `"bass"`, `"pad-lead"`) even on single-fugue calls so follow-ups can address them.
 
 ## Worked example — a pad moment on one instrument

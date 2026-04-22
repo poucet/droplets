@@ -289,6 +289,11 @@ impl FugueSequencer {
     /// old fugue's next loop boundary — not its own independent quantize grid. This
     /// gives musically-expected "replace on the loop" behavior by default; without
     /// it, a 3-beat loop replaced by a bar-quantized fugue creates a gap.
+    ///
+    /// **Escape hatch:** `quantize: "immediate"` on the *new* fugue overrides this
+    /// alignment — the new fugue starts on the next buffer and the old tagged
+    /// fugue is cancelled at the same sample. The LLM uses this when replacing
+    /// a long (e.g. 16-bar) loop it doesn't want to wait for.
     fn start_pending_fugues(
         &mut self,
         current_beat: f64,
@@ -317,7 +322,15 @@ impl FugueSequencer {
 
             // Tag-swap override: align to the cancelled tag's next loop
             // boundary if one is playing. Falls through to quantize otherwise.
-            let tag_target = if let CancelMode::CancelByTag(tag) = &fugue.definition.cancel_mode {
+            //
+            // Exception: if the new fugue asked for `quantize: "immediate"`,
+            // honor that and skip the tag alignment. This is the "don't
+            // wait for the 16-bar loop to finish" escape hatch — the
+            // caller explicitly asked for a right-now replacement and the
+            // tag default would override their intent.
+            let tag_target = if matches!(fugue.definition.quantize, crate::fugue::QuantizeMode::Immediate) {
+                None
+            } else if let CancelMode::CancelByTag(tag) = &fugue.definition.cancel_mode {
                 tag_loop_boundaries.get(tag).copied()
             } else {
                 None
@@ -1083,6 +1096,169 @@ mod daw_loop_tests {
             "after DAW wrap, pattern-beat-0 should fire on transport 0 (song-grid). \
              Events in wrap buffer: {:?}",
             wrap_notes
+        );
+    }
+
+    /// `quantize:"immediate"` with `cancel_mode:tag:X` cuts over in the
+    /// same buffer instead of waiting for the old tag's loop boundary,
+    /// AND the new fugue drops into its current song-grid phase rather
+    /// than restarting from pattern-beat-0.
+    ///
+    /// Scenario: a 4-beat pattern queued in place of a 16-beat pad at
+    /// transport ~2. Under "drop into phase" semantics the current
+    /// iteration's events at pattern-beat-0 and pattern-beat-2 are
+    /// both behind the current phase (~2.01) and are skipped — the
+    /// first firings the listener hears are the *next* iteration's
+    /// beat-0 at transport 4 and beat-2 at transport 6. Crucially, not
+    /// transport 16+ (tag-alignment bypassed) and not a restart from
+    /// pattern-beat-0 at ~2 (phase preserved).
+    #[test]
+    fn quantize_immediate_drops_into_current_phase_and_replaces_tagged_loop() {
+        use crate::fugue::types::{CancelMode, QuantizeMode};
+        let old_def = make_notes_fugue(&[(0.0, 60, 0.5)], 16.0)
+            .with_quantize(QuantizeMode::Immediate)
+            .with_tag("pad")
+            .with_loop_mode(LoopMode::Forever);
+        let (mut prod, mut seq) = empty_sequencer();
+        prod.push(FugueCommand::Queue(old_def)).unwrap();
+
+        // Play ~2 beats into the long pad loop.
+        let mid = play_until(&mut seq, 0.0, 2.0);
+        assert!(mid > 1.5 && mid < 3.0, "warm-up should leave us mid-loop");
+
+        let new_def = make_notes_fugue(&[(0.0, 72, 0.4), (2.0, 74, 0.4)], 4.0)
+            .with_quantize(QuantizeMode::Immediate)
+            .with_tag("pad")
+            .with_cancel_mode(CancelMode::CancelByTag("pad".into()))
+            .with_loop_mode(LoopMode::Forever);
+        prod.push(FugueCommand::Queue(new_def)).unwrap();
+
+        // Play through two iterations of the new 4-beat pattern.
+        let events = run_and_collect(&mut seq, mid, 8.0);
+        let note_ons: Vec<(f64, u8)> = events
+            .iter()
+            .filter(|(_, ch, _, on)| *on && *ch == 0)
+            .map(|(t, _, n, _)| (*t, *n))
+            .collect();
+
+        // 1) The new fugue must have produced *some* event before the
+        //    old 16-bar boundary — the tag alignment was overridden.
+        assert!(
+            note_ons.iter().any(|(t, n)| (*n == 72 || *n == 74) && *t < 16.0),
+            "quantize:immediate should have emitted the new fugue before transport 16; \
+             got NoteOns {:?}",
+            note_ons
+        );
+
+        // 2) Phase preservation: the first iteration's pattern-beat-0
+        //    (at transport 0) and pattern-beat-2 (at transport 2) are
+        //    both in the past at cutover (~2.01). Neither may fire
+        //    there — that would be "restart from beat 0 *now*" rather
+        //    than "drop into phase."
+        let early_event = note_ons.iter().find(|(t, _)| *t > mid - 0.05 && *t < 3.5);
+        assert!(
+            early_event.is_none(),
+            "first iteration's events are all behind the cutover phase (~{:.2}); \
+             nothing should fire between cutover and transport 4. Got {:?}",
+            mid, early_event
+        );
+
+        // 3) Next song-grid iteration's pattern-beat-0 fires at transport 4.
+        let first_72 = note_ons.iter().find(|(_, n)| *n == 72);
+        let (t72, _) = first_72.expect("pattern-beat-0 should fire on the next iteration");
+        assert!(
+            (*t72 - 4.0).abs() < 0.1,
+            "pattern-beat-0 should fire at transport 4 (next song-grid iteration), got {:.3}",
+            t72
+        );
+
+        // 4) Following pattern-beat-2 fires at transport 6.
+        let first_74 = note_ons.iter().find(|(_, n)| *n == 74);
+        let (t74, _) = first_74.expect("pattern-beat-2 should fire after the next beat-0");
+        assert!(
+            (*t74 - 6.0).abs() < 0.1,
+            "pattern-beat-2 should fire at transport 6 (start_beat=4 + beat_offset=2), got {:.3}",
+            t74
+        );
+    }
+
+    /// Immediate cutover must NoteOff every note the old fugue still
+    /// holds. Otherwise a replaced pad leaves a stuck voice — the
+    /// whole point of an explicit replace is that the listener hears
+    /// the old sound end.
+    ///
+    /// Scenario: old fugue holds a long sustain (pitch 60, duration 8
+    /// beats) that's still active when we queue an immediate-replace.
+    /// The very next buffer must carry a NoteOff for pitch 60 at
+    /// sample 0 — before anything else from the new fugue — so the
+    /// downstream synth releases the voice.
+    #[test]
+    fn quantize_immediate_emits_note_offs_for_held_notes_in_old_fugue() {
+        use crate::fugue::types::{CancelMode, QuantizeMode};
+        // Old fugue: one long held note at pitch 60 spanning the full loop.
+        let old_def = make_notes_fugue(&[(0.0, 60, 8.0)], 16.0)
+            .with_quantize(QuantizeMode::Immediate)
+            .with_tag("pad")
+            .with_loop_mode(LoopMode::Forever);
+        let (mut prod, mut seq) = empty_sequencer();
+        prod.push(FugueCommand::Queue(old_def)).unwrap();
+
+        // Play ~2 beats — pitch 60 is still being held.
+        let mid = play_until(&mut seq, 0.0, 2.0);
+
+        // Immediate replacement on the same tag.
+        let new_def = make_notes_fugue(&[(0.0, 72, 0.5)], 4.0)
+            .with_quantize(QuantizeMode::Immediate)
+            .with_tag("pad")
+            .with_cancel_mode(CancelMode::CancelByTag("pad".into()))
+            .with_loop_mode(LoopMode::Forever);
+        prod.push(FugueCommand::Queue(new_def)).unwrap();
+
+        // One buffer after the queue command is all that's needed to
+        // see the cutover's NoteOff.
+        seq.process(true, mid, TEMPO, BUFFER_FRAMES, TIME_SIG);
+        let notes_in_buffer = collect_notes(seq.events());
+        let note_off_60 = notes_in_buffer.iter().find(|(_, ch, note, on)| !*on && *ch == 0 && *note == 60);
+        assert!(
+            note_off_60.is_some(),
+            "immediate cutover must emit NoteOff for the old fugue's held pitch 60; \
+             got events in cutover buffer: {:?}",
+            notes_in_buffer
+        );
+    }
+
+    /// Sanity: without `quantize:"immediate"` the tag alignment still
+    /// holds (we haven't regressed the default).
+    #[test]
+    fn tag_loop_alignment_still_applies_when_quantize_is_bar() {
+        use crate::fugue::types::{CancelMode, QuantizeMode};
+        let old_def = make_notes_fugue(&[(0.0, 60, 0.5)], 16.0)
+            .with_quantize(QuantizeMode::Immediate)
+            .with_tag("pad")
+            .with_loop_mode(LoopMode::Forever);
+        let (mut prod, mut seq) = empty_sequencer();
+        prod.push(FugueCommand::Queue(old_def)).unwrap();
+        play_until(&mut seq, 0.0, 2.0);
+
+        let new_def = make_notes_fugue(&[(0.0, 72, 0.5)], 4.0)
+            .with_quantize(QuantizeMode::Bar)
+            .with_tag("pad")
+            .with_cancel_mode(CancelMode::CancelByTag("pad".into()))
+            .with_loop_mode(LoopMode::Forever);
+        prod.push(FugueCommand::Queue(new_def)).unwrap();
+
+        // Play past the full 16-beat loop — the new fugue should hold
+        // off until transport 16 (the old tag's loop boundary) because
+        // `quantize:"bar"` doesn't trigger the immediate escape hatch.
+        let events = run_and_collect(&mut seq, 2.0, 15.0);
+        let early_72 = events
+            .iter()
+            .find(|(t, ch, note, on)| *on && *ch == 0 && *note == 72 && *t < 15.9);
+        assert!(
+            early_72.is_none(),
+            "tag alignment must still hold for non-immediate quantize — \
+             expected no pitch-72 NoteOn before transport ~16, got {:?}",
+            early_72
         );
     }
 }
