@@ -125,14 +125,25 @@ pub fn configure_webview<'a>(
                 // sends this on every API call so the UI can target any
                 // connected instance (not just the webview's owner).
                 // Falls back to the webview's own instance when missing.
-                let instance_id = uri
-                    .query()
-                    .and_then(|q| {
-                        q.split('&')
-                            .find_map(|pair| pair.strip_prefix("instance="))
-                    })
-                    .map(simple_percent_decode)
-                    .unwrap_or_else(|| own_instance_id.clone());
+                //
+                // `/self` is the exception: its contract is "the plugin
+                // that opened this webview" and must ignore the override.
+                // The frontend's buildUrl unconditionally appends
+                // `?instance=default` (the default arg), which would
+                // otherwise cause /self to echo the literal string
+                // "default" back, breaking the UI's "default to the
+                // opening instance" logic on initial load.
+                let instance_id = if path == "/self" {
+                    own_instance_id.clone()
+                } else {
+                    uri.query()
+                        .and_then(|q| {
+                            q.split('&')
+                                .find_map(|pair| pair.strip_prefix("instance="))
+                        })
+                        .map(simple_percent_decode)
+                        .unwrap_or_else(|| own_instance_id.clone())
+                };
 
                 #[cfg(any(debug_assertions, feature = "dev-gui"))]
                 crate::logger::log_gui_event(
