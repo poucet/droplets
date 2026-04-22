@@ -370,21 +370,18 @@ impl Fugue {
                 // Clone event to avoid borrow issues
                 let event = timed_event.event;
 
-                // Raw `NoteOff` events in a fugue's definition (e.g.
-                // from imported MIDI with back-to-back same-pitch
-                // notes) get a one-sample left-skew so same-sample
-                // OFF/ON pairs resolve cleanly at the synth. See
-                // [`hacks::note_off_skewed_sample`] for the full
-                // rationale. TimedNote-originated NoteOffs don't
-                // traverse this path — they're emitted from the
-                // PendingNoteOff ring with sample offsets computed
-                // directly from `end_absolute_beat`.
-                let sample_offset = match event {
-                    FugueEvent::NoteOff { .. } => {
-                        super::hacks::note_off_skewed_sample(raw_sample_offset)
-                    }
-                    _ => raw_sample_offset,
-                };
+                // No left-skew on raw NoteOff anymore: no production
+                // path produces raw `FugueEvent::NoteOff` in a fugue's
+                // event list. emit_notes (LLM compact schema) and
+                // MIDI import (see `main::import::parse_track`) both
+                // emit `TimedNote` now, and TimedNote's retrigger
+                // handling inside this same function places NoteOffs
+                // at `new_on_sample - 1` explicitly when it matters.
+                // Raw NoteOn/NoteOff events survive for test
+                // fixtures and the raw-event variants on
+                // `TimedFugueEvent`, but fire at their natural sample
+                // offset.
+                let sample_offset = raw_sample_offset;
 
                 // Process the event based on type
                 self.process_event(

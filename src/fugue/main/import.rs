@@ -189,10 +189,15 @@ fn parse_track(
 ) -> Result<ImportedTrack, String> {
     let mut name: Option<String> = None;
     let mut events: Vec<TimedFugueEvent> = Vec::new();
-    // Queue of unmatched note-ons per (channel, note), in FIFO order. A queue
-    // (not a single slot) because rapid re-triggers of the same pitch are
-    // legal MIDI — the incoming note-off pairs with the oldest unmatched on.
-    let mut active: HashMap<(u8, u8), Vec<f64>> = HashMap::new();
+    // Queue of unmatched NoteOns per (channel, note), in FIFO order. Each
+    // entry is `(onset_beat, velocity)` so the matching NoteOff can emit
+    // a fully-formed `FugueEvent::TimedNote` carrying the onset, velocity,
+    // and duration in one event — no raw NoteOn / NoteOff pair ever
+    // reaches the scheduler's event list from the import path.
+    //
+    // The queue (not a single slot) is load-bearing: rapid retriggers of
+    // the same pitch are legal MIDI — pairs with the oldest unmatched on.
+    let mut active: HashMap<(u8, u8), Vec<(f64, u8)>> = HashMap::new();
     let mut abs_ticks: u64 = 0;
     let mut max_tick: u64 = 0;
     let mut end_tick: Option<u64> = None;
@@ -229,8 +234,13 @@ fn parse_track(
                             // files often use this — Bitwig, Logic, Ableton).
                             close_note(&mut active, &mut events, channel, note, beat);
                         } else {
-                            events.push(TimedFugueEvent::note_on(beat, channel, note, velocity));
-                            active.entry((channel, note)).or_default().push(beat);
+                            // Just queue it — we emit the TimedNote later
+                            // when the matching NoteOff arrives, so we
+                            // know the duration.
+                            active
+                                .entry((channel, note))
+                                .or_default()
+                                .push((beat, velocity));
                         }
                     }
                     MidiMessage::NoteOff { key, .. } => {
@@ -263,26 +273,28 @@ fn parse_track(
         }
     }
 
-    // Any unmatched note-on closes at end-of-track (or max event tick as
-    // fallback for files without an explicit EndOfTrack meta). Emitting
-    // the note-offs explicitly means the fugue scheduler doesn't get a
-    // stuck-note at loop boundaries.
+    // Any unmatched NoteOn gets capped at end-of-track (or max event tick
+    // as fallback for files without an explicit EndOfTrack meta). Emitting
+    // an explicit TimedNote — with a finite duration — means the scheduler
+    // never sees a stuck note at loop boundaries.
     let close_tick = end_tick.unwrap_or(max_tick);
     let close_beat = close_tick as f64 / ppq;
-    let mut dangling: Vec<((u8, u8), usize)> =
-        active.iter().map(|(k, v)| (*k, v.len())).collect();
-    dangling.sort();
-    for ((channel, note), count) in dangling {
-        for _ in 0..count {
-            events.push(TimedFugueEvent::note_off(close_beat, channel, note));
+    // Sort for determinism — HashMap iteration order is nondeterministic,
+    // and we want round-trip tests to see a stable event stream.
+    let mut dangling: Vec<((u8, u8), Vec<(f64, u8)>)> = active.drain().collect();
+    dangling.sort_by_key(|(k, _)| *k);
+    for ((channel, note), queue) in dangling {
+        for (onset, velocity) in queue {
+            let duration = (close_beat - onset).max(0.0);
+            events.push(TimedFugueEvent::timed_note(
+                onset, channel, note, velocity, duration,
+            ));
         }
     }
-    active.clear();
 
-    // Stable-sort keeps same-tick note-off-before-note-on for re-triggers
-    // (note-offs always emit first because they came from earlier active
-    // queue entries). partial_cmp can only fail on NaN beats, which we
-    // never produce — finite PPQ × integer ticks.
+    // Sort by onset beat — emit_notes-produced fugues already have this
+    // invariant (events sorted by beat_offset). partial_cmp only fails on
+    // NaN beats, which we never produce — finite PPQ × integer ticks.
     events.sort_by(|a, b| {
         a.beat_offset
             .partial_cmp(&b.beat_offset)
@@ -306,22 +318,33 @@ fn parse_track(
 }
 
 fn close_note(
-    active: &mut HashMap<(u8, u8), Vec<f64>>,
+    active: &mut HashMap<(u8, u8), Vec<(f64, u8)>>,
     events: &mut Vec<TimedFugueEvent>,
     channel: u8,
     note: u8,
-    beat: f64,
+    off_beat: f64,
 ) {
     if let Some(bucket) = active.get_mut(&(channel, note)) {
-        if bucket.pop().is_some() {
-            events.push(TimedFugueEvent::note_off(beat, channel, note));
+        // Pop the most recently started NoteOn that hasn't been closed
+        // — LIFO gives typical DAWs the behavior users expect when
+        // legitimate same-pitch overlap exists (outer note ends last).
+        if let Some((onset_beat, velocity)) = bucket.pop() {
+            let duration = (off_beat - onset_beat).max(0.0);
+            events.push(TimedFugueEvent::timed_note(
+                onset_beat,
+                channel,
+                note,
+                velocity,
+                duration,
+            ));
             if bucket.is_empty() {
                 active.remove(&(channel, note));
             }
         }
     }
-    // Orphan note-offs (no matching on) are legal-but-weird MIDI; drop
-    // silently rather than inventing a phantom note.
+    // Orphan NoteOffs (no matching NoteOn) are legal-but-weird MIDI;
+    // they refer to no real note, so drop silently rather than
+    // inventing a phantom event.
 }
 
 #[cfg(test)]
@@ -330,6 +353,11 @@ mod tests {
     use crate::fugue::export::fugues_to_smf;
     use crate::fugue::FugueEvent;
 
+    /// Count logical notes in the imported definition. Post Feature 28
+    /// the importer emits `TimedNote` rather than paired NoteOn/NoteOff
+    /// events, so one TimedNote counts as both a NoteOn *and* a
+    /// NoteOff for assertion purposes — callers of this helper
+    /// historically checked `on == off` to verify pairing.
     fn count_notes(def: &FugueDefinition) -> (usize, usize) {
         let mut on = 0;
         let mut off = 0;
@@ -337,6 +365,10 @@ mod tests {
             match ev.event {
                 FugueEvent::NoteOn { .. } => on += 1,
                 FugueEvent::NoteOff { .. } => off += 1,
+                FugueEvent::TimedNote { .. } => {
+                    on += 1;
+                    off += 1;
+                }
                 _ => {}
             }
         }
@@ -536,12 +568,14 @@ mod tests {
         let (on, off) = count_notes(&imported[0]);
         assert_eq!(on, 1);
         assert_eq!(off, 1);
-        // The emitted note-off should be at the end-of-track beat (960/480 = 2.0).
-        let off_beat = imported[0].events.iter().find_map(|e| match e.event {
-            FugueEvent::NoteOff { .. } => Some(e.beat_offset),
+        // The emitted TimedNote should close at end-of-track (960/480 = 2.0)
+        // — i.e. duration = 2.0 beats, since the NoteOn was at beat 0.
+        let (onset, duration) = imported[0].events.iter().find_map(|e| match e.event {
+            FugueEvent::TimedNote { duration_beats, .. } => Some((e.beat_offset, duration_beats)),
             _ => None,
-        }).unwrap();
-        assert!((off_beat - 2.0).abs() < 1e-6);
+        }).expect("dangling NoteOn should have been closed as a TimedNote");
+        assert!((onset - 0.0).abs() < 1e-6);
+        assert!((duration - 2.0).abs() < 1e-6);
     }
 
     #[test]
@@ -667,5 +701,133 @@ mod tests {
         assert_eq!(imported[0].loop_mode, LoopMode::Once);
         assert_eq!(imported[0].quantize, QuantizeMode::Immediate);
         assert_eq!(imported[0].cancel_mode, CancelMode::CancelAll);
+    }
+
+    /// End-to-end round-trip for the TimedNote representation: build a
+    /// FugueDefinition containing TimedNote events (the shape
+    /// `emit_notes` produces), export to SMF, re-import, and verify
+    /// every LLM-facing note field survives unchanged.
+    ///
+    /// This locks in the key invariant Feature 28 targets: notes stay
+    /// notes across the SMF boundary — onset, pitch, velocity, and
+    /// duration round-trip faithfully, even though MIDI 1.0 itself
+    /// has no "note with duration" event type and the wire format
+    /// splits them into NoteOn + NoteOff pairs. Import pairs the
+    /// SMF events back into a single TimedNote per note so the
+    /// round-trip doesn't leave raw NoteOn/NoteOff pairs in the
+    /// event list.
+    #[test]
+    fn round_trip_timed_notes_through_smf_preserves_note_fields() {
+        use crate::fugue::{FugueDefinition, TimedFugueEvent};
+
+        // Three notes, distinct onsets / pitches / velocities / durations
+        // so any round-trip drift shows up as a field mismatch.
+        let original = FugueDefinition::new(
+            vec![
+                TimedFugueEvent::timed_note(0.0, 0, 60, 100, 0.5),
+                TimedFugueEvent::timed_note(1.0, 0, 64, 80, 1.5),
+                TimedFugueEvent::timed_note(2.5, 0, 67, 120, 1.0),
+            ],
+            4.0,
+        )
+        .with_tag("roundtrip");
+
+        let bytes = fugues_to_smf(&[original.clone()], 120.0);
+        let imported = smf_to_fugues(&bytes, &ImportOptions::default()).unwrap();
+        assert_eq!(imported.len(), 1, "single-track round-trip");
+        let got = &imported[0];
+        assert_eq!(got.tag.as_deref(), Some("roundtrip"));
+
+        // Every event in the re-imported fugue should be a TimedNote —
+        // raw NoteOn/NoteOff pairs should NOT appear. The import path
+        // pairs them back into TimedNotes during `close_note`.
+        let timed_notes: Vec<(f64, u8, u8, u8, f64)> = got
+            .events
+            .iter()
+            .filter_map(|e| match e.event {
+                FugueEvent::TimedNote { channel, note, velocity, duration_beats } => {
+                    Some((e.beat_offset, channel, note, velocity, duration_beats))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            timed_notes.len(),
+            3,
+            "expected 3 TimedNotes, got events: {:?}",
+            got.events
+        );
+        // No leftover raw NoteOn / NoteOff events.
+        let raw_note_events = got
+            .events
+            .iter()
+            .filter(|e| matches!(
+                e.event,
+                FugueEvent::NoteOn { .. } | FugueEvent::NoteOff { .. }
+            ))
+            .count();
+        assert_eq!(
+            raw_note_events, 0,
+            "round-tripped fugue should contain zero raw NoteOn/NoteOff — import pairs them back into TimedNotes. events: {:?}",
+            got.events
+        );
+
+        // Compare each round-tripped note against its original. Order
+        // should match because both sides are sorted by onset beat.
+        let expected = [
+            (0.0, 0u8, 60u8, 100u8, 0.5),
+            (1.0, 0, 64, 80, 1.5),
+            (2.5, 0, 67, 120, 1.0),
+        ];
+        for (i, (got_beat, got_ch, got_note, got_vel, got_dur)) in timed_notes.iter().enumerate() {
+            let (exp_beat, exp_ch, exp_note, exp_vel, exp_dur) = expected[i];
+            assert!((got_beat - exp_beat).abs() < 1e-6, "note {}: beat {:.6} vs {:.6}", i, got_beat, exp_beat);
+            assert_eq!(*got_ch, exp_ch, "note {}: channel", i);
+            assert_eq!(*got_note, exp_note, "note {}: pitch", i);
+            assert_eq!(*got_vel, exp_vel, "note {}: velocity", i);
+            assert!((got_dur - exp_dur).abs() < 1e-6, "note {}: duration {:.6} vs {:.6}", i, got_dur, exp_dur);
+        }
+    }
+
+    /// Same-pitch retrigger survives the round-trip: two TimedNotes on
+    /// the same (channel, pitch) at different onsets stay as two
+    /// distinct TimedNotes — SMF writes them as NoteOn → NoteOff →
+    /// NoteOn → NoteOff, and the importer pairs them back correctly
+    /// (LIFO per-pitch bucket, so the inner pair is matched first).
+    #[test]
+    fn round_trip_same_pitch_retrigger_pairs_correctly() {
+        use crate::fugue::{FugueDefinition, TimedFugueEvent};
+
+        let original = FugueDefinition::new(
+            vec![
+                TimedFugueEvent::timed_note(0.0, 0, 60, 100, 0.5),
+                TimedFugueEvent::timed_note(1.0, 0, 60, 80, 0.5), // same pitch, retrigger
+            ],
+            4.0,
+        );
+
+        let bytes = fugues_to_smf(&[original], 120.0);
+        let imported = smf_to_fugues(&bytes, &ImportOptions::default()).unwrap();
+        let got = &imported[0];
+
+        let mut timed_notes: Vec<(f64, u8, f64)> = got
+            .events
+            .iter()
+            .filter_map(|e| match e.event {
+                FugueEvent::TimedNote { velocity, duration_beats, .. } => {
+                    Some((e.beat_offset, velocity, duration_beats))
+                }
+                _ => None,
+            })
+            .collect();
+        timed_notes.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+        assert_eq!(timed_notes.len(), 2);
+        assert!((timed_notes[0].0 - 0.0).abs() < 1e-6);
+        assert_eq!(timed_notes[0].1, 100);
+        assert!((timed_notes[0].2 - 0.5).abs() < 1e-6);
+        assert!((timed_notes[1].0 - 1.0).abs() < 1e-6);
+        assert_eq!(timed_notes[1].1, 80);
+        assert!((timed_notes[1].2 - 0.5).abs() < 1e-6);
     }
 }
