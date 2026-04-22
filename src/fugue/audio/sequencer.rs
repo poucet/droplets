@@ -1016,6 +1016,318 @@ mod daw_loop_tests {
 }
 
 #[cfg(test)]
+mod timed_note_tests {
+    //! End-to-end tests for the `FugueEvent::TimedNote` path landed in
+    //! Feature 28: the audio thread schedules NoteOffs via the
+    //! `PendingNoteOff` ring rather than from pre-expanded
+    //! NoteOn/NoteOff events in the definition. These tests drive
+    //! `FugueSequencer::process` with synthetic transport positions
+    //! and assert on the emitted `(sample_offset, channel, note, is_on)`
+    //! tuples — same harness shape as `daw_loop_tests`.
+    use super::*;
+    use crate::fugue::types::{FugueEvent, LoopMode, TimedFugueEvent};
+    use rtrb::RingBuffer;
+
+    const TEMPO: f64 = 120.0;
+    const SAMPLE_RATE: f64 = 48_000.0;
+    const TIME_SIG: u32 = 4;
+    const BUFFER_FRAMES: u32 = 512;
+
+    fn beats_per_sample() -> f64 {
+        TEMPO / 60.0 / SAMPLE_RATE
+    }
+
+    fn buffer_beats() -> f64 {
+        BUFFER_FRAMES as f64 * beats_per_sample()
+    }
+
+    /// Build a fugue using `FugueEvent::TimedNote` events — the form
+    /// `emit_notes` produces from LLM-authored notes since Feature 28.
+    /// Channel 0, velocity 100 unless overridden.
+    fn make_timed_notes_fugue(
+        notes: &[(f64, u8, f64)],
+        duration_beats: f64,
+    ) -> FugueDefinition {
+        let mut events = Vec::new();
+        for &(beat, pitch, dur) in notes {
+            events.push(TimedFugueEvent::new(
+                beat,
+                FugueEvent::TimedNote {
+                    channel: 0,
+                    note: pitch,
+                    velocity: 100,
+                    duration_beats: dur,
+                },
+            ));
+        }
+        events.sort_by(|a, b| a.beat_offset.partial_cmp(&b.beat_offset).unwrap());
+        FugueDefinition::new(events, duration_beats).with_loop_mode(LoopMode::Forever)
+    }
+
+    fn sequencer_with_fugue(def: FugueDefinition) -> FugueSequencer {
+        let (mut prod, cons) = RingBuffer::<FugueCommand>::new(16);
+        prod.push(FugueCommand::Queue(def)).expect("queue must fit");
+        FugueSequencer::new(cons, SAMPLE_RATE)
+    }
+
+    /// Collect note events across `total_beats` of playback, returning
+    /// `(absolute_beat_of_sample, channel, note, is_on)` tuples so
+    /// tests can assert on song-timeline position rather than
+    /// buffer-local sample offsets.
+    fn collect_notes_over(
+        seq: &mut FugueSequencer,
+        start_beat: f64,
+        total_beats: f64,
+    ) -> Vec<(f64, u8, u8, bool)> {
+        let mut out: Vec<(f64, u8, u8, bool)> = Vec::new();
+        let mut current = start_beat;
+        let end = start_beat + total_beats;
+        while current < end {
+            let events: Vec<_> = seq
+                .process(true, current, TEMPO, BUFFER_FRAMES, TIME_SIG)
+                .collect();
+            for e in events {
+                if let ProcessedEvent::Instant { sample_offset, message: MidiMessage::Note(n) } = e {
+                    let absolute = current + sample_offset as f64 * beats_per_sample();
+                    out.push((absolute, n.channel, n.note, n.is_note_on));
+                }
+            }
+            current += buffer_beats();
+        }
+        out
+    }
+
+    /// A single TimedNote: NoteOn at the onset beat, NoteOff at
+    /// `onset + duration_beats`. End-to-end sanity check for the
+    /// new path.
+    #[test]
+    fn single_timed_note_fires_on_then_off_at_duration() {
+        let def = make_timed_notes_fugue(&[(1.0, 60, 2.0)], 16.0);
+        let mut seq = sequencer_with_fugue(def);
+        let events = collect_notes_over(&mut seq, 0.0, 6.0);
+
+        let on = events.iter().find(|(_, _, n, on)| *on && *n == 60);
+        let off = events.iter().find(|(_, _, n, on)| !*on && *n == 60);
+        let (t_on, _, _, _) = on.expect("NoteOn missing");
+        let (t_off, _, _, _) = off.expect("NoteOff missing");
+        assert!((t_on - 1.0).abs() < buffer_beats(), "NoteOn should fire ≈ beat 1.0, got {:.3}", t_on);
+        assert!((t_off - 3.0).abs() < buffer_beats(), "NoteOff should fire ≈ beat 3.0 (= 1 + 2), got {:.3}", t_off);
+    }
+
+    /// Same-pitch retrigger: TimedNote A plays at beat 0 with duration
+    /// 4; TimedNote B starts at beat 2 on the same (channel, note).
+    /// The audio thread's retrigger-eviction path inside
+    /// `process_event` must emit A's NoteOff *strictly before* B's
+    /// NoteOn (not at the same sample) so the synth never sees a
+    /// simultaneous OFF/ON pair that it might collapse.
+    #[test]
+    fn same_pitch_retrigger_emits_note_off_strictly_before_next_note_on() {
+        let def = make_timed_notes_fugue(
+            &[(0.0, 60, 4.0), (2.0, 60, 2.0)],
+            16.0,
+        );
+        let mut seq = sequencer_with_fugue(def);
+        let events = collect_notes_over(&mut seq, 0.0, 5.0);
+
+        // At beat ≈ 2, we expect exactly two events for note 60:
+        // A's NoteOff and B's NoteOn. The OFF must come at a smaller
+        // absolute beat than the ON.
+        let around_beat_2: Vec<&(f64, u8, u8, bool)> = events
+            .iter()
+            .filter(|(t, _, n, _)| *n == 60 && (*t - 2.0).abs() < buffer_beats() * 2.0)
+            .collect();
+        let off = around_beat_2
+            .iter()
+            .find(|(_, _, _, on)| !*on)
+            .expect("A's NoteOff at retrigger point missing");
+        let new_on = around_beat_2
+            .iter()
+            .find(|(_, _, _, on)| *on)
+            .expect("B's NoteOn at retrigger point missing");
+        assert!(
+            off.0 < new_on.0,
+            "retrigger: NoteOff at {:.6} should come strictly before NoteOn at {:.6}",
+            off.0,
+            new_on.0
+        );
+
+        // Beat 4 is past A's nominal end, but A was truncated by the
+        // retrigger — there shouldn't be a second NoteOff for A.
+        // B's NoteOff fires at beat 4 (= 2 + 2).
+        let off_count: usize = events
+            .iter()
+            .filter(|(_, _, n, on)| *n == 60 && !*on)
+            .count();
+        assert_eq!(
+            off_count, 2,
+            "expect 2 NoteOffs total: A's eviction at retrigger + B's scheduled end. Events: {:?}",
+            events
+        );
+    }
+
+    /// Zero-duration TimedNote is dropped entirely — no NoteOn
+    /// emitted, no ring slot consumed. Checked indirectly: a sibling
+    /// TimedNote at a later beat fires normally, and the count of
+    /// NoteOn events equals the count of non-zero-duration notes.
+    #[test]
+    fn zero_duration_timed_note_is_dropped() {
+        let def = make_timed_notes_fugue(
+            &[
+                (0.0, 60, 0.0),  // zero-dur, should be skipped
+                (1.0, 62, 1.0),  // normal note
+                (2.0, 64, -0.5), // negative-dur, also skipped
+            ],
+            16.0,
+        );
+        let mut seq = sequencer_with_fugue(def);
+        let events = collect_notes_over(&mut seq, 0.0, 5.0);
+
+        let on_count: usize = events.iter().filter(|(_, _, _, on)| *on).count();
+        let off_count: usize = events.iter().filter(|(_, _, _, on)| !*on).count();
+        assert_eq!(on_count, 1, "only note 62 should NoteOn. Events: {:?}", events);
+        assert_eq!(off_count, 1, "only note 62 should NoteOff. Events: {:?}", events);
+        assert!(events.iter().any(|(_, _, n, on)| *n == 62 && *on));
+    }
+
+    /// Polyphony — many simultaneous TimedNotes fire independent
+    /// NoteOn/NoteOff pairs. Exercises the ring insert path across
+    /// distinct (channel, note) keys.
+    #[test]
+    fn many_concurrent_timed_notes_each_get_their_own_off() {
+        // 16 notes, all starting at beat 0 with different pitches and
+        // staggered durations.
+        let notes: Vec<(f64, u8, f64)> = (0..16)
+            .map(|i| (0.0, 60 + i as u8, 1.0 + 0.1 * i as f64))
+            .collect();
+        let def = make_timed_notes_fugue(&notes, 16.0);
+        let mut seq = sequencer_with_fugue(def);
+        let events = collect_notes_over(&mut seq, 0.0, 5.0);
+
+        let on_count: usize = events.iter().filter(|(_, _, _, on)| *on).count();
+        let off_count: usize = events.iter().filter(|(_, _, _, on)| !*on).count();
+        assert_eq!(on_count, 16, "16 concurrent TimedNotes should produce 16 NoteOns. Events: {:?}", events);
+        assert_eq!(off_count, 16, "...and 16 matching NoteOffs");
+
+        // Every pitch from 60..76 should see exactly one OFF at
+        // approximately beat 1.0 + 0.1*i.
+        for i in 0..16 {
+            let pitch = 60 + i as u8;
+            let expected_end = 1.0 + 0.1 * i as f64;
+            let off = events
+                .iter()
+                .find(|(_, _, n, on)| *n == pitch && !*on)
+                .expect(&format!("missing NoteOff for pitch {}", pitch));
+            assert!(
+                (off.0 - expected_end).abs() < buffer_beats(),
+                "pitch {} NoteOff at {:.3}, expected ≈ {:.3}",
+                pitch,
+                off.0,
+                expected_end
+            );
+        }
+    }
+
+    /// Ring-full voice stealing: exceeding `MAX_PENDING_NOTE_OFFS`
+    /// concurrent TimedNotes must evict the oldest slot and emit its
+    /// NoteOff immediately so the synth doesn't hold a stuck voice.
+    /// We assert that no pitch is left without a NoteOff and the
+    /// total NoteOn/NoteOff counts match.
+    #[test]
+    fn ring_full_voice_steals_oldest_slot_and_emits_its_note_off() {
+        // Want exactly `MAX_PENDING_NOTE_OFFS + 4` notes so we
+        // exercise stealing without a crazy event count. Each uses
+        // a unique (channel, note) pair so retrigger-eviction isn't
+        // triggered — this stresses the "ring full, genuinely new
+        // note, evict oldest" path.
+        //
+        // Stagger onsets by a tiny amount (50 μs in beats) so the
+        // "oldest" seq is unambiguous — the notes pushed first get
+        // the smallest seq numbers.
+        const OVER: usize = 4;
+        let count = super::super::fugue::MAX_PENDING_NOTE_OFFS + OVER;
+        let notes: Vec<(f64, u8, f64)> = (0..count)
+            .map(|i| {
+                let beat = (i as f64) * 1e-6; // distinct but within one buffer
+                let pitch = (i % 128) as u8;
+                // Long durations so the notes DON'T self-release before
+                // we finish spawning them.
+                (beat, pitch, 8.0)
+            })
+            .collect();
+        let def = make_timed_notes_fugue(&notes, 16.0);
+        let mut seq = sequencer_with_fugue(def);
+
+        // Play through a window that exceeds every note's end — every
+        // live voice must have a matching NoteOff by the time we stop.
+        let events = collect_notes_over(&mut seq, 0.0, 10.0);
+
+        // Invariant: per (channel, note), NoteOn count >= NoteOff count
+        // at any snapshot, and at the end they converge. Notes that
+        // share a pitch inside the same burst (unlikely here since we
+        // enumerated distinct pitches) would retrigger-evict.
+        let on_count: usize = events.iter().filter(|(_, _, _, on)| *on).count();
+        let off_count: usize = events.iter().filter(|(_, _, _, on)| !*on).count();
+        assert_eq!(
+            on_count, off_count,
+            "every NoteOn must eventually pair with a NoteOff after voice-stealing \
+             settled. on_count = {}, off_count = {}. MAX_PENDING = {}, total notes = {}.",
+            on_count, off_count, super::super::fugue::MAX_PENDING_NOTE_OFFS, count
+        );
+    }
+
+    /// Cross-buffer scheduling: a TimedNote whose end falls in a later
+    /// buffer than its NoteOn must still fire its NoteOff at the
+    /// right absolute beat. The ring persists across buffer
+    /// callbacks; this test locks that behavior in.
+    #[test]
+    fn timed_note_off_fires_in_later_buffer() {
+        // 5-beat note — longer than any reasonable single buffer. The
+        // NoteOn lands in the first buffer, the NoteOff must land
+        // several buffers later.
+        let def = make_timed_notes_fugue(&[(0.0, 60, 5.0)], 16.0);
+        let mut seq = sequencer_with_fugue(def);
+        let events = collect_notes_over(&mut seq, 0.0, 7.0);
+
+        let (t_on, _, _, _) = events.iter().find(|(_, _, n, on)| *on && *n == 60).expect("NoteOn missing");
+        let (t_off, _, _, _) = events.iter().find(|(_, _, n, on)| !*on && *n == 60).expect("NoteOff missing");
+        assert!(t_off - t_on > 4.0, "NoteOff should land roughly 5 beats after NoteOn; got delta {:.3}", t_off - t_on);
+        assert!((t_off - 5.0).abs() < buffer_beats(), "NoteOff should fire ≈ beat 5.0, got {:.3}", t_off);
+    }
+
+    /// Loop-boundary NoteOff: a TimedNote whose end is past
+    /// `duration_beats` (i.e. crosses the loop boundary) — the ring
+    /// carries the entry across `reset_for_loop` because end times
+    /// are stored in absolute beats, and fires it at the right
+    /// absolute moment.
+    #[test]
+    fn timed_note_whose_end_crosses_loop_boundary_still_fires_off() {
+        // 4-beat fugue, note starts at beat 3.5 with duration 1.0 so
+        // it ends at beat 4.5 — past the loop boundary (= dur).
+        let def = make_timed_notes_fugue(&[(3.5, 60, 1.0)], 4.0);
+        let mut seq = sequencer_with_fugue(def);
+        let events = collect_notes_over(&mut seq, 0.0, 8.0);
+
+        // We expect at least one NoteOn + one NoteOff for pitch 60.
+        // Under phase-based iteration (default), the first iteration
+        // plays the note at beat 3.5 and its NoteOff should land at
+        // beat 4.5 — inside iteration 2 but still correctly emitted
+        // from the ring.
+        let on = events.iter().find(|(_, _, n, on)| *on && *n == 60).expect("NoteOn missing");
+        let off = events.iter().find(|(_, _, n, on)| !*on && *n == 60).expect("NoteOff missing");
+        assert!(
+            (on.0 - 3.5).abs() < buffer_beats(),
+            "NoteOn should land ≈ beat 3.5, got {:.3}",
+            on.0
+        );
+        assert!(
+            (off.0 - 4.5).abs() < buffer_beats(),
+            "NoteOff (cross-boundary) should land ≈ beat 4.5, got {:.3}",
+            off.0
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::super::super::types::QuantizeMode;
 

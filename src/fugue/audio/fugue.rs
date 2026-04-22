@@ -58,7 +58,7 @@ struct PendingNoteOff {
 /// count; the audio thread can't allocate, so we bound this at
 /// compile time and spill via oldest-slot voice-stealing when
 /// exceeded.
-const MAX_PENDING_NOTE_OFFS: usize = 128;
+pub(super) const MAX_PENDING_NOTE_OFFS: usize = 128;
 
 /// Runtime state for an active fugue
 pub struct Fugue {
