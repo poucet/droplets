@@ -149,7 +149,11 @@ export const FugueComposer: React.FC<FugueComposerProps> = ({
     setEvents([]);
   }, []);
 
-  const eventCount = events.filter(e => e.event.type === 'note_on').length;
+  // Count notes — each `timed_note` is one note; each `note_on` is
+  // also one note (raw on/off pairs from imports).
+  const eventCount = events.filter(
+    e => e.event.type === 'timed_note' || e.event.type === 'note_on'
+  ).length;
 
   return (
     <div className="fugue-composer">

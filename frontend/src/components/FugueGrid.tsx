@@ -102,7 +102,23 @@ export const FugueGrid: React.FC<FugueGridProps> = ({
     const sortedEvents = [...events].sort((a, b) => a.beat_offset - b.beat_offset);
 
     for (const { beat_offset, event } of sortedEvents) {
-      if (event.type === 'note_on') {
+      // `timed_note` is the path emit_notes produces since Feature 28 —
+      // duration is baked into the event. Synthesize the same
+      // (beat, note, velocity, duration) record we'd have derived by
+      // pair-matching raw NoteOn / NoteOff events.
+      if (event.type === 'timed_note') {
+        const key = `${event.note}-${beat_offset}`;
+        noteMap.set(key, {
+          beat: beat_offset,
+          note: event.note,
+          velocity: event.velocity,
+          duration: Math.max(event.duration_beats, 0.25),
+          channel: event.channel,
+        });
+        minNote = Math.min(minNote, event.note);
+        maxNote = Math.max(maxNote, event.note);
+      } else if (event.type === 'note_on') {
+        // Raw NoteOn still valid — MIDI imports can carry them.
         activeNotes.set(event.note, { beat: beat_offset, velocity: event.velocity, channel: event.channel });
         minNote = Math.min(minNote, event.note);
         maxNote = Math.max(maxNote, event.note);

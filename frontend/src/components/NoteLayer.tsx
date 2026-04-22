@@ -70,8 +70,18 @@ export const NoteLayer: React.FC<NoteLayerProps> = ({
   ) => {
     if (!onEventsChange) return;
 
+    // Find and drop the original note. Since Feature 28 the composer
+    // emits `timed_note` (one event per note), so we only need a
+    // single match on (beat, note). Raw note_on/note_off are still
+    // supported for imported content — if they're present we drop
+    // the paired pair together.
     const filteredEvents = events.filter(e => {
       const ev = e.event;
+      if (ev.type === 'timed_note') {
+        if (Math.abs(e.beat_offset - originalBeat) < 0.01 && ev.note === originalNote) {
+          return false;
+        }
+      }
       if (ev.type === 'note_on') {
         if (Math.abs(e.beat_offset - originalBeat) < 0.01 && ev.note === originalNote) {
           return false;
@@ -92,16 +102,21 @@ export const NoteLayer: React.FC<NoteLayerProps> = ({
       return true;
     });
 
-    const noteOn: TimedFugueEvent = {
+    // Emit as a single `timed_note` — matches what `emit_notes`
+    // produces server-side, so what the user edits round-trips
+    // cleanly.
+    const newNoteEvent: TimedFugueEvent = {
       beat_offset: newBeat,
-      event: { type: 'note_on', channel, note: newNote, velocity },
-    };
-    const noteOff: TimedFugueEvent = {
-      beat_offset: newBeat + newDuration,
-      event: { type: 'note_off', channel, note: newNote },
+      event: {
+        type: 'timed_note',
+        channel,
+        note: newNote,
+        velocity,
+        duration_beats: newDuration,
+      },
     };
 
-    onEventsChange([...filteredEvents, noteOn, noteOff]);
+    onEventsChange([...filteredEvents, newNoteEvent]);
   }, [events, onEventsChange]);
 
   // Handle drag start on a note
@@ -203,31 +218,43 @@ export const NoteLayer: React.FC<NoteLayerProps> = ({
   const handleCellClick = useCallback((beat: number, note: number) => {
     if (mode !== 'edit' || !onEventsChange) return;
 
+    // Accept either a TimedNote (Feature 28 emit path) or a raw
+    // NoteOn (imported content) at the click target.
     const existingIndex = events.findIndex(e =>
-      e.event.type === 'note_on' &&
+      (e.event.type === 'timed_note' || e.event.type === 'note_on') &&
       Math.abs(e.beat_offset - beat) < 0.125 &&
       e.event.note === note
     );
 
     if (existingIndex >= 0) {
+      const existing = events[existingIndex].event;
       const newEvents = events.filter((e, i) => {
         if (i === existingIndex) return false;
-        if (e.event.type === 'note_off' && e.event.note === note && e.beat_offset > beat) {
+        // If the existing note was a raw pair, also drop its NoteOff.
+        if (
+          existing.type === 'note_on' &&
+          e.event.type === 'note_off' &&
+          e.event.note === note &&
+          e.beat_offset > beat
+        ) {
           return false;
         }
         return true;
       });
       onEventsChange(newEvents);
     } else {
-      const noteOn: TimedFugueEvent = {
+      // New notes are TimedNotes — matches the server-side emit path.
+      const newNoteEvent: TimedFugueEvent = {
         beat_offset: beat,
-        event: { type: 'note_on', channel: midiChannel, note, velocity: 100 },
+        event: {
+          type: 'timed_note',
+          channel: midiChannel,
+          note,
+          velocity: 100,
+          duration_beats: 0.5,
+        },
       };
-      const noteOff: TimedFugueEvent = {
-        beat_offset: beat + 0.5,
-        event: { type: 'note_off', channel: midiChannel, note },
-      };
-      onEventsChange([...events, noteOn, noteOff]);
+      onEventsChange([...events, newNoteEvent]);
     }
   }, [mode, events, onEventsChange, midiChannel]);
 
