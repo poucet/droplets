@@ -451,6 +451,22 @@ impl<'a> DropletMidiProcessor<'a> {
             _ => {}
         }
 
+        // MIDI 1.0 Polyphonic Aftertouch (0xA0) for Pressure. The
+        // CLAP + MIDI 2.0 paths above only reach hosts / synths that
+        // actually understand CLAP note-expression or UMP — most soft
+        // synths (Eru, Polymer, Serum, etc.) only see plain MIDI 1.0,
+        // so without this fallback per-note pressure is silent.
+        //
+        // Pitch bend has no MIDI 1.0 per-note equivalent (channel
+        // pitch bend affects every held note on the channel) so it
+        // stays MIDI-2.0-only here; MPE is a separate feature.
+        if let PerNoteExpressionType::Pressure { value } = expr.expression_type {
+            let pressure_7bit = (value >> 25) as u8; // u32 → 7-bit
+            let status = 0xA0 | (expr.channel & 0x0F);
+            let midi1_data = [status, expr.note & 0x7F, pressure_7bit & 0x7F];
+            let _ = events.output.try_push(&MidiEvent::new(sample_offset, 0, midi1_data));
+        }
+
         // MIDI 2.0 UMP: Full expression support for CLAP hosts
         let ump = match expr.expression_type {
             PerNoteExpressionType::PitchBend { value } => {
