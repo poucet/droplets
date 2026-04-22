@@ -36,6 +36,8 @@ Defaults: `duration = 1`, `velocity = 100`, `channel = fugue default`. Omit trai
 
 Note values accept names (preferred) or numbers: `"C3"` (middle C = 60, DAW convention matching Bitwig/Ableton/Logic), `"F#2"`, `"Bb4"`, `"C-2"` (lowest), or `0`–`127`.
 
+**Repeat pitches are fine — don't invent suffixes.** Write `"G3"` for every G3 occurrence, even if the same pitch appears several times in the fugue. Names like `"G3_2"` or `"G3-alt"` are rejected. Pressure / pitch-bend lanes keyed by a pitch apply to every matching note on that channel — that's intentional. If you need independent expression on two same-pitch voices, put them on different channels.
+
 ## Shared top-level fields
 
 Defaults across the batch, per-fugue can override: `duration_beats`, `quantize` (`"immediate"|"beat"|"bar"|"bars:N"`), `loop_mode` (`"once"|"forever"|"N"` — default `"forever"`), `start_mode` (`"phase"|"boundary"` — default `"phase"`).

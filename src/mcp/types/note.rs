@@ -152,9 +152,27 @@ pub fn parse_note_name(s: &str) -> Result<u8, String> {
     };
 
     let octave_str = &s[pos..];
-    let octave: i32 = octave_str
-        .parse()
-        .map_err(|_| format!("invalid octave in '{}'", s))?;
+    let octave: i32 = octave_str.parse().map_err(|_| {
+        // LLMs occasionally invent uniquifying suffixes ("G3_2", "G3-alt")
+        // thinking repeat pitches need distinct names. Detect that shape
+        // and steer them away — the schema accepts multiple entries with
+        // the same pitch.
+        let has_suffix = octave_str.contains('_')
+            || (octave_str.contains('-') && !octave_str.starts_with('-'));
+        if has_suffix {
+            format!(
+                "invalid note name '{}': note names don't take suffixes. Use '{}' for every \
+occurrence of that pitch — repeat entries are fine. Pressure / pitch-bend lanes \
+keyed by pitch apply to every matching note on the channel; if you want independent \
+expression on two same-pitch voices, put them on different channels. \
+Expected form: 'C3', 'F#2', 'Bb4'.",
+                s,
+                &s[..pos]
+            )
+        } else {
+            format!("invalid octave in '{}'", s)
+        }
+    })?;
 
     // DAW convention (Bitwig, Ableton, Logic, Reaper, Studio One):
     // C3 = MIDI 60 = middle C. MIDI 0 = C-2, MIDI 127 = G8.
@@ -380,6 +398,30 @@ mod tests {
         let err = parse_note_name("C98").unwrap_err();
         assert!(err.contains("C98") || err.contains("range"),
             "range error should mention input or range; got: {}", err);
+    }
+
+    #[test]
+    fn note_name_suffix_error_explains_that_pitches_can_repeat() {
+        // LLMs sometimes invent "G3_2" style uniquifying suffixes.
+        // The error should call the pattern out and point to the correct
+        // name, not just report a generic octave parse failure.
+        let err = parse_note_name("G3_2").unwrap_err();
+        assert!(err.contains("G3_2"), "error should echo the bad input: {}", err);
+        assert!(err.contains("G3"), "error should point to the correct form: {}", err);
+        assert!(
+            err.contains("repeat") || err.contains("suffix"),
+            "error should explain pitches can repeat: {}",
+            err
+        );
+
+        // Negative octave must still parse — the `-` leading the octave
+        // isn't a suffix.
+        assert_eq!(parse_note_name("C-2").unwrap(), 0);
+
+        // Dashed suffixes hit the same helpful message.
+        let err = parse_note_name("C3-alt").unwrap_err();
+        assert!(err.contains("suffix") || err.contains("repeat"),
+            "dashed suffix should also trigger helpful message: {}", err);
     }
 
     // ------------------------------------------------------------------
