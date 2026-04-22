@@ -213,7 +213,13 @@ pub(super) fn default_quantize() -> Option<String> {
 }
 
 pub(super) fn default_cancel_mode() -> Option<String> {
-    Some("none".to_string())
+    // Return `None` so `compact_to_definition` can tell "LLM omitted
+    // cancel_mode" (→ fall back to the tag-implicit self-replace rule)
+    // apart from "LLM wrote 'none' explicitly" (→ respect the explicit
+    // opt-in to layering). The concrete resolved value is what
+    // `definition_to_compact` fills in on the read-back path; the
+    // request-path default no longer needs to pre-populate "none".
+    None
 }
 
 pub(super) fn default_compact() -> bool {

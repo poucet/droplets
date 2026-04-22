@@ -14,7 +14,9 @@ When `get_project_state` reports a drum machine, **use the returned pad notes, n
 **Default drum-machine layout** (when `layout_available` is false or the drum machine has no named pads): in Bitwig, Ableton Drum Rack, and most hardware the 16 pads of the first page span `C1`–`D#2` (MIDI 36–51) in chromatic order — pad 1 = `C1`, pad 2 = `C#1`, …, pad 16 = `D#2`. The typical kit placement within that range is kick `C1`, snare `D1`, closed hat `F#1`, open hat `A#1`, clap `D#1` — but this is a guess, not a guarantee. If you're unsure, ask the user which note is their kick rather than silently writing notes onto the wrong pads.
 
 ## queue_fugue — primary composition tool
-Batches multiple fugues into one call. Each fugue is atomic; swap one musical part by queueing a new fugue with the same tag + `cancel_mode: "tag:<name>"`. The other parts keep playing untouched.
+Batches multiple fugues into one call. Each fugue is atomic; swap one musical part by queueing a new fugue with the same tag. The other parts keep playing untouched.
+
+**ALWAYS set a `tag` on every fugue, even a single one.** Tags are the only way a later call ("actually make the drums 1 bar") can target this fugue to replace it — without one, the follow-up layers a second copy on top. `cancel_mode` defaults to `"tag:<tag>"` when a tag is set, so tagged fugues self-replace by default; no explicit cancel_mode needed for iterative editing. Use short descriptive names: `"drums"`, `"bass"`, `"lead"`, `"pad-moment"`.
 
 **ALWAYS set `instance` explicitly, and match the part to the instrument.** `queue_fugue` routes to exactly ONE Droplets instance per call — the top-level `instance` field names which one (e.g. `"bass"`, `"lead"`, `"drums"` — whatever `get_project_state` / `list_instances` returned).
 

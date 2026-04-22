@@ -57,7 +57,11 @@ If you want the fugue to *always* start from pattern-beat-0 and iterate on the b
 
 ## Tag + cancel_mode
 
-Update one part without disturbing others: `tag:"melody"` + `cancel_mode:"tag:melody"` replaces just the melody.
+**Always set a `tag`, even on a single fugue.** Without a tag, a follow-up call ("actually make the drums shorter") has no way to target the earlier fugue and ends up *layering* a second loop on top instead of replacing it.
+
+With a `tag`, `cancel_mode` defaults to `"tag:<tag>"` — so the next call that re-uses the same tag replaces the previous fugue automatically. No need to set `cancel_mode` explicitly for the common "iterate on one part" workflow. Set it to `"none"` when you genuinely want to layer (e.g. a new percussion line on top of kick+snare), or `"cancel_all"` when starting a brand new section.
+
+Tags are cheap — use descriptive names (`"drums"`, `"bass"`, `"pad-lead"`) even on single-fugue calls so follow-ups can address them.
 
 ## Worked example — a pad moment on one instrument
 

@@ -254,8 +254,22 @@ pub fn compact_to_definition(
 
     let loop_mode = parse_loop_mode_str(loop_mode_str).unwrap_or(LoopMode::Forever);
     let quantize = parse_quantize_str(quantize_str).unwrap_or(QuantizeMode::Bar);
-    let cancel_mode_str = compact.cancel_mode.as_deref().unwrap_or("none");
-    let cancel_mode = parse_cancel_mode_str(cancel_mode_str);
+    // If the LLM tagged the fugue but forgot to set cancel_mode, the
+    // overwhelmingly common intent is "this tag replaces whatever's
+    // currently playing with the same tag" — that's the whole point
+    // of tagging. Without the implicit default, "play drums" followed
+    // by "actually make the drums 1 bar long" layers two drum loops
+    // instead of replacing the first. LLMs reliably omit cancel_mode,
+    // so the default carries the intent for them.
+    //
+    // An explicit `cancel_mode: "none"` still layers (intentional
+    // overlap), and any other explicit value wins as written.
+    let explicit_cancel = compact.cancel_mode.as_deref();
+    let cancel_mode = match (explicit_cancel, compact.tag.as_deref()) {
+        (Some(s), _) => parse_cancel_mode_str(s),
+        (None, Some(tag)) => CancelMode::CancelByTag(tag.to_string()),
+        (None, None) => CancelMode::None,
+    };
     let start_mode = parse_start_mode_str(
         compact
             .start_mode
@@ -996,6 +1010,59 @@ mod tests {
             3,
             "three bent voices must land on three different channels"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Implicit cancel_mode default: tagged fugue without explicit
+    // cancel_mode self-replaces. LLMs reliably omit cancel_mode, so
+    // the default has to carry the "iterate on one part" intent.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn tagged_fugue_without_explicit_cancel_mode_defaults_to_self_replace() {
+        let input = compact_from_json(serde_json::json!({
+            "tag": "drums",
+            "type": "notes",
+            "notes": [[0, 36, 0.25]],
+        }));
+        let def = compact_to_definition(&input, &defaults_bar_forever());
+        assert_eq!(def.cancel_mode, CancelMode::CancelByTag("drums".into()));
+    }
+
+    #[test]
+    fn untagged_fugue_without_explicit_cancel_mode_stays_at_none() {
+        let input = compact_from_json(serde_json::json!({
+            "type": "notes",
+            "notes": [[0, 36, 0.25]],
+        }));
+        let def = compact_to_definition(&input, &defaults_bar_forever());
+        assert_eq!(def.cancel_mode, CancelMode::None);
+    }
+
+    #[test]
+    fn explicit_cancel_mode_none_overrides_tag_self_replace() {
+        // An LLM that writes `cancel_mode: "none"` with a tag genuinely
+        // wants to layer — respect the explicit override.
+        let input = compact_from_json(serde_json::json!({
+            "tag": "drums",
+            "cancel_mode": "none",
+            "type": "notes",
+            "notes": [[0, 36, 0.25]],
+        }));
+        let def = compact_to_definition(&input, &defaults_bar_forever());
+        assert_eq!(def.cancel_mode, CancelMode::None);
+    }
+
+    #[test]
+    fn explicit_cancel_all_overrides_tag_default() {
+        let input = compact_from_json(serde_json::json!({
+            "tag": "drums",
+            "cancel_mode": "all",
+            "type": "notes",
+            "notes": [[0, 36, 0.25]],
+        }));
+        let def = compact_to_definition(&input, &defaults_bar_forever());
+        assert_eq!(def.cancel_mode, CancelMode::CancelAll);
     }
 
     #[test]
