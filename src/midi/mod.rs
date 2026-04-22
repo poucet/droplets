@@ -451,20 +451,40 @@ impl<'a> DropletMidiProcessor<'a> {
             _ => {}
         }
 
-        // MIDI 1.0 Polyphonic Aftertouch (0xA0) for Pressure. The
-        // CLAP + MIDI 2.0 paths above only reach hosts / synths that
-        // actually understand CLAP note-expression or UMP — most soft
-        // synths (Eru, Polymer, Serum, etc.) only see plain MIDI 1.0,
-        // so without this fallback per-note pressure is silent.
+        // MIDI 1.0 fallbacks — most soft synths (Serum, Polymer,
+        // Vital, etc.) only see plain MIDI 1.0, so without these the
+        // CLAP NoteExpression + MIDI 2.0 UMP above never reach them.
         //
-        // Pitch bend has no MIDI 1.0 per-note equivalent (channel
-        // pitch bend affects every held note on the channel) so it
-        // stays MIDI-2.0-only here; MPE is a separate feature.
-        if let PerNoteExpressionType::Pressure { value } = expr.expression_type {
-            let pressure_7bit = (value >> 25) as u8; // u32 → 7-bit
-            let status = 0xA0 | (expr.channel & 0x0F);
-            let midi1_data = [status, expr.note & 0x7F, pressure_7bit & 0x7F];
-            let _ = events.output.try_push(&MidiEvent::new(sample_offset, 0, midi1_data));
+        // Pressure → Polyphonic Aftertouch (0xA0), which is natively
+        // per-note in MIDI 1.0.
+        //
+        // PitchBend → Channel Pitch Bend (0xE0). Affects every held
+        // note on the channel, not just this one — so the conversion
+        // layer (see `remap_mpe_channels` in
+        // `src/mcp/types/conversion.rs`) moves bent notes onto
+        // dedicated channels before this event reaches here, making
+        // each channel a single-note MPE voice. Without that remap
+        // the bend would bleed across a chord.
+        match expr.expression_type {
+            PerNoteExpressionType::Pressure { value } => {
+                let pressure_7bit = (value >> 25) as u8; // u32 → 7-bit
+                let status = 0xA0 | (expr.channel & 0x0F);
+                let midi1_data = [status, expr.note & 0x7F, pressure_7bit & 0x7F];
+                let _ = events.output.try_push(&MidiEvent::new(sample_offset, 0, midi1_data));
+            }
+            PerNoteExpressionType::PitchBend { value } => {
+                // Map the 32-bit per-note bend into a 14-bit channel
+                // bend (0x0000 = -max, 0x2000 = center, 0x3FFF = +max).
+                let bend_14bit = (value >> 18) as u16 & 0x3FFF;
+                let status = 0xE0 | (expr.channel & 0x0F);
+                let midi1_data = [
+                    status,
+                    (bend_14bit & 0x7F) as u8,       // LSB
+                    ((bend_14bit >> 7) & 0x7F) as u8, // MSB
+                ];
+                let _ = events.output.try_push(&MidiEvent::new(sample_offset, 0, midi1_data));
+            }
+            _ => {}
         }
 
         // MIDI 2.0 UMP: Full expression support for CLAP hosts

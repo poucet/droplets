@@ -21,6 +21,10 @@ Each point is `[beat, value]` or `[beat, value, curve]`.
 
 Curves: `linear` (default), `exp` (ease-in), `log` (ease-out), `none` (step). Per-point curves win over the lane's `interpolation`; lane `interpolation` wins over fugue defaults.
 
+### Per-note pitch bend is MPE under the hood
+
+Any note that has a `pitch_bends` lane gets moved onto a dedicated MIDI channel at queue time so MIDI 1.0 channel pitch bend affects only that note. Implication: channel-scoped effects (CCs, the fugue's own `channel` field) stay on the original channel and **do not reach bent voices**. If you want a filter sweep (CC 74) to hit every voice of a chord where one voice is bent, either (a) drop the bend, or (b) accept that the sweep is heard on the un-bent voices only. Unbent notes and CCs are untouched by this remap.
+
 ## Notes
 
 **Note shorthand — prefer the array form for ~4x fewer tokens.** Each entry in a `notes` lane accepts either:

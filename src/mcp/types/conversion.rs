@@ -312,6 +312,11 @@ pub fn compact_to_definition(
         a.beat_offset.partial_cmp(&b.beat_offset).unwrap_or(std::cmp::Ordering::Equal)
     });
 
+    // MPE remap: notes with a pitch-bend lane get moved onto dedicated
+    // channels so MIDI 1.0 channel pitch bend (0xE0) only affects the
+    // target note. See `remap_mpe_channels` for the full rationale.
+    remap_mpe_channels(&mut events);
+
     let duration_beats = resolve_duration_beats(explicit_duration, &events);
 
     let mut definition = FugueDefinition::new(events, duration_beats)
@@ -324,6 +329,121 @@ pub fn compact_to_definition(
         definition = definition.with_tag(tag);
     }
     definition
+}
+
+/// Give every bent note its own MIDI channel so downstream MIDI 1.0
+/// channel pitch bend (0xE0) — the only form most soft synths
+/// understand — affects just that note.
+///
+/// MIDI 1.0 has no per-note pitch bend; channel pitch bend tugs every
+/// held note on the channel. Without this pass, asking for a bend on
+/// one voice of a chord bends the whole chord. MIDI 2.0 UMP per-note
+/// pitch bend and CLAP NoteExpression stay as they were; this only
+/// matters for the MIDI-1.0-only targets that previously got no usable
+/// signal at all.
+///
+/// Strategy (main-thread, pre-queue):
+/// - A bent `(channel, note)` is any pair referenced by at least one
+///   `PerNotePitchBend` event.
+/// - "Plain" channels — channels that hold at least one un-bent note —
+///   are off-limits for reassignment; moving a plain note would break
+///   the user's channel routing for that voice. CCs (`FugueEvent::Cc`)
+///   are channel-scoped too, so they implicitly stay on the original
+///   channel and continue to reach the plain notes.
+/// - For each distinct bent `(channel, note)`, pick the lowest channel
+///   in `0..16` that isn't reserved for plain notes and isn't already
+///   handed out in this pass. Order is deterministic (sorted by
+///   `(channel, note)`).
+/// - Rewrite every event whose `(channel, note)` matches — NoteOn,
+///   NoteOff, TimedNote, PerNotePitchBend, PerNotePressure — to the
+///   new channel. Cc events don't carry a note id so they're
+///   untouched: a filter sweep scoped to channel 0 continues to
+///   modulate channel-0 notes and no longer reaches the bent voice.
+///   That's the MPE trade-off; document it as a known limitation
+///   rather than trying to mirror CC across allocated channels.
+/// - If the fugue has more bent notes than free channels (15 max in a
+///   single-channel base), leftover bent notes keep their original
+///   channel and will cross-bend. Unlikely in practice; let it degrade.
+fn remap_mpe_channels(events: &mut Vec<TimedFugueEvent>) {
+    use std::collections::{BTreeSet, BTreeMap};
+
+    // 1. Collect bent (channel, note) keys.
+    let mut bent: BTreeSet<(u8, u8)> = BTreeSet::new();
+    for e in events.iter() {
+        if let FugueEvent::PerNotePitchBend { channel, note, .. } = e.event {
+            bent.insert((channel, note));
+        }
+    }
+    if bent.is_empty() {
+        return;
+    }
+
+    // 2. Channels reserved by at least one un-bent note.
+    let mut reserved: [bool; 16] = [false; 16];
+    for e in events.iter() {
+        let (ch, note) = match e.event {
+            FugueEvent::NoteOn { channel, note, .. } => (channel, note),
+            FugueEvent::NoteOff { channel, note } => (channel, note),
+            FugueEvent::TimedNote { channel, note, .. } => (channel, note),
+            _ => continue,
+        };
+        if !bent.contains(&(ch, note)) {
+            reserved[(ch as usize) & 0x0F] = true;
+        }
+    }
+
+    // 3. Allocate a fresh channel per bent (channel, note). Lowest
+    //    free wins so a single bent note on channel 0 stays on
+    //    channel 0 when nothing else occupies it.
+    let mut allocated: [bool; 16] = [false; 16];
+    let mut remap: BTreeMap<(u8, u8), u8> = BTreeMap::new();
+    for key in bent.iter() {
+        let new_ch = (0u8..16)
+            .find(|ch| !reserved[*ch as usize] && !allocated[*ch as usize]);
+        match new_ch {
+            Some(ch) => {
+                allocated[ch as usize] = true;
+                remap.insert(*key, ch);
+            }
+            None => {
+                // No free slot — leave this pair on its original
+                // channel. It'll cross-bend with any siblings on the
+                // same channel, but the fugue still plays.
+            }
+        }
+    }
+
+    // 4. Rewrite every per-note event that matches a remapped key.
+    for e in events.iter_mut() {
+        match &mut e.event {
+            FugueEvent::NoteOn { channel, note, .. } => {
+                if let Some(&new_ch) = remap.get(&(*channel, *note)) {
+                    *channel = new_ch;
+                }
+            }
+            FugueEvent::NoteOff { channel, note } => {
+                if let Some(&new_ch) = remap.get(&(*channel, *note)) {
+                    *channel = new_ch;
+                }
+            }
+            FugueEvent::TimedNote { channel, note, .. } => {
+                if let Some(&new_ch) = remap.get(&(*channel, *note)) {
+                    *channel = new_ch;
+                }
+            }
+            FugueEvent::PerNotePitchBend { channel, note, .. } => {
+                if let Some(&new_ch) = remap.get(&(*channel, *note)) {
+                    *channel = new_ch;
+                }
+            }
+            FugueEvent::PerNotePressure { channel, note, .. } => {
+                if let Some(&new_ch) = remap.get(&(*channel, *note)) {
+                    *channel = new_ch;
+                }
+            }
+            FugueEvent::Cc { .. } => {}
+        }
+    }
 }
 
 // =============================================================================
@@ -764,5 +884,148 @@ mod tests {
             }
             _ => panic!("expected Composite after re-parse"),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // MPE channel remapping — bent notes land on dedicated channels so
+    // MIDI 1.0 channel pitch bend doesn't bleed across a chord.
+    // ------------------------------------------------------------------
+
+    /// Scan events for every unique (channel, note) pair referenced by a
+    /// NoteOn / TimedNote entry. Returned sorted for deterministic asserts.
+    fn note_channel_pairs(def: &FugueDefinition) -> Vec<(u8, u8)> {
+        let mut pairs: Vec<(u8, u8)> = def
+            .events
+            .iter()
+            .filter_map(|e| match e.event {
+                FugueEvent::NoteOn { channel, note, .. } => Some((channel, note)),
+                FugueEvent::TimedNote { channel, note, .. } => Some((channel, note)),
+                _ => None,
+            })
+            .collect();
+        pairs.sort();
+        pairs.dedup();
+        pairs
+    }
+
+    fn bend_channels_for_note(def: &FugueDefinition, note: u8) -> Vec<u8> {
+        let mut chans: Vec<u8> = def
+            .events
+            .iter()
+            .filter_map(|e| match e.event {
+                FugueEvent::PerNotePitchBend { channel, note: n, .. } if n == note => Some(channel),
+                _ => None,
+            })
+            .collect();
+        chans.sort();
+        chans.dedup();
+        chans
+    }
+
+    #[test]
+    fn mpe_remap_is_no_op_when_no_pitch_bend_lanes() {
+        let input = compact_from_json(serde_json::json!({
+            "type": "notes",
+            "notes": [[0, 60, 1.0], [1, 64, 1.0], [2, 67, 1.0]]
+        }));
+        let def = compact_to_definition(&input, &defaults_bar_forever());
+        // All three notes stay on the fugue channel (0-indexed default).
+        for (ch, _) in note_channel_pairs(&def) {
+            assert_eq!(ch, 0, "no bend lane → no remap; every note keeps channel 0");
+        }
+    }
+
+    #[test]
+    fn mpe_remap_single_bent_note_stays_on_base_channel() {
+        // Only one note, and it has a bend. Nothing else occupies
+        // channel 0, so the allocator picks channel 0 for the bent
+        // note — identical to the pre-MPE result.
+        let input = compact_from_json(serde_json::json!({
+            "type": "composite",
+            "notes": [[0, 60, 2.0]],
+            "pitch_bends": [{"note": 60, "points": [[0, 0], [2, 1]]}]
+        }));
+        let def = compact_to_definition(&input, &defaults_bar_forever());
+        assert_eq!(note_channel_pairs(&def), vec![(0, 60)]);
+        assert_eq!(bend_channels_for_note(&def, 60), vec![0]);
+    }
+
+    #[test]
+    fn mpe_remap_chord_with_one_bent_voice_moves_only_that_voice() {
+        // 3-note chord, bend only on the top note (67). The two un-bent
+        // notes keep channel 0 — moving them would break any channel-
+        // scoped CC the LLM would also have written — and the bent note
+        // lands on the lowest free channel (1).
+        let input = compact_from_json(serde_json::json!({
+            "type": "composite",
+            "notes": [[0, 60, 2.0], [0, 64, 2.0], [0, 67, 2.0]],
+            "pitch_bends": [{"note": 67, "points": [[0, 0], [2, 1]]}]
+        }));
+        let def = compact_to_definition(&input, &defaults_bar_forever());
+
+        let pairs = note_channel_pairs(&def);
+        assert!(pairs.contains(&(0, 60)), "plain note 60 stays on channel 0");
+        assert!(pairs.contains(&(0, 64)), "plain note 64 stays on channel 0");
+        assert!(pairs.contains(&(1, 67)), "bent note 67 moves to channel 1");
+        assert!(!pairs.contains(&(0, 67)), "bent note 67 no longer on channel 0");
+
+        // And every pitch-bend event for note 67 carries the new channel.
+        assert_eq!(bend_channels_for_note(&def, 67), vec![1]);
+    }
+
+    #[test]
+    fn mpe_remap_chord_with_all_voices_bent_gets_distinct_channels() {
+        let input = compact_from_json(serde_json::json!({
+            "type": "composite",
+            "notes": [[0, 60, 2.0], [0, 64, 2.0], [0, 67, 2.0]],
+            "pitch_bends": [
+                {"note": 60, "points": [[0, 0], [2, 1]]},
+                {"note": 64, "points": [[0, 0], [2, -1]]},
+                {"note": 67, "points": [[0, 0], [2, 0.5]]},
+            ]
+        }));
+        let def = compact_to_definition(&input, &defaults_bar_forever());
+
+        let pairs = note_channel_pairs(&def);
+        // Every note has its own unique channel.
+        let mut channels: Vec<u8> = pairs.iter().map(|(c, _)| *c).collect();
+        channels.sort();
+        channels.dedup();
+        assert_eq!(
+            channels.len(),
+            3,
+            "three bent voices must land on three different channels"
+        );
+    }
+
+    #[test]
+    fn mpe_remap_rewrites_matching_pressure_events_to_same_channel() {
+        // A voice with BOTH pitch bend and pressure must have both lanes
+        // follow the note to its new channel — otherwise pressure stops
+        // landing on the right MIDI voice after the remap.
+        let input = compact_from_json(serde_json::json!({
+            "type": "composite",
+            "notes": [[0, 60, 2.0], [0, 64, 2.0]],
+            "pitch_bends": [{"note": 64, "points": [[0, 0], [2, 1]]}],
+            "pressures": [{"note": 64, "points": [[0, 0], [2, 1]]}]
+        }));
+        let def = compact_to_definition(&input, &defaults_bar_forever());
+
+        let bend_chans = bend_channels_for_note(&def, 64);
+        let pressure_chans: Vec<u8> = {
+            let mut chans: Vec<u8> = def
+                .events
+                .iter()
+                .filter_map(|e| match e.event {
+                    FugueEvent::PerNotePressure { channel, note, .. } if note == 64 => Some(channel),
+                    _ => None,
+                })
+                .collect();
+            chans.sort();
+            chans.dedup();
+            chans
+        };
+        assert_eq!(bend_chans, pressure_chans, "pressure must track pitch-bend's new channel");
+        assert_ne!(bend_chans, vec![0], "bent voice should have been moved off the plain channel");
     }
 }
