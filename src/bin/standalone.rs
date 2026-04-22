@@ -227,12 +227,9 @@ fn main() {
         let mut current_beat: f64 = 0.0;
 
         loop {
-            let events: Vec<ProcessedEvent> = sequencer
-                .process(true, current_beat, bpm, frames_per_step, time_sig_num)
-                .collect();
-
-            for event in events {
-                match event {
+            sequencer.process(true, current_beat, bpm, frames_per_step, time_sig_num);
+            for event in sequencer.events() {
+                match *event {
                     ProcessedEvent::Instant { message, .. } => {
                         send_standalone_midi(&conn_out_fugue, &message);
                     }

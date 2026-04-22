@@ -41,9 +41,13 @@ impl FugueSequencer {
         }
     }
 
-    /// Process one audio buffer cycle
+    /// Process one audio buffer cycle.
     ///
-    /// Returns an iterator of ProcessedEvents to output.
+    /// Fills `self.output_buffer` with events emitted this buffer.
+    /// Call [`Self::events`] to iterate them afterwards — splitting
+    /// the mutate and read phases lets the caller hold a shared
+    /// borrow during iteration without conflicting with unrelated
+    /// `&self` access (e.g. the MIDI processor's output helpers).
     ///
     /// # Arguments
     /// * `is_playing` - Whether the transport is playing
@@ -58,7 +62,7 @@ impl FugueSequencer {
         tempo_bpm: f64,
         frames: u32,
         time_sig_numerator: u32,
-    ) -> impl Iterator<Item = ProcessedEvent> + '_ {
+    ) {
         self.output_buffer.clear();
 
         // 1. Process incoming commands
@@ -72,7 +76,7 @@ impl FugueSequencer {
             }
             self.was_playing = false;
             // Don't update last_beat here - we'll sync it when transport starts
-            return self.output_buffer.drain(..);
+            return;
         }
 
         // 3. Handle transport state transitions and jumps
@@ -133,7 +137,13 @@ impl FugueSequencer {
         // `Fugue::process_event`. The Feature 28 regression tests
         // cover both.
         self.last_beat = end_beat;
-        self.output_buffer.drain(..)
+    }
+
+    /// Events emitted by the most recent [`Self::process`] call. The
+    /// slice is valid until the next `process` call (which clears the
+    /// buffer before refilling it).
+    pub fn events(&self) -> &[ProcessedEvent] {
+        &self.output_buffer
     }
 
     /// Process incoming commands from the ring buffer
@@ -680,9 +690,7 @@ mod daw_loop_tests {
         let mut current = start_beat;
         let end = start_beat + beats_to_play;
         while current < end {
-            let _events: Vec<_> = seq
-                .process(true, current, TEMPO, BUFFER_FRAMES, TIME_SIG)
-                .collect();
+            seq.process(true, current, TEMPO, BUFFER_FRAMES, TIME_SIG);
             current += buffer_beats();
         }
         current
@@ -704,11 +712,8 @@ mod daw_loop_tests {
         play_until(&mut seq, 0.0, 4.0);
 
         // DAW wraps back to 0. This is the buffer under test.
-        let events: Vec<_> = seq
-            .process(true, 0.0, TEMPO, BUFFER_FRAMES, TIME_SIG)
-            .collect();
-
-        let notes = collect_notes(&events);
+        seq.process(true, 0.0, TEMPO, BUFFER_FRAMES, TIME_SIG);
+        let notes = collect_notes(seq.events());
         let beat_zero_on = notes
             .iter()
             .find(|(_, ch, note, on)| *on && *ch == 0 && *note == 60);
@@ -741,11 +746,8 @@ mod daw_loop_tests {
 
         play_until(&mut seq, 0.0, 4.0);
 
-        let events: Vec<_> = seq
-            .process(true, 0.0, TEMPO, BUFFER_FRAMES, TIME_SIG)
-            .collect();
-
-        let notes = collect_notes(&events);
+        seq.process(true, 0.0, TEMPO, BUFFER_FRAMES, TIME_SIG);
+        let notes = collect_notes(seq.events());
         let note_on_for_60 = notes
             .iter()
             .find(|(_, ch, note, on)| *on && *ch == 0 && *note == 60);
@@ -795,10 +797,8 @@ mod daw_loop_tests {
         let mut all: Vec<(u32, u8, u8, bool)> = Vec::new();
         let mut current = 0.0;
         while current + buffer_beats() <= 11.9 {
-            let events: Vec<_> = seq
-                .process(true, current, TEMPO, BUFFER_FRAMES, TIME_SIG)
-                .collect();
-            all.extend(collect_notes(&events));
+            seq.process(true, current, TEMPO, BUFFER_FRAMES, TIME_SIG);
+            all.extend(collect_notes(seq.events()));
             current += buffer_beats();
         }
 
@@ -828,9 +828,7 @@ mod daw_loop_tests {
     fn advance_empty(seq: &mut FugueSequencer, target_beat: f64) -> f64 {
         let mut current = 0.0;
         while current < target_beat {
-            let _ = seq
-                .process(true, current, TEMPO, BUFFER_FRAMES, TIME_SIG)
-                .count();
+            seq.process(true, current, TEMPO, BUFFER_FRAMES, TIME_SIG);
             current += buffer_beats();
         }
         current
@@ -849,10 +847,8 @@ mod daw_loop_tests {
         let mut current = start_beat;
         let end = start_beat + total_beats;
         while current < end {
-            let out: Vec<_> = seq
-                .process(true, current, TEMPO, BUFFER_FRAMES, TIME_SIG)
-                .collect();
-            for (sample, ch, note, on) in collect_notes(&out) {
+            seq.process(true, current, TEMPO, BUFFER_FRAMES, TIME_SIG);
+            for (sample, ch, note, on) in collect_notes(seq.events()) {
                 let absolute = current + sample as f64 * beats_per_sample();
                 events.push((absolute, ch, note, on));
             }
@@ -968,17 +964,16 @@ mod daw_loop_tests {
         let mut seq = sequencer_with_fugue(def);
         play_until(&mut seq, 0.0, 17.0);
 
-        let wrap_out: Vec<_> = seq
-            .process(true, 0.0, TEMPO, BUFFER_FRAMES, TIME_SIG)
-            .collect();
-        let wrap_note_on = collect_notes(&wrap_out)
-            .into_iter()
+        seq.process(true, 0.0, TEMPO, BUFFER_FRAMES, TIME_SIG);
+        let wrap_notes = collect_notes(seq.events());
+        let wrap_note_on = wrap_notes
+            .iter()
             .find(|(_, ch, note, on)| *on && *ch == 0 && *note == 60);
         assert!(
             wrap_note_on.is_some(),
             "beat-0 NoteOn missing after clean DAW wrap (current_beat = 0.0). \
              Events in wrap buffer: {:?}",
-            collect_notes(&wrap_out)
+            wrap_notes
         );
     }
 
@@ -996,18 +991,17 @@ mod daw_loop_tests {
         play_until(&mut seq, 0.0, 17.0);
 
         let drift = buffer_beats() * 0.5; // ~10.7 ms at 120 BPM 512-frame buffer
-        let wrap_out: Vec<_> = seq
-            .process(true, drift, TEMPO, BUFFER_FRAMES, TIME_SIG)
-            .collect();
-        let wrap_note_on = collect_notes(&wrap_out)
-            .into_iter()
+        seq.process(true, drift, TEMPO, BUFFER_FRAMES, TIME_SIG);
+        let wrap_notes = collect_notes(seq.events());
+        let wrap_note_on = wrap_notes
+            .iter()
             .find(|(_, ch, note, on)| *on && *ch == 0 && *note == 60);
         assert!(
             wrap_note_on.is_some(),
             "beat-0 NoteOn missing after DAW wrap reported with mid-buffer drift \
              (current_beat = {:.4}). Events in wrap buffer: {:?}",
             drift,
-            collect_notes(&wrap_out)
+            wrap_notes
         );
     }
 
@@ -1034,18 +1028,17 @@ mod daw_loop_tests {
         let _pre_wrap = run_and_collect(&mut seq, queued_at, 17.0);
 
         // Simulate DAW wrap back to 0.
-        let wrap_out: Vec<_> = seq
-            .process(true, 0.0, TEMPO, BUFFER_FRAMES, TIME_SIG)
-            .collect();
-        let wrap_note_on = collect_notes(&wrap_out)
-            .into_iter()
+        seq.process(true, 0.0, TEMPO, BUFFER_FRAMES, TIME_SIG);
+        let wrap_notes = collect_notes(seq.events());
+        let wrap_note_on = wrap_notes
+            .iter()
             .find(|(_, ch, note, on)| *on && *ch == 0 && *note == 60);
 
         assert!(
             wrap_note_on.is_some(),
             "after DAW wrap, pattern-beat-0 should fire on transport 0 (song-grid). \
              Events in wrap buffer: {:?}",
-            collect_notes(&wrap_out)
+            wrap_notes
         );
     }
 }
@@ -1118,11 +1111,9 @@ mod timed_note_tests {
         let mut current = start_beat;
         let end = start_beat + total_beats;
         while current < end {
-            let events: Vec<_> = seq
-                .process(true, current, TEMPO, BUFFER_FRAMES, TIME_SIG)
-                .collect();
-            for e in events {
-                if let ProcessedEvent::Instant { sample_offset, message: MidiMessage::Note(n) } = e {
+            seq.process(true, current, TEMPO, BUFFER_FRAMES, TIME_SIG);
+            for e in seq.events() {
+                if let ProcessedEvent::Instant { sample_offset, message: MidiMessage::Note(n) } = *e {
                     let absolute = current + sample_offset as f64 * beats_per_sample();
                     out.push((absolute, n.channel, n.note, n.is_note_on));
                 }

@@ -242,17 +242,24 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
             .map(|t| t.loop_end_beats.to_float())
             .unwrap_or(0.0);
 
-        // Process fugue sequencer - collect events first to avoid borrow conflict
-        let fugue_events: Vec<_> = self.fugue_sequencer.process(
+        // Process fugue sequencer. `process` fills its internal output
+        // buffer; we then iterate by index copying each event out so
+        // the `&self` in `output_processed_event` doesn't overlap with
+        // any borrow of the sequencer. ProcessedEvent is Copy, so this
+        // is a pure memcpy — no heap allocation.
+        self.fugue_sequencer.process(
             is_playing,
             current_beat,
             tempo,
             frames,
             time_sig_num,
-        ).collect();
-
-        for processed_event in fugue_events {
+        );
+        let event_count = self.fugue_sequencer.events().len();
+        if event_count > 0 {
             has_midi = true;
+        }
+        for i in 0..event_count {
+            let processed_event = self.fugue_sequencer.events()[i];
             self.output_processed_event(&processed_event, &mut events);
         }
 

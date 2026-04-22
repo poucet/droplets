@@ -532,7 +532,11 @@ use crate::mcp::MidiMessage;
 ///
 /// This is an internal type used between the sequencer and MIDI processor.
 /// It allows the sequencer to describe CC ramps that the processor will interpolate.
-#[derive(Debug, Clone)]
+///
+/// `Copy` because every underlying variant field is Copy — keeping this
+/// POD means the audio-thread consumer can read events from the
+/// sequencer's buffer by value without the `.clone()` / borrow dance.
+#[derive(Debug, Clone, Copy)]
 pub enum ProcessedEvent {
     /// An instant MIDI event at a specific sample offset
     Instant {
