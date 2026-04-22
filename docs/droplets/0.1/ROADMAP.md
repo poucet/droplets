@@ -10,7 +10,7 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 
 ## Feature Overview
 
-### Phase 01: Demo Prep (must ship by 2026-04-21)
+### Phase 01: Demo Prep (must ship by 2026-04-23)
 
 | Done | Pri | # | Feature | Complexity | Impact |
 |------|-----|---|---------|------------|--------|
@@ -25,9 +25,9 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [x] | P1 | 12 | UI lanes for per-note bend/pressure | M | Medium — composite fugues aren't useful if the UI can't render half their content |
 | [x] | P0 | 13 | Transport phase-locking (fugues resume from correct phase on stop/play/relocate) | S | High — without this, every stop/play kills the demo |
 | [x] | P0 | 14 | DAW track context (drum maps, device names) via host extension | L | Very High — AI currently picks random notes for drums because it has no way to know which sample is on which pad. **Rust side + Bitwig extension shipped 2026-04-20; walkthrough verified same day.** |
-| [ ] | P0 | 25 | Align fugue iteration boundaries to song-grid at promotion time | S | High — `start_pending_fugues` uses the quantize target as `start_beat`, so first iteration sits off-grid and `phase_lock` shifts it on any later transport jump. Symptom: "queue while transport plays" plays at one offset, then a DAW wrap snaps every subsequent bar to a different offset |
-| [ ] | P0 | 26 | Widen `process_buffer` `local_start` tolerance to cover DAW wrap drift | S | High — DAWs report transport ~half a buffer into the new loop on wrap, dropping beat-0 events. Pairs with 25 to close the first-note-on-loop bug |
-| [ ] | P1 | 27 | Integer-tick (PPQ 960) representation in sequencer hot path | M | Very High — eliminates the entire float-drift bug class in `phase_lock` / `process_buffer` / `reset_for_loop`. Replaces `beat_offset: f64` with `tick_offset: i64` inside the audio thread; LLM and UI surfaces stay in beats via conversion at boundaries |
+| [x] | P0 | 25 | Align fugue iteration boundaries to song-grid at promotion time | S | High — `start_pending_fugues` uses the quantize target as `start_beat`, so first iteration sits off-grid and `phase_lock` shifts it on any later transport jump. Symptom: "queue while transport plays" plays at one offset, then a DAW wrap snaps every subsequent bar to a different offset |
+| [x] | P0 | 26 | Widen `process_buffer` `local_start` tolerance to cover DAW wrap drift | S | High — DAWs report transport ~half a buffer into the new loop on wrap, dropping beat-0 events. Pairs with 25 to close the first-note-on-loop bug |
+| [ ] | P1 | 27 | Integer-tick (PPQ 46080) representation in sequencer hot path | M | Very High — eliminates the entire float-drift bug class in `phase_lock` / `process_buffer` / `reset_for_loop`. Replaces `beat_offset: f64` with `tick_offset: i64` inside the audio thread; LLM and UI surfaces stay in beats via conversion at boundaries. PPQ 46080 = 48 × 960 covers SMF2 / MIDI 2.0 |
 
 ### Phase 02: Post-Demo Polish
 
@@ -47,10 +47,16 @@ The backend and UI are ~95% compliant with [FUGUE.md](../../FUGUE.md) and [FUGUE
 | [ ] | P3 | 23 | `.bwclip` (dawproject) export/import alongside `.mid` | M | Medium (Bitwig-only) — lets users round-trip launcher clips via Bitwig's "Save Launcher Clip to Library" (which Bitwig refuses to emit as `.mid`). Preserves per-note expression, tag, color, and timing metadata that MIDI 1.0 drops. Format is Bitwig's open dawproject spec (XML in a zip). Settings toggle chooses `.mid` vs `.bwclip` for drag-out |
 | [ ] | P2 | 24a | Expose `CLAP_PLUGIN_AS_VST3` extension (Rust side) | S | Medium — the clap-wrapper already honours `vst3info->features` as a direct SubCategories override ([wrapasvst3_entry.cpp:269-276](https://github.com/free-audio/clap-wrapper/blob/main/src/wrapasvst3_entry.cpp#L269-L276)). Wire this on the Rust side (clack patch or raw FFI), emit `Fx\|Tools`, drop VST3 audio bus. Ableton stops treating Droplets as an instrument. Notes flow through fine; CC output stays broken until 24b |
 | [ ] | P2 | 24b | clap-wrapper PR: translate `CLAP_EVENT_MIDI` out on VST3 | M | Medium — today [process.cpp:808-812](https://github.com/free-audio/clap-wrapper/blob/main/src/detail/vst3/process.cpp#L808-L812) silently swallows `CLAP_EVENT_MIDI` / `_SYSEX` / `_MIDI2` in `enqueueOutputEvent`. Fix is a surgical addition alongside the existing NOTE_ON/OFF cases: parse status byte, fan out to `kLegacyMIDICCOutEvent` / `kDataEvent`. Upstream PR against clap-wrapper (issue [#414](https://github.com/free-audio/clap-wrapper/issues/414)) |
-| [ ] | P2 | 28 | Notes-with-duration representation in the audio thread | L | High — ships a single `TimedNote { tick_offset, duration_ticks, ... }` to the audio thread instead of pre-expanded NoteOn/NoteOff pairs. Absorbs `emit_notes` overlap truncation, zero-duration guard, NoteOff left-skew, and the same-sample deconflict pass. Requires a bounded `PendingNoteOff` buffer on the audio thread (no malloc), so polyphony-cap + pre-alloc design work up front |
+| [x] | P2 | 28 | Notes-with-duration representation in the audio thread | L | High — ships a single `TimedNote { tick_offset, duration_ticks, ... }` to the audio thread instead of pre-expanded NoteOn/NoteOff pairs. Absorbs `emit_notes` overlap truncation, zero-duration guard, NoteOff left-skew, and the same-sample deconflict pass. Requires a bounded `PendingNoteOff` buffer on the audio thread (no malloc), so polyphony-cap + pre-alloc design work up front |
 | [ ] | P2 | 29 | Fold the parked `audio_debug` probe back in as a Cargo feature | S | Medium — audio-thread debug probe with lock-free ring buffer + background drainer, parked on bookmark `wip/audio-debug-probe`. Landing on trunk needs a `audio-debug` Cargo feature so call sites compile out entirely when disabled, and all DebugRecord construction moves inside `audio_debug.rs` so probes at call sites are single feature-gated lines. Keep for future sequencer debugging sessions |
-| [ ] | P2 | 30 | Intern tags on the main thread so audio thread uses integer IDs | S | Medium — `FugueCommand::CancelByTag { tag: String }` forces audio-thread string comparison per-fugue, and `tag_loop_boundaries` builds a `HashMap<String, f64>` each buffer (allocates). Replace with `TagId(u32)` assigned by a main-thread interner; `FugueDefinition.tag` and `FugueCommand::CancelByTag` carry the integer. Scheduler's tag lookups become integer compares or a fixed-capacity `[(TagId, f64); N]` linear scan |
-| [ ] | P2 | 31 | Move `active_ramps` from `Fugue` to `FugueSequencer` (per-instance CC ramp table) | M | Medium — MIDI CC address space is 2048 cells (128 CCs × 16 channels) per instance. Today each `Fugue` owns its own fixed-size ramp array (~1 KB), which both wastes storage across N concurrent fugues AND lets two fugues emit conflicting ramps on the same (ch, cc). Move to a single `[Option<ActiveCcRamp>; 2048]` on `FugueSequencer`, direct-indexed on `(channel, cc)`. `ActiveCcRamp` gains `origin_fugue_id: u64` so cancel/phase_lock paths can clear just this fugue's ramps. O(1) insert / O(1) retain-by-(ch,cc); iteration is 2048 slots per buffer (cache-friendly sequential scan) |
+| [ ] | P2 | 30 | Intern tags on the main thread so audio thread uses integer IDs | S | Medium — `FugueCommand::CancelByTag { tag: String }` forces audio-thread string comparison per-fugue, and `tag_loop_boundaries` builds a `HashMap<String, f64>` each buffer (allocates). Replace with `TagId(u32)` assigned by a main-thread interner; `FugueDefinition.tag` and `FugueCommand::CancelByTag` carry the integer. Scheduler's tag lookups become integer compares or a fixed-capacity `[(TagId, f64); N]` linear scan. Subsumes audit items #2 (tag_loop_boundaries HashMap + String clone per buffer) and #5/#7 (starting_fugues Vec alloc + CancelMode::clone) — once CancelMode carries `TagId(u32)` it becomes `Copy` |
+| [ ] | P2 | 31 | Move `active_ramps` from `Fugue` to `FugueSequencer` (per-instance CC ramp table) | M | Medium — MIDI CC address space is 2048 cells (128 CCs × 16 channels) per instance. Today each `Fugue` owns its own fixed-size ramp array (~1 KB), which both wastes storage across N concurrent fugues AND lets two fugues emit conflicting ramps on the same (ch, cc). Move to a single `[Option<ActiveCcRamp>; 2048]` on `FugueSequencer`, direct-indexed on `(channel, cc)`. `ActiveCcRamp` gains `origin_fugue_id: u64` so cancel/phase_lock paths can clear just this fugue's ramps. O(1) insert / O(1) retain-by-(ch,cc); iteration is 2048 slots per buffer (cache-friendly sequential scan). Subsumes audit items #10 (per-fugue active_ramps) and #11 (per-fugue cc_state — both model a per-instance MIDI address space) |
+| [x] | P1 | 32 | Publish-gate + buffer reuse on the audio thread publish path | S | Very High — `list_fugues` / `get_definitions` each cloned `Vec<FugueInfo>` / `Vec<FugueDefinition>` (including per-fugue tag `String` and event `Vec`) on every buffer whenever transport was playing. Three shipped together: `Fugue::process_buffer` takes `&mut Vec<ProcessedEvent>` instead of returning a fresh one (audit item #4); `FugueSequencer::process` fills `self.output_buffer` and exposes `events() -> &[ProcessedEvent]` so the MIDI processor iterates without a `collect()` (audit item #3); a `state_dirty` flag gates the info / definition publish paths so stable loops allocate nothing between state changes (audit item #1). `ProcessedEvent` becomes `Copy` since every field already was |
+| [x] | P1 | 33 | MIDI 1.0 fallbacks for per-note expression (poly aftertouch + MPE channel pitch bend) | S | High — per-note expressions previously emitted only as CLAP `NoteExpressionEvent` + MIDI 2.0 UMP. Soft synths that only speak MIDI 1.0 (Serum, Polymer, Vital) saw nothing. Adds polyphonic aftertouch (0xA0) for `PerNotePressure` and, for `PerNotePitchBend`, channel pitch bend (0xE0) on a per-note-dedicated channel — main-thread MPE remap (Option C) reassigns each bent note to the lowest free channel in `compact_to_definition` so channel-scoped bend only affects that voice. Matching `PerNotePressure` lanes follow the remap. Known trade-off: CCs are channel-scoped and stay on the original channel — filter sweeps don't reach remapped voices |
+| [x] | P1 | 34 | `quantize:"immediate"` bypasses tag-loop-boundary alignment for same-sample cutover | S | Medium-High — tag cancel defaulted to aligning the new fugue with the cancelled fugue's next loop boundary. A 16-bar pad kept playing for up to 15 bars after the replacement request; no escape hatch. Now: when the new fugue's `quantize` is `Immediate`, the tag alignment is skipped and `place_on_song_grid` (StartMode::Phase default) drops the new pattern into its current song-grid phase. `apply_cancel_mode_at_offset` already released the old fugue's held notes at the same sample, so the cutover is glitch-free |
+| [ ] | P2 | 35 | Replace `get_active_notes() -> Vec<(u8, u8)>` with for-each callback | S | Medium — audit item #6. Called from `phase_lock_all`, `retain_mut` finished-fugue cleanup, and both send_note_offs paths — each site allocates a fresh `Vec` on the audio thread just to iterate. Convert to `for_each_active_note(&self, |ch, note|)` callback that walks the bitset directly. ~10-minute refactor; removes three allocations per transport-start / per-finished-fugue / per-cancel. Orthogonal to Feature 30/31 |
+| [ ] | P2 | 36 | Reaper ring: send dropped fugues back to the main thread for destruction | S | Medium — audit item #8. When `retain_mut` drops a finished `Fugue`, its `Vec<TimedFugueEvent>` and `Option<String>` tag drop on the audio thread. Fix with a producer-side ring `Producer<FugueCasket>` back to the main thread: audio thread pushes the boxed fugue into the ring, a main-thread worker drains and drops. Pairs cleanly with Feature 30: once `tag` becomes `Option<TagId>` the remaining owned allocation is the event `Vec`, which is the one that matters |
+| [ ] | P3 | 37 | Per-instance `pending_note_offs` pool | M | Low-Medium — audit item #12. Today each `Fugue` owns a 128-slot ring; with N concurrent fugues, storage scales linearly and voice-stealing is per-fugue. A single per-instance `[Option<PendingNoteOff>; 256]` pool scales more gracefully and lets voice-stealing reason about the whole instance's voice load. Musically intuitive cap is still per-fugue though (an LLM writing 64 notes doesn't expect another fugue to steal its voices), so this is lower priority than 30/31 |
 
 ---
 
@@ -675,6 +681,126 @@ Landing checklist:
 
 ---
 
+#### Feature 31: Per-instance `active_ramps` (and `cc_state`) table on `FugueSequencer`
+
+**Problem:** MIDI CC state is an **instance-level** concept — every (channel, cc) pair models one address in the MIDI output space. Today both `active_ramps: [Option<ActiveCcRamp>; 32]` and `cc_state: [[Option<u8>; 128]; 16]` live on each `Fugue`, which has two separate costs:
+
+- **Correctness:** two concurrent fugues ramping the same (ch, cc) don't coordinate — each sees its own start value and they race.
+- **Storage:** N concurrent fugues carry N × ~3 KB of CC state, most of which is redundant with every other fugue's view of the same address space.
+
+**Solution:** move both tables onto `FugueSequencer` as direct-indexed arrays. `ActiveCcRamp` gains `origin_fugue_id: u64` so cancel / phase_lock / drop paths can clear only this fugue's contribution. Scheduler's CC emission path:
+
+- **`active_ramps`**: `[Option<ActiveCcRamp>; 2048]` indexed by `(channel * 128) + cc`. Insert is O(1); retain-by-fugue-id is a 2048-cell scan per cancel (cache-friendly, no allocation). Each buffer iterates the same 2048 cells — sequential memory access, predictable cost.
+- **`cc_state`**: `[[Option<u8>; 128]; 16]` — same shape as today but once per instance, not per fugue. Read during ramp start to pick up the previous value.
+
+**Subsumes audit items:** #10 (per-fugue `active_ramps`) and #11 (per-fugue `cc_state`), reducing per-fugue footprint by ~3 KB and making cross-fugue CC behaviour well-defined.
+
+**Why M not S:** the fugue-scoped clear paths (`phase_lock`, cancel-by-id, cancel-by-tag, retain-mut drop) all need to clear *just this fugue's* entries from the shared table — by `origin_fugue_id`. Not hard but touches several call sites.
+
+**Files:** [src/fugue/audio/sequencer.rs](../../../src/fugue/audio/sequencer.rs) (new `active_ramps` + `cc_state` fields, direct-index helpers), [src/fugue/audio/fugue.rs](../../../src/fugue/audio/fugue.rs) (drop per-fugue versions; pass shared table into `process_event` / `process_active_ramps`), [src/fugue/audio/mod.rs](../../../src/fugue/audio/mod.rs) (thread-safety doc).
+
+---
+
+#### Feature 32: Publish-gate + buffer reuse on the audio thread publish path ✅ *shipped*
+
+**Problem (fixed):** `DropletMidiProcessor::process` called `list_fugues` and `get_definitions` every buffer whenever transport was playing or any fugue existed. Each call allocated a fresh `Vec<FugueInfo>` / `Vec<FugueDefinition>` — cloning per-fugue tag `String`s and the entire event `Vec` on every buffer — then wrapped in `Arc::new` for `ArcSwap::store`. A 64-note forever-looping fugue did this ~2 KB every buffer.
+
+**What shipped (three commits, audit items #1/#3/#4):**
+
+- **`Fugue::process_buffer` takes `&mut Vec<ProcessedEvent>`** instead of returning a fresh Vec. The sequencer already owned a reusable `output_buffer` — the API now forwards it in directly. One allocation removed per fugue per buffer.
+- **`FugueSequencer::process` fills `self.output_buffer`** (no return value) and exposes `events() -> &[ProcessedEvent]`. The MIDI processor's prior `.collect()` call that existed only to break a borrow conflict is gone; iteration uses the slice by index. `ProcessedEvent` became `Copy` so iteration is a memcpy.
+- **`state_dirty` flag on the sequencer** gates the info / definition publish paths. Set at every mutation point (queue, cancel, phase_lock, pending-fugue promotion, loop reset, finished-fugue drop); read-and-cleared by `take_state_dirty()`. Stable forever-loops now allocate nothing on the audio thread between state changes. Live UI progress stays correct because transport is still published every buffer and `progress_beats` is derivable from `transport.beat - start_beat` on the UI side.
+
+**Remaining audit items that land alongside these:** #6 (get_active_notes Vec) → Feature 35. #2 / #5 / #7 (tag HashMap + CancelMode clone) → Feature 30. #8 (FugueDefinition drop on audio thread) → Feature 36.
+
+**Files:** [src/fugue/audio/fugue.rs](../../../src/fugue/audio/fugue.rs), [src/fugue/audio/sequencer.rs](../../../src/fugue/audio/sequencer.rs), [src/fugue/types.rs](../../../src/fugue/types.rs) (`ProcessedEvent: Copy`), [src/midi/mod.rs](../../../src/midi/mod.rs), [src/bin/standalone.rs](../../../src/bin/standalone.rs).
+
+---
+
+#### Feature 33: MIDI 1.0 fallbacks for per-note expression ✅ *shipped*
+
+**Problem (fixed):** `PerNotePressure` and `PerNotePitchBend` emitted only CLAP-native `NoteExpressionEvent` + MIDI 2.0 UMP. Soft synths that speak plain MIDI 1.0 (Serum, Polymer, Vital, Eru) never received anything — per-note expression was silent on the majority of user setups.
+
+**What shipped:**
+
+- **Polyphonic aftertouch (0xA0)** for `PerNotePressure`. MIDI 1.0's native per-note aftertouch form; widely supported. Emitted alongside the existing CLAP + UMP paths.
+- **Channel pitch bend (0xE0) with MPE remap** for `PerNotePitchBend`. MIDI 1.0 has no per-note bend; channel bend affects every held note on the channel. The `compact_to_definition` conversion now runs `remap_mpe_channels` *before* the audio thread sees events: any note with a `pitch_bends` lane is moved onto the lowest free MIDI channel (skipping channels reserved for un-bent notes), along with all its `PerNotePitchBend` and `PerNotePressure` events. Downstream channel pitch bend then affects only that note.
+
+**Known trade-off (documented in queue_fugue.md):** CCs are channel-scoped and stay on the original channel. A filter sweep (CC 74) written for a chord where one voice is bent won't reach the bent voice. This is proper MPE-zone semantics; documented as a limitation rather than hacked around.
+
+**Files:** [src/midi/mod.rs](../../../src/midi/mod.rs) (poly AT + channel PB emission), [src/mcp/types/conversion.rs](../../../src/mcp/types/conversion.rs) (`remap_mpe_channels`), [src/mcp/tools/queue_fugue.md](../../../src/mcp/tools/queue_fugue.md).
+
+---
+
+#### Feature 34: `quantize:"immediate"` bypasses tag-loop-boundary alignment ✅ *shipped*
+
+**Problem (fixed):** tag-based cancel always aligned the new fugue with the cancelled fugue's next loop boundary (the `tag_loop_boundaries` map in `start_pending_fugues`). Musically clean for short loops, unacceptable for long ones: a 16-bar pad could keep playing for 15 more bars after the user said "replace with…". There was no escape hatch.
+
+**What shipped:** when the new fugue's `quantize` resolves to `QuantizeMode::Immediate`, the tag-alignment path is skipped — the quantize target equals `current_beat` and the new fugue is promoted on the same buffer. `apply_cancel_mode_at_offset` already released the old fugue's held notes at the same `sample_offset` as the new fugue's start, so the cutover is glitch-free. `StartMode::Phase` (the default) then drops the new pattern into its song-grid phase at the current transport moment — the next pattern iteration's beat-0 lands on the next multiple of `duration_beats` from song-zero, not a restart from the top.
+
+**Tests:** phase-preserved cutover (no events between current_beat and next song-grid iteration); held-sustain release in the cutover buffer; regression guard that non-immediate quantize still respects tag alignment.
+
+**Files:** [src/fugue/audio/sequencer.rs](../../../src/fugue/audio/sequencer.rs) (`start_pending_fugues` branch), [src/mcp/tools/queue_fugue.md](../../../src/mcp/tools/queue_fugue.md).
+
+---
+
+#### Feature 35: Replace `get_active_notes() -> Vec<(u8, u8)>` with a for-each callback
+
+**Problem:** audit item #6. `Fugue::get_active_notes` walks the bitset and returns a `Vec<(u8, u8)>`. Called from the audio thread in four places (`phase_lock_all`, `retain_mut` finished-fugue cleanup, `send_note_offs_for_fugue`, `send_note_offs_for_fugue_skipping_beat0_retriggers`). Every call is a heap allocation.
+
+**Solution:** convert to `for_each_active_note(&self, |ch, note|)`, walking the bitset directly and invoking the closure per active pitch. Callers already iterate the returned Vec; converting is mechanical. Zero allocations on the audio thread; keeps the bitset-walk code in one place.
+
+**Why post-demo:** orthogonal to the bigger Features 30/31 and small enough to slot in whenever. ~10 minutes including tests. No schema or API surface changes.
+
+**Files:** [src/fugue/audio/fugue.rs](../../../src/fugue/audio/fugue.rs) (replace `get_active_notes`), [src/fugue/audio/sequencer.rs](../../../src/fugue/audio/sequencer.rs) (call-site updates).
+
+---
+
+#### Feature 36: Reaper ring — return dropped `Fugue`s to the main thread for destruction
+
+**Problem:** audit item #8. When `FugueSequencer::retain_mut` drops a finished `Fugue`, the `Vec<TimedFugueEvent>` it owns (and the `Option<String>` tag, until Feature 30 ships) is deallocated **on the audio thread**. Each cancel, each finite-loop completion, each `ClearAll` triggers this. The deallocations are small per fugue but the pattern is a realtime-safety gotcha that compounds under churn — LLM rapidly iterating on a part can queue + cancel many times per second.
+
+**Solution:** a `Producer<Fugue>` on the audio thread pushes each about-to-drop fugue into a bounded ring; a main-thread worker (thread or periodic poll from the existing GUI tick) drains the ring and lets the `Fugue` drop on the consumer side. The audio thread's retain path pushes-on-drop and falls back to in-place drop only if the ring is full (back-pressure: pathological churn degrades to current behaviour rather than panicking). Ring capacity ~64 is ample for typical churn.
+
+**Ordering with Feature 30:** best to land Feature 30 first. Once tags intern to `TagId(u32)`, the remaining owned allocation inside `FugueDefinition` is just the event `Vec` — the reaper ring then addresses the one big allocation left, not every small one.
+
+**Files:** [src/fugue/main/bridge.rs](../../../src/fugue/main/bridge.rs) (reaper producer + main-thread drain), [src/fugue/audio/sequencer.rs](../../../src/fugue/audio/sequencer.rs) (push-on-drop in `retain_mut` and `clear_all_fugues*`).
+
+---
+
+#### Feature 37: Per-instance `pending_note_offs` pool
+
+**Problem:** audit item #12. Today each `Fugue` owns a 128-slot `[Option<PendingNoteOff>; N]` ring. With N concurrent fugues the storage scales linearly, and voice-stealing is per-fugue — a fugue can't draw on another fugue's unused ring capacity.
+
+**Solution (tentative):** a single `[Option<PendingNoteOff>; 256]` pool on `FugueSequencer`. Each entry carries `origin_fugue_id`. Insertion picks lowest free slot; voice-stealing picks oldest slot across all fugues. Cancel / phase_lock / drop paths filter by `origin_fugue_id`.
+
+**Why P3:** musically the per-fugue cap is intuitive — an LLM writing a 64-note fugue doesn't expect another fugue queued later to steal its voices. The per-instance pool is more efficient but changes the voice-stealing semantics in a way users would need to learn. Behind Features 30/31 on priority.
+
+**Files:** [src/fugue/audio/sequencer.rs](../../../src/fugue/audio/sequencer.rs), [src/fugue/audio/fugue.rs](../../../src/fugue/audio/fugue.rs) (drop per-fugue ring).
+
+---
+
+## Audio-thread audit — item → feature map
+
+Reference for the per-item catalogue produced during the 2026-04-22 audit. Every item is either shipped or tracked under a numbered feature above — nothing is orphaned.
+
+| Audit # | Description | Status |
+|--------:|-------------|--------|
+| #1 | `list_fugues` / `get_definitions` publish on every buffer | ✅ Feature 32 |
+| #2 | `tag_loop_boundaries` HashMap + String clone per buffer | ⏳ Feature 30 |
+| #3 | `fugue_events: Vec<_> = ...collect()` in MIDI processor | ✅ Feature 32 |
+| #4 | `Fugue::process_buffer` allocates fresh `Vec<ProcessedEvent>` | ✅ Feature 32 |
+| #5 | `starting_fugues: Vec<(usize, CancelMode)>` alloc + `CancelMode::clone()` | ⏳ Feature 30 (CancelMode becomes Copy) |
+| #6 | `get_active_notes() -> Vec<(u8, u8)>` allocates per call | ⏳ Feature 35 |
+| #7 | Same as #5 | ⏳ Feature 30 |
+| #8 | `FugueDefinition` drops on audio thread (Vec + Option<String>) | ⏳ Feature 36 |
+| #9 | `FugueCommand::CancelByTag { tag: String }` drops on audio thread | ⏳ Feature 30 |
+| #10 | `active_ramps: [Option<…>; 32]` per-fugue, not per-instance | ⏳ Feature 31 |
+| #11 | `cc_state: [[Option<u8>; 128]; 16]` per-fugue, not per-instance | ⏳ Feature 31 |
+| #12 | `pending_note_offs` ring per-fugue | ⏳ Feature 37 |
+
+---
+
 ## Implementation Order
 
 ```
@@ -722,6 +848,25 @@ Phase 02: 8 (egui migration) + 9 (stateful MCP) + 10 (audio-thread per-note ramp
           18 (pause-instead-of-delete) — post-drag-out because it layers
             on top of the existing tag-swap mechanic and doesn't block
             anything else.
+
+          Audio-thread realtime-safety follow-ups (see audit item→feature
+          map above):
+          30 (intern tags) → 31 (per-instance ramp/cc tables) → 36 (reaper ring)
+                          ↘ 35 (get_active_notes callback)
+                          ↘ 37 (per-instance pending_note_offs pool)
+          ↑ 30 first — biggest impact and unblocks making CancelMode Copy,
+            which simplifies 36's work (one allocation type to reap
+            instead of two). 31 is the other big structural refactor;
+            independent of 30. 35 is a quick win any time. 36 lands
+            after 30 so the reaper only has to budget for the event
+            Vec, not the tag String. 37 is the lowest-priority piece —
+            the per-fugue cap it replaces is more musically intuitive
+            than the pooled version, so there's no rush.
+
+          Integer-tick conversion:
+          27 (PPQ 46080 ticks) — could land any time. Pairs well with
+            28 (already shipped) by making the PendingNoteOff end-time
+            an i64 compare instead of f64.
 ```
 
 ---
