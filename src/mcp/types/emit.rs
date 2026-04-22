@@ -60,68 +60,44 @@ pub fn expand_per_note_points(
     }
 }
 
-/// Expand a Notes array into `NoteOn` + auto-generated `NoteOff` events.
+/// Expand a Notes array into `TimedNote` events — each carries its
+/// own duration, and the audio thread's pending-NoteOff ring
+/// materializes the NoteOff at the right sample.
 ///
-/// When two notes share the same `(channel, pitch)` and the later one's
-/// onset falls inside the earlier's nominal sustain, the earlier note's
-/// `NoteOff` is truncated to the later note's onset. MIDI has no concept
-/// of two simultaneous same-pitch voices on one channel — the second
-/// NoteOn retriggers and the first note effectively ends there anyway.
-/// Leaving the stale `NoteOff` to fire later would kill the new voice,
-/// which is the observable bug. Only triggers on real overlap, so
-/// non-overlapping notes round-trip through `definition_to_compact`
-/// with their original durations intact.
+/// The overlap-truncation + zero-duration-drop passes that lived
+/// here previously (when we emitted separate NoteOn / NoteOff pairs)
+/// are gone. Both concerns now live in the audio thread:
 ///
-/// Zero- or negative-duration notes (either on input or after overlap
-/// truncation) are dropped entirely: they produce a NoteOn + NoteOff at
-/// the same beat, and the audio-thread's sample-level left-skew of
-/// NoteOffs (which guards the same-sample NoteOff/NoteOn race at loop
-/// and beat boundaries) would push the NoteOff strictly *before* its
-/// own NoteOn. Rather than emit a malformed pair, just skip the note —
-/// a zero-length note was never going to make sound anyway.
+/// - Same-pitch retrigger: a `TimedNote` for an `(channel, pitch)`
+///   that's still ringing from an earlier `TimedNote` evicts the
+///   pending NoteOff and emits it one sample before the new NoteOn.
+///   That's better than truncating here, because it also covers
+///   retriggers across loop boundaries — where the "earlier" note is
+///   from the previous iteration and we couldn't see it at emit time.
+/// - Zero- or negative-duration notes: audio thread skips them
+///   entirely (no NoteOn emitted). A single guard replaces the two
+///   interacting guards we had before (emit-time drop + sample-level
+///   left-skew).
 pub fn emit_notes(
     notes: &[CompactNote],
     fugue_channel: u8,
     events: &mut Vec<TimedFugueEvent>,
 ) {
-    let resolve_channel = |n: &CompactNote| -> u8 {
-        n.channel
+    for note in notes {
+        let channel = note
+            .channel
             .map(|c| c.saturating_sub(1).min(15))
-            .unwrap_or(fugue_channel)
-    };
-    for (i, note) in notes.iter().enumerate() {
-        if note.duration <= 0.0 {
-            continue;
-        }
-        let channel = resolve_channel(note);
+            .unwrap_or(fugue_channel);
         let velocity = note.velocity.unwrap_or(100).clamp(1, 127);
         let note_num = note.note.0.min(127);
-
-        let mut off_beat = note.beat + note.duration;
-        for (j, other) in notes.iter().enumerate() {
-            if i == j {
-                continue;
-            }
-            if resolve_channel(other) == channel
-                && other.note.0.min(127) == note_num
-                && other.beat > note.beat
-                && other.beat < off_beat
-            {
-                off_beat = other.beat;
-            }
-        }
-
-        if off_beat <= note.beat {
-            continue;
-        }
-
         events.push(TimedFugueEvent::new(
             note.beat,
-            FugueEvent::NoteOn { channel, note: note_num, velocity },
-        ));
-        events.push(TimedFugueEvent::new(
-            off_beat,
-            FugueEvent::NoteOff { channel, note: note_num },
+            FugueEvent::TimedNote {
+                channel,
+                note: note_num,
+                velocity,
+                duration_beats: note.duration,
+            },
         ));
     }
 }
@@ -355,7 +331,10 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn emit_notes_generates_paired_on_off_events() {
+    fn emit_notes_produces_one_timed_note_per_input() {
+        // Each CompactNote → one FugueEvent::TimedNote that carries
+        // its own duration. No separate NoteOff — the scheduler
+        // synthesizes it from the pending-NoteOff ring at emit time.
         let notes = vec![CompactNote {
             beat: 0.0,
             note: Note(60),
@@ -365,108 +344,61 @@ mod tests {
         }];
         let mut events = Vec::new();
         emit_notes(&notes, 0, &mut events);
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 1);
         assert_eq!(events[0].beat_offset, 0.0);
-        assert_eq!(events[1].beat_offset, 1.0);
-        assert!(matches!(events[0].event, FugueEvent::NoteOn { note: 60, .. }));
-        assert!(matches!(events[1].event, FugueEvent::NoteOff { note: 60, .. }));
+        match events[0].event {
+            FugueEvent::TimedNote { note, duration_beats, velocity, .. } => {
+                assert_eq!(note, 60);
+                assert_eq!(duration_beats, 1.0);
+                assert_eq!(velocity, 100);
+            }
+            _ => panic!("expected TimedNote, got {:?}", events[0].event),
+        }
     }
 
     #[test]
-    fn emit_notes_truncates_overlap_between_same_pitch_notes() {
-        // Note A covers beats [1, 3); note B starts at beat 2 on the same
-        // pitch. A's NoteOff must be pulled in to 2 so it doesn't kill B.
+    fn emit_notes_preserves_same_pitch_overlaps_verbatim() {
+        // What used to be "truncate overlap at emit time" is now the
+        // audio thread's job — `emit_notes` ships the full nominal
+        // duration and the scheduler's pending-NoteOff ring evicts
+        // the earlier note when the later one retriggers the same
+        // (channel, pitch). The test just asserts both TimedNotes
+        // make it through with their declared durations intact.
         let notes = vec![
             CompactNote { beat: 1.0, note: Note(60), duration: 2.0, velocity: None, channel: None },
             CompactNote { beat: 2.0, note: Note(60), duration: 1.0, velocity: None, channel: None },
         ];
         let mut events = Vec::new();
         emit_notes(&notes, 0, &mut events);
-        // Find A's NoteOff (the one originating from the note at beat 1).
-        let a_off = events.iter().find(|e| {
-            matches!(e.event, FugueEvent::NoteOff { note: 60, .. })
-                && e.beat_offset <= 2.0 + f64::EPSILON
-        });
-        let a_off = a_off.expect("note A's NoteOff missing");
-        assert_eq!(a_off.beat_offset, 2.0, "A's NoteOff should truncate to B's onset, not its nominal 3.0");
-    }
-
-    #[test]
-    fn emit_notes_preserves_duration_for_non_overlapping_same_pitch_notes() {
-        // Note A: [1, 2) — ends before B begins at 2.5. Different timing,
-        // no overlap, nothing to truncate.
-        let notes = vec![
-            CompactNote { beat: 1.0, note: Note(60), duration: 1.0, velocity: None, channel: None },
-            CompactNote { beat: 2.5, note: Note(60), duration: 1.0, velocity: None, channel: None },
-        ];
-        let mut events = Vec::new();
-        emit_notes(&notes, 0, &mut events);
-        let offs: Vec<f64> = events
+        assert_eq!(events.len(), 2);
+        let durations: Vec<f64> = events
             .iter()
-            .filter(|e| matches!(e.event, FugueEvent::NoteOff { note: 60, .. }))
-            .map(|e| e.beat_offset)
+            .filter_map(|e| match e.event {
+                FugueEvent::TimedNote { duration_beats, .. } => Some(duration_beats),
+                _ => None,
+            })
             .collect();
-        // Both NoteOffs intact: A at 2.0, B at 3.5.
-        assert!(offs.contains(&2.0), "A's NoteOff at nominal 2.0, got {:?}", offs);
-        assert!(offs.contains(&3.5), "B's NoteOff at nominal 3.5, got {:?}", offs);
+        assert!(durations.contains(&2.0), "A's original 2-beat duration: {:?}", durations);
+        assert!(durations.contains(&1.0), "B's 1-beat duration: {:?}", durations);
     }
 
     #[test]
-    fn emit_notes_overlap_on_different_pitches_is_not_truncated() {
-        // Chord — A on C3, B on E3 starting mid-A. Independent pitches
-        // coexist; neither NoteOff shifts.
-        let notes = vec![
-            CompactNote { beat: 0.0, note: Note(60), duration: 4.0, velocity: None, channel: None },
-            CompactNote { beat: 2.0, note: Note(64), duration: 2.0, velocity: None, channel: None },
-        ];
-        let mut events = Vec::new();
-        emit_notes(&notes, 0, &mut events);
-        let off_60 = events.iter().find(|e| matches!(e.event, FugueEvent::NoteOff { note: 60, .. })).unwrap();
-        assert_eq!(off_60.beat_offset, 4.0);
-    }
-
-    #[test]
-    fn emit_notes_drops_zero_duration_notes() {
-        // A zero-duration note would produce NoteOn + NoteOff at the same
-        // beat; the audio-thread's sample-level NoteOff left-skew would
-        // then push the OFF before its own ON. Drop the pair instead.
+    fn emit_notes_emits_zero_duration_notes_for_audio_thread_to_drop() {
+        // Zero- / negative-duration notes make it through the emit
+        // layer now — audio thread is the single guard that drops
+        // them (see `Fugue::process_event` for TimedNote). That
+        // centralizes the check, so re-emitting via
+        // `definition_to_compact → queue_fugue` doesn't accidentally
+        // strip them differently from the original run.
         let notes = vec![
             CompactNote { beat: 0.0, note: Note(60), duration: 0.0, velocity: None, channel: None },
             CompactNote { beat: 1.0, note: Note(62), duration: 1.0, velocity: None, channel: None },
         ];
         let mut events = Vec::new();
         emit_notes(&notes, 0, &mut events);
-        // Only the valid note round-trips; the zero-duration note is gone.
         assert_eq!(events.len(), 2);
-        assert!(matches!(events[0].event, FugueEvent::NoteOn { note: 62, .. }));
-    }
-
-    #[test]
-    fn emit_notes_drops_notes_whose_overlap_truncation_reaches_zero() {
-        // Two same-pitch notes starting at the same beat — truncation
-        // would pull the first's NoteOff onto its own NoteOn. Drop it
-        // rather than emit a zero-length pair.
-        let notes = vec![
-            CompactNote { beat: 1.0, note: Note(60), duration: 2.0, velocity: None, channel: None },
-            // Later in the list, same beat and pitch — logically a dup.
-            CompactNote { beat: 1.5, note: Note(60), duration: 1.0, velocity: None, channel: None },
-            CompactNote { beat: 1.0, note: Note(60), duration: 3.0, velocity: None, channel: None },
-        ];
-        let mut events = Vec::new();
-        emit_notes(&notes, 0, &mut events);
-        // Emitted NoteOns should not include a phantom pair for the third
-        // note (beat=1.0, duration=3.0) whose NoteOff got truncated to 1.5
-        // but whose sibling at beat=1.0 also got truncated to 1.5. Both
-        // valid; neither should produce a zero-length pair.
-        let on_count = events
-            .iter()
-            .filter(|e| matches!(e.event, FugueEvent::NoteOn { .. }))
-            .count();
-        let off_count = events
-            .iter()
-            .filter(|e| matches!(e.event, FugueEvent::NoteOff { .. }))
-            .count();
-        assert_eq!(on_count, off_count, "every NoteOn needs a matching NoteOff");
+        assert!(matches!(events[0].event, FugueEvent::TimedNote { note: 60, .. }));
+        assert!(matches!(events[1].event, FugueEvent::TimedNote { note: 62, .. }));
     }
 
     #[test]
@@ -482,8 +414,8 @@ mod tests {
         let mut events = Vec::new();
         emit_notes(&notes, 0, &mut events);
         match events[0].event {
-            FugueEvent::NoteOn { channel, .. } => assert_eq!(channel, 4),
-            _ => panic!("expected NoteOn"),
+            FugueEvent::TimedNote { channel, .. } => assert_eq!(channel, 4),
+            _ => panic!("expected TimedNote"),
         }
     }
 

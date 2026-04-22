@@ -545,6 +545,11 @@ fn send_note_offs_for_fugue_at_offset(
         output_buffer.push(ProcessedEvent::Instant { sample_offset, message: msg });
     }
     fugue.clear_active_notes();
+    // Ring entries for TimedNote-scheduled NoteOffs are now spurious —
+    // the notes they track were just released via the bitset flush
+    // above. Clearing the ring prevents a "ghost NoteOff" from firing
+    // later for a pitch the synth doesn't currently have voiced.
+    fugue.clear_pending_note_offs();
     fugue.clear_cc_state();
 }
 

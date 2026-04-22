@@ -217,9 +217,17 @@ const AUTO_DURATION_BAR_BEATS: f64 = 4.0;
 /// not a feature — the only cost of extending is a bit of trailing silence.
 fn resolve_duration_beats(explicit: Option<f64>, events: &[TimedFugueEvent]) -> f64 {
     let required = {
+        // For TimedNote, the end of the note is `beat_offset + duration_beats`.
+        // For every other event type, the event itself is a point in time
+        // so its `beat_offset` is the latest beat it touches. Taking max
+        // across both shapes gives us the correct "latest beat any event
+        // reaches."
         let max_end = events
             .iter()
-            .map(|e| e.beat_offset)
+            .map(|e| match e.event {
+                FugueEvent::TimedNote { duration_beats, .. } => e.beat_offset + duration_beats,
+                _ => e.beat_offset,
+            })
             .fold(0.0_f64, f64::max);
         let rounded = (max_end / AUTO_DURATION_BAR_BEATS).ceil() * AUTO_DURATION_BAR_BEATS;
         rounded.max(AUTO_DURATION_BAR_BEATS)
@@ -369,6 +377,21 @@ pub fn definition_to_compact(def: &FugueDefinition) -> CompactFugue {
     for timed in &def.events {
         let beat = timed.beat_offset;
         match timed.event {
+            // LLM-authored notes come back directly from TimedNote — the
+            // round-trip is lossless because duration lives on the event.
+            FugueEvent::TimedNote { channel, note, velocity, duration_beats } => {
+                push_compact_note(
+                    &mut notes,
+                    beat,
+                    beat + duration_beats,
+                    channel,
+                    note,
+                    velocity,
+                );
+            }
+            // Raw NoteOn / NoteOff survive for imports and other paths
+            // that emit explicit on/off events; we still pair them here
+            // to surface them as CompactNote on read-back.
             FugueEvent::NoteOn { channel, note, velocity } => {
                 open_notes.entry((channel, note)).or_default().push_back((beat, velocity));
             }

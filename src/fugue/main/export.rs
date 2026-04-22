@@ -31,7 +31,8 @@ pub fn fugue_to_smf(definition: &FugueDefinition, tempo_bpm: f64) -> Vec<u8> {
     let tempo_microseconds = (60_000_000.0 / tempo_bpm) as u32;
     track_events.push((0, TrackEventKind::Meta(MetaMessage::Tempo(u24::new(tempo_microseconds)))));
 
-    let events = densify_cc_events(&definition.events, definition.cc_interpolation);
+    let expanded = expand_timed_notes_for_export(&definition.events);
+    let events = densify_cc_events(&expanded, definition.cc_interpolation);
 
     for timed_event in &events {
         let tick = beat_to_tick(timed_event.beat_offset);
@@ -83,10 +84,48 @@ fn beat_to_tick(beat: f64) -> u32 {
     (beat * PPQ as f64).round() as u32
 }
 
+/// Expand `FugueEvent::TimedNote` events into the raw `NoteOn` / `NoteOff`
+/// pair that SMF expects — MIDI 1.0 doesn't have a "note with duration"
+/// event type. Non-TimedNote events pass through unchanged. Called
+/// before `densify_cc_events` so the rest of the export pipeline sees
+/// a homogeneous event stream.
+fn expand_timed_notes_for_export(events: &[TimedFugueEvent]) -> Vec<TimedFugueEvent> {
+    let mut out: Vec<TimedFugueEvent> = Vec::with_capacity(events.len());
+    for ev in events {
+        if let FugueEvent::TimedNote { channel, note, velocity, duration_beats } = ev.event {
+            out.push(TimedFugueEvent::new(
+                ev.beat_offset,
+                FugueEvent::NoteOn { channel, note, velocity },
+            ));
+            out.push(TimedFugueEvent::new(
+                ev.beat_offset + duration_beats,
+                FugueEvent::NoteOff { channel, note },
+            ));
+        } else {
+            out.push(*ev);
+        }
+    }
+    out
+}
+
 /// Convert a FugueEvent to a MIDI TrackEventKind
 fn fugue_event_to_midi(event: &FugueEvent) -> Option<TrackEventKind<'static>> {
     match event {
         FugueEvent::NoteOn { channel, note, velocity } => {
+            Some(TrackEventKind::Midi {
+                channel: u4::new(*channel & 0x0F),
+                message: MidiMessage::NoteOn {
+                    key: u7::new(*note & 0x7F),
+                    vel: u7::new(*velocity & 0x7F),
+                },
+            })
+        }
+        // Shouldn't appear in practice — callers pre-expand TimedNote
+        // via `expand_timed_notes_for_export` before calling this
+        // function. Handle it defensively (emit the NoteOn; the paired
+        // NoteOff is lost) so an accidentally-unexpanded event still
+        // produces *something* rather than silently disappearing.
+        FugueEvent::TimedNote { channel, note, velocity, .. } => {
             Some(TrackEventKind::Midi {
                 channel: u4::new(*channel & 0x0F),
                 message: MidiMessage::NoteOn {
@@ -480,7 +519,8 @@ impl ExportedMidi {
                 }
             };
 
-            let events = densify_cc_events(&def.events, def.cc_interpolation);
+            let expanded = expand_timed_notes_for_export(&def.events);
+            let events = densify_cc_events(&expanded, def.cc_interpolation);
 
             tracks.push(ExportedTrack { name, events });
         }
@@ -558,7 +598,8 @@ pub fn fugues_to_single_track_smf(
         .tag
         .clone()
         .unwrap_or_else(|| "merged".to_string());
-    let events = densify_cc_events(&merged.events, merged.cc_interpolation);
+    let expanded = expand_timed_notes_for_export(&merged.events);
+    let events = densify_cc_events(&expanded, merged.cc_interpolation);
     ExportedMidi {
         tempo_bpm,
         tracks: vec![ExportedTrack { name, events }],

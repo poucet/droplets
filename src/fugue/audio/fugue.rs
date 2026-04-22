@@ -9,7 +9,7 @@ use super::super::types::{
 use crate::mcp::{CcMessage, MidiMessage, NoteMessage, PerNoteExpressionMessage};
 
 /// Tracks an active CC ramp that spans multiple process cycles
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub struct ActiveCcRamp {
     pub channel: u8,
     pub cc: u8,
@@ -21,6 +21,44 @@ pub struct ActiveCcRamp {
     pub end_beat: f64,
     pub interpolation: InterpolationMode,
 }
+
+/// Fixed cap on concurrent CC ramps *per fugue*. The MIDI CC address
+/// space is 2048 cells total per instance (128 CCs × 16 channels);
+/// most fugues modulate at most a handful. 32 is comfortable for any
+/// realistic musical content and keeps per-fugue storage at ~1 KB
+/// instead of 64 KB.
+///
+/// Insert / remove-by-(ch, cc) / iterate are all linear scans over
+/// this array — trivial at N=32. If polyphony demands more ramps the
+/// oldest slot is stolen (final value fires, slot reused).
+///
+/// Architecturally, ramps belong on `FugueSequencer` as a single
+/// per-instance 2048-cell table — they model a per-instance MIDI
+/// address space and two fugues ramping the same (ch, cc) should
+/// coordinate, not race. That refactor is Feature 31 on the roadmap.
+const MAX_ACTIVE_RAMPS: usize = 32;
+
+/// A NoteOff scheduled by a previously-fired [`FugueEvent::TimedNote`].
+/// Stored in absolute transport-beat coordinates so subsequent
+/// `start_beat` mutations (`reset_for_loop`, `phase_lock`) don't
+/// silently invalidate the end time.
+#[derive(Copy, Clone, Debug)]
+struct PendingNoteOff {
+    /// Absolute transport beat at which the NoteOff fires.
+    end_absolute_beat: f64,
+    channel: u8,
+    note: u8,
+    /// Monotonic insertion order; used for "steal the oldest slot"
+    /// when the ring is full.
+    seq: u64,
+}
+
+/// Fixed polyphony cap for `TimedNote`-originated sustains tracked
+/// across buffers. Comfortably covers any musically plausible voice
+/// count; the audio thread can't allocate, so we bound this at
+/// compile time and spill via oldest-slot voice-stealing when
+/// exceeded.
+const MAX_PENDING_NOTE_OFFS: usize = 128;
 
 /// Runtime state for an active fugue
 pub struct Fugue {
@@ -44,8 +82,19 @@ pub struct Fugue {
     /// Last known CC value per channel/cc (for interpolation start values)
     /// None means no CC has been sent yet on this channel/cc
     cc_state: [[Option<u8>; 128]; 16],
-    /// Active CC ramps that span multiple buffers
-    active_ramps: Vec<ActiveCcRamp>,
+    /// Active CC ramps that span multiple buffers. Fixed-capacity so
+    /// the audio thread never allocates; if the (rare) case hits
+    /// where more than [`MAX_ACTIVE_RAMPS`] ramps are concurrently
+    /// live, the oldest ramp is evicted (its final value fires, then
+    /// the slot is reused) — `add_active_ramp` owns that decision.
+    active_ramps: [Option<ActiveCcRamp>; MAX_ACTIVE_RAMPS],
+    /// Fixed-capacity ring of NoteOffs scheduled by `TimedNote`
+    /// events. Stays bounded so the audio thread never allocates.
+    pending_note_offs: [Option<PendingNoteOff>; MAX_PENDING_NOTE_OFFS],
+    /// Monotonic counter stamped onto each `PendingNoteOff` at
+    /// insertion; wraps at `u64::MAX` (which takes ~584 years at one
+    /// million notes per second, so effectively never).
+    pending_seq: u64,
 }
 
 // Helper to create default CC state array
@@ -66,7 +115,9 @@ impl Fugue {
             target_start_beat: None,
             cancelled: false,
             cc_state: default_cc_state(),
-            active_ramps: Vec::new(),
+            active_ramps: [None; MAX_ACTIVE_RAMPS],
+            pending_note_offs: [None; MAX_PENDING_NOTE_OFFS],
+            pending_seq: 0,
         }
     }
 
@@ -198,8 +249,9 @@ impl Fugue {
         // the event counts we deal with, and removes the whole class of
         // float-drift bugs at the first-event boundary.
         self.next_event_index = 0;
-        self.active_ramps.clear();
+        self.active_ramps = [None; MAX_ACTIVE_RAMPS];
         self.clear_active_notes();
+        self.clear_pending_note_offs();
         self.cc_state = default_cc_state();
         true
     }
@@ -353,7 +405,62 @@ impl Fugue {
             self.next_event_index += 1;
         }
 
+        // Drain scheduled NoteOffs that expire inside this buffer. Ring
+        // entries are stored in absolute transport-beat coordinates so
+        // we compare against the same absolute window the caller gave
+        // us. Each drained entry emits NoteOff at the sample its
+        // `end_absolute_beat` maps to — sample-accurate boundary, no
+        // left-skew hack required, because the scheduler OWNS both
+        // sides of the OFF/ON pair for TimedNote-originated notes.
+        // Index loop (not iter_mut) because the body touches
+        // `set_note_inactive`, which also mutates `self`. Copying the
+        // slot value out first releases the short-lived &mut on the
+        // slice so the subsequent `self.` calls type-check.
+        for i in 0..self.pending_note_offs.len() {
+            let Some(p) = self.pending_note_offs[i] else { continue };
+
+            // Subtle: we fire a NoteOff at the exact sample the note
+            // was scheduled to end at. If another TimedNote for the
+            // same (channel, note) is due to start on the same
+            // sample, the retrigger-eviction path in
+            // `process_event` has already emitted THIS NoteOff at
+            // `new_on_sample - 1` and cleared the slot, so we
+            // wouldn't reach here. The drain path only handles
+            // notes whose end time wasn't superseded.
+            if p.end_absolute_beat < current_beat {
+                // Past the scheduled end. Usually means something
+                // cleared the fugue's start_beat out from under the
+                // entry (phase_lock without a ring flush, hypothetical
+                // race). Fire the NoteOff at sample 0 to avoid a
+                // stuck voice.
+                let msg = MidiMessage::Note(NoteMessage::new(p.channel, p.note, 0, false));
+                events.push(ProcessedEvent::Instant { sample_offset: 0, message: msg });
+                self.set_note_inactive(p.channel, p.note);
+                self.pending_note_offs[i] = None;
+            } else if p.end_absolute_beat < end_beat {
+                // Ends within this buffer.
+                let sample_offset = ((p.end_absolute_beat - current_beat) / beats_per_sample)
+                    .floor()
+                    .max(0.0) as u32;
+                let msg = MidiMessage::Note(NoteMessage::new(p.channel, p.note, 0, false));
+                events.push(ProcessedEvent::Instant { sample_offset, message: msg });
+                self.set_note_inactive(p.channel, p.note);
+                self.pending_note_offs[i] = None;
+            }
+            // else: ends in a future buffer; leave it in the ring.
+        }
+
         events
+    }
+
+    /// Clear the pending-NoteOff ring. Called from any flush path
+    /// (`phase_lock`, `send_note_offs_for_fugue` in the sequencer,
+    /// cancel paths) where `active_notes` gets wiped and the caller
+    /// emits NoteOffs for held notes separately — leaving entries in
+    /// the ring would produce spurious NoteOffs later on notes that
+    /// have already been released.
+    pub fn clear_pending_note_offs(&mut self) {
+        self.pending_note_offs = [None; MAX_PENDING_NOTE_OFFS];
     }
 
     /// Process a single fugue event
@@ -374,6 +481,65 @@ impl Fugue {
                 self.set_note_inactive(*channel, *note);
                 let msg = MidiMessage::Note(NoteMessage::new(*channel, *note, 0, false));
                 events.push(ProcessedEvent::Instant { sample_offset, message: msg });
+            }
+            FugueEvent::TimedNote { channel, note, velocity, duration_beats } => {
+                // Zero- or negative-duration notes never existed — skip
+                // entirely rather than emitting a NoteOn with no
+                // matching NoteOff scheduled.
+                if *duration_beats <= 0.0 {
+                    return;
+                }
+                // Same-pitch retrigger: if a prior TimedNote for this
+                // (channel, note) is still in the pending ring, emit
+                // its NoteOff one sample before the new NoteOn so the
+                // synth never sees a same-sample OFF/ON collision.
+                if let Some(slot) = self
+                    .pending_note_offs
+                    .iter_mut()
+                    .find(|s| matches!(s, Some(p) if p.channel == *channel && p.note == *note))
+                {
+                    let off_sample = sample_offset.saturating_sub(1);
+                    let msg = MidiMessage::Note(NoteMessage::new(*channel, *note, 0, false));
+                    events.push(ProcessedEvent::Instant { sample_offset: off_sample, message: msg });
+                    *slot = None;
+                    // The bitset will be re-set by the NoteOn below, so
+                    // no need to touch it here.
+                }
+                self.set_note_active(*channel, *note);
+                let on_msg = MidiMessage::Note(NoteMessage::new(*channel, *note, *velocity, true));
+                events.push(ProcessedEvent::Instant { sample_offset, message: on_msg });
+
+                // Push a PendingNoteOff at the absolute end beat. Stored
+                // in absolute coords so `reset_for_loop` / `phase_lock`
+                // mutating `start_beat` don't invalidate the schedule.
+                let end_absolute_beat = self.start_beat + beat_offset + *duration_beats;
+                let entry = PendingNoteOff {
+                    end_absolute_beat,
+                    channel: *channel,
+                    note: *note,
+                    seq: self.pending_seq,
+                };
+                self.pending_seq = self.pending_seq.wrapping_add(1);
+                if let Some(free) = self.pending_note_offs.iter_mut().find(|s| s.is_none()) {
+                    *free = Some(entry);
+                } else {
+                    // Ring full — steal the oldest (smallest seq) slot.
+                    // The note it was tracking gets its NoteOff emitted
+                    // now (sample_offset) so the synth doesn't hold a
+                    // stuck voice; the new entry replaces it.
+                    if let Some((idx, stolen)) = self
+                        .pending_note_offs
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(i, s)| s.map(|p| (i, p)))
+                        .min_by_key(|(_, p)| p.seq)
+                    {
+                        let msg = MidiMessage::Note(NoteMessage::new(stolen.channel, stolen.note, 0, false));
+                        events.push(ProcessedEvent::Instant { sample_offset, message: msg });
+                        self.set_note_inactive(stolen.channel, stolen.note);
+                        self.pending_note_offs[idx] = Some(entry);
+                    }
+                }
             }
             FugueEvent::Cc { channel, cc, value, curve } => {
                 self.process_cc_event(*channel, *cc, *value, *curve, beat_offset, sample_offset, events);
@@ -447,11 +613,7 @@ impl Fugue {
         let absolute_start_beat = self.start_beat + ramp_start_beat;
         let absolute_end_beat = self.start_beat + beat_offset;
 
-        // Remove any existing ramp for this channel/cc
-        self.active_ramps.retain(|r| r.channel != channel || r.cc != cc);
-
-        // Add new ramp
-        self.active_ramps.push(ActiveCcRamp {
+        let new_ramp = ActiveCcRamp {
             channel,
             cc,
             start_value,
@@ -459,7 +621,36 @@ impl Fugue {
             start_beat: absolute_start_beat,
             end_beat: absolute_end_beat,
             interpolation: segment_curve,
-        });
+        };
+
+        // Remove any existing ramp for this channel/cc, then push the
+        // new one. Linear scan of MAX_ACTIVE_RAMPS is trivial at N=32.
+        // Also tracks the first free slot and the oldest (smallest
+        // start_beat) slot in the same pass so we can insert or
+        // evict without a second scan.
+        let mut matched: Option<usize> = None;
+        let mut first_free: Option<usize> = None;
+        let mut oldest: Option<(usize, f64)> = None;
+        for (idx, slot) in self.active_ramps.iter().enumerate() {
+            match slot {
+                Some(r) if r.channel == channel && r.cc == cc => {
+                    matched = Some(idx);
+                }
+                Some(r) => {
+                    match oldest {
+                        Some((_, best)) if r.start_beat >= best => {}
+                        _ => oldest = Some((idx, r.start_beat)),
+                    }
+                }
+                None if first_free.is_none() => first_free = Some(idx),
+                None => {}
+            }
+        }
+        let target = matched
+            .or(first_free)
+            .or_else(|| oldest.map(|(i, _)| i))
+            .unwrap_or(0);
+        self.active_ramps[target] = Some(new_ramp);
     }
 
     /// Find the beat offset of the previous CC event for this channel/cc
@@ -484,14 +675,16 @@ impl Fugue {
         beats_per_sample: f64,
         events: &mut Vec<ProcessedEvent>,
     ) {
-        // Remove finished ramps and emit events for active ones
-        let mut finished_indices = Vec::new();
+        // Index loop (not iter) so we can reassign slots in place when
+        // a ramp finishes within this buffer. Linear scan over
+        // MAX_ACTIVE_RAMPS is cheap.
+        for i in 0..self.active_ramps.len() {
+            let Some(ramp) = self.active_ramps[i] else { continue };
 
-        for (idx, ramp) in self.active_ramps.iter().enumerate() {
             // Check if ramp overlaps with current buffer
             if ramp.end_beat <= current_beat {
-                // Ramp already finished
-                finished_indices.push(idx);
+                // Ramp already finished — reclaim the slot.
+                self.active_ramps[i] = None;
                 continue;
             }
 
@@ -543,22 +736,17 @@ impl Fugue {
                 interpolation: ramp.interpolation,
             });
 
-            // Mark ramp as finished if it ends in this buffer
+            // Reclaim the slot if the ramp finished within this buffer.
             if ramp.end_beat <= end_beat {
-                finished_indices.push(idx);
+                self.active_ramps[i] = None;
             }
-        }
-
-        // Remove finished ramps (in reverse order to preserve indices)
-        for idx in finished_indices.into_iter().rev() {
-            self.active_ramps.remove(idx);
         }
     }
 
     /// Clear CC state (called when fugue is reset or cancelled)
     pub fn clear_cc_state(&mut self) {
         self.cc_state = default_cc_state();
-        self.active_ramps.clear();
+        self.active_ramps = [None; MAX_ACTIVE_RAMPS];
     }
 }
 

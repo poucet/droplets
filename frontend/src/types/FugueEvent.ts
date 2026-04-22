@@ -4,7 +4,13 @@ import type { InterpolationMode } from "./InterpolationMode";
 /**
  * A single musical event in a fugue
  */
-export type FugueEvent = { "type": "note_on", channel: number, note: number, velocity: number, } | { "type": "note_off", channel: number, note: number, } | { "type": "cc", channel: number, cc: number, value: number, curve: InterpolationMode | null, } | { "type": "per_note_pitch_bend", channel: number, note: number, 
+export type FugueEvent = { "type": "note_on", channel: number, note: number, velocity: number, } | { "type": "note_off", channel: number, note: number, } | { "type": "timed_note", channel: number, note: number, velocity: number, 
+/**
+ * Duration in beats from the NoteOn. The NoteOff fires at
+ * `beat_offset + duration_beats` where `beat_offset` is the
+ * enclosing [`TimedFugueEvent`]'s offset.
+ */
+duration_beats: number, } | { "type": "cc", channel: number, cc: number, value: number, curve: InterpolationMode | null, } | { "type": "per_note_pitch_bend", channel: number, note: number, 
 /**
  * Pitch bend in semitones (-64.0 to +64.0)
  */

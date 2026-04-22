@@ -214,6 +214,38 @@ pub enum FugueEvent {
         channel: u8,
         note: u8,
     },
+    /// A note with its duration baked in. When the scheduler sees one
+    /// of these it emits a NoteOn at the event's `beat_offset` and
+    /// schedules the corresponding NoteOff internally — using a
+    /// fixed-capacity `PendingNoteOff` ring on the audio thread — to
+    /// fire exactly at `beat_offset + duration_beats`. This is the
+    /// form `emit_notes` produces for LLM-authored notes.
+    ///
+    /// Raw `NoteOn` / `NoteOff` variants stay for paths that need
+    /// point-in-time events: MIDI import with dangling / overlapping
+    /// notes, cancel / panic flushes, immediate-send MCP tools. A
+    /// fugue's event list can mix `TimedNote`s and raw on/off events.
+    ///
+    /// Invariants the audio thread enforces (specific to this variant
+    /// — raw NoteOn/NoteOff don't get these guarantees):
+    /// - Same-pitch retrigger: a new `TimedNote` for an `(channel,
+    ///   note)` that's still playing evicts the pending NoteOff and
+    ///   emits it one sample before the new NoteOn, so the synth
+    ///   never sees the same-sample OFF/ON collision.
+    /// - Loop-boundary: NoteOffs whose scheduled time falls exactly on
+    ///   the loop boundary fire at `loop_end_sample - 1`, one sample
+    ///   before the next iteration's beat-0 NoteOns.
+    /// - Zero-duration notes are skipped entirely — no NoteOn, no
+    ///   NoteOff, no ring slot consumed.
+    TimedNote {
+        channel: u8,
+        note: u8,
+        velocity: u8,
+        /// Duration in beats from the NoteOn. The NoteOff fires at
+        /// `beat_offset + duration_beats` where `beat_offset` is the
+        /// enclosing [`TimedFugueEvent`]'s offset.
+        duration_beats: f64,
+    },
     /// MIDI Control Change.
     /// `curve` (optional) controls interpolation for the ramp ARRIVING at this
     /// event — the "curve to this point" convention. When `None`, the fugue-level
@@ -267,11 +299,19 @@ impl FugueEvent {
         Self::PerNotePressure { channel, note, pressure }
     }
 
+    /// Create a TimedNote event (NoteOn with baked-in duration — the
+    /// scheduler synthesizes the NoteOff at `beat_offset + duration_beats`
+    /// via its pending-NoteOff ring).
+    pub fn timed_note(channel: u8, note: u8, velocity: u8, duration_beats: f64) -> Self {
+        Self::TimedNote { channel, note, velocity, duration_beats }
+    }
+
     /// Get the channel for this event
     pub fn channel(&self) -> u8 {
         match self {
             Self::NoteOn { channel, .. } => *channel,
             Self::NoteOff { channel, .. } => *channel,
+            Self::TimedNote { channel, .. } => *channel,
             Self::Cc { channel, .. } => *channel,
             Self::PerNotePitchBend { channel, .. } => *channel,
             Self::PerNotePressure { channel, .. } => *channel,
@@ -283,6 +323,7 @@ impl FugueEvent {
         match self {
             Self::NoteOn { note, .. } => Some(*note),
             Self::NoteOff { note, .. } => Some(*note),
+            Self::TimedNote { note, .. } => Some(*note),
             Self::PerNotePitchBend { note, .. } => Some(*note),
             Self::PerNotePressure { note, .. } => Some(*note),
             Self::Cc { .. } => None,
@@ -319,6 +360,14 @@ impl TimedFugueEvent {
     /// Create a CC event at the given beat
     pub fn cc(beat: f64, channel: u8, cc: u8, value: u8) -> Self {
         Self::new(beat, FugueEvent::cc(channel, cc, value))
+    }
+
+    /// Create a TimedNote event (note with baked-in duration) at the
+    /// given onset beat. The scheduler emits the NoteOn at `beat` and
+    /// the corresponding NoteOff at `beat + duration_beats` via its
+    /// pending-NoteOff ring.
+    pub fn timed_note(beat: f64, channel: u8, note: u8, velocity: u8, duration_beats: f64) -> Self {
+        Self::new(beat, FugueEvent::timed_note(channel, note, velocity, duration_beats))
     }
 }
 
