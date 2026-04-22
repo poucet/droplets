@@ -282,7 +282,12 @@ impl Fugue {
         }
     }
 
-    /// Process events in the given beat range and return ProcessedEvents
+    /// Process events in the given beat range, pushing emitted
+    /// ProcessedEvents into `events`.
+    ///
+    /// Caller-provided out-param so the audio thread reuses one buffer
+    /// across every fugue in the sequencer instead of allocating a
+    /// fresh Vec per call.
     ///
     /// This handles:
     /// - Emitting instant events (notes, per-note expression)
@@ -293,19 +298,16 @@ impl Fugue {
     /// * `current_beat` - Start of the buffer in absolute beats
     /// * `end_beat` - End of the buffer in absolute beats
     /// * `beats_per_sample` - Conversion factor from beats to samples
-    ///
-    /// # Returns
-    /// Vector of ProcessedEvents to be handled by the MIDI processor
+    /// * `events` - Output buffer to append ProcessedEvents into
     pub fn process_buffer(
         &mut self,
         current_beat: f64,
         end_beat: f64,
         beats_per_sample: f64,
-    ) -> Vec<ProcessedEvent> {
-        let mut events = Vec::new();
-
+        events: &mut Vec<ProcessedEvent>,
+    ) {
         if self.waiting_for_start || self.is_finished() {
-            return events;
+            return;
         }
 
         // Calculate local beat range within this fugue
@@ -317,7 +319,7 @@ impl Fugue {
             current_beat,
             end_beat,
             beats_per_sample,
-            &mut events,
+            events,
         );
 
         // Tolerance for the `>= local_start` gate below. Widened to one
@@ -388,7 +390,7 @@ impl Fugue {
                     &event,
                     beat_offset,
                     sample_offset,
-                    &mut events,
+                    events,
                 );
             }
 
@@ -439,8 +441,6 @@ impl Fugue {
             }
             // else: ends in a future buffer; leave it in the ring.
         }
-
-        events
     }
 
     /// Clear the pending-NoteOff ring. Called from any flush path

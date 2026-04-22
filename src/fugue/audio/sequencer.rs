@@ -401,9 +401,9 @@ impl FugueSequencer {
             // Calculate local beat range
             let local_end = end_beat - fugue.start_beat;
 
-            // Process events and collect into output buffer
-            let events = fugue.process_buffer(current_beat, end_beat, beats_per_sample);
-            self.output_buffer.extend(events);
+            // Fugue pushes directly into the sequencer's shared output
+            // buffer — no per-call Vec allocation.
+            fugue.process_buffer(current_beat, end_beat, beats_per_sample, &mut self.output_buffer);
 
             // Check for loop boundary
             if local_end >= fugue.definition.duration_beats && !fugue.is_finished() {
@@ -413,8 +413,7 @@ impl FugueSequencer {
                 // Process events from the start of the new loop if buffer extends into it
                 let new_local_end = end_beat - fugue.start_beat;
                 if new_local_end > 0.0 {
-                    let more_events = fugue.process_buffer(current_beat, end_beat, beats_per_sample);
-                    self.output_buffer.extend(more_events);
+                    fugue.process_buffer(current_beat, end_beat, beats_per_sample, &mut self.output_buffer);
                 }
             }
         }
