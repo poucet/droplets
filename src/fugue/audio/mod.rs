@@ -18,6 +18,7 @@
 //! goal is zero f64 comparisons in the scheduling hot path.
 
 mod fugue;
+mod hacks;
 mod sequencer;
 
 pub use fugue::Fugue;

@@ -370,26 +370,19 @@ impl Fugue {
                 // Clone event to avoid borrow issues
                 let event = timed_event.event;
 
-                // Left-skew NoteOffs by one audio frame so a NoteOff landing
-                // at the same sample as a following NoteOn — adjacent
-                // repeat notes mid-pattern, or the last NoteOff of one
-                // loop iteration meeting the next iteration's beat-0
-                // NoteOn within the same buffer — resolves to a strictly
-                // earlier audio sample. Same-sample pairs otherwise reach
-                // the synth as simultaneous events and several synths
-                // collapse them, dropping the retrigger. emit_notes drops
-                // zero-duration notes so this skew can never push a
-                // NoteOff before its own NoteOn.
-                //
-                // Edge case not handled here: when the NoteOff's natural
-                // sample_offset is already 0 (buffer start aligned with
-                // the beat), saturating_sub leaves it at 0 and the race
-                // falls through to output-buffer ordering. Rare in
-                // practice — audio buffers aren't beat-aligned. A proper
-                // fix would stash these NoteOffs for emission at
-                // `frames - 1` of the previous buffer; deferred.
+                // Raw `NoteOff` events in a fugue's definition (e.g.
+                // from imported MIDI with back-to-back same-pitch
+                // notes) get a one-sample left-skew so same-sample
+                // OFF/ON pairs resolve cleanly at the synth. See
+                // [`hacks::note_off_skewed_sample`] for the full
+                // rationale. TimedNote-originated NoteOffs don't
+                // traverse this path — they're emitted from the
+                // PendingNoteOff ring with sample offsets computed
+                // directly from `end_absolute_beat`.
                 let sample_offset = match event {
-                    FugueEvent::NoteOff { .. } => raw_sample_offset.saturating_sub(1),
+                    FugueEvent::NoteOff { .. } => {
+                        super::hacks::note_off_skewed_sample(raw_sample_offset)
+                    }
                     _ => raw_sample_offset,
                 };
 

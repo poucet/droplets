@@ -6,7 +6,7 @@ use rtrb::Consumer;
 
 use super::super::command::FugueCommand;
 use super::fugue::Fugue;
-use super::super::types::{CancelMode, FugueDefinition, FugueInfo, ProcessedEvent, StartMode};
+use super::super::types::{CancelMode, FugueDefinition, FugueEvent, FugueInfo, ProcessedEvent, StartMode};
 use crate::mcp::{MidiMessage, NoteMessage};
 
 /// Buffer capacity for output MIDI messages per process cycle
@@ -121,17 +121,17 @@ impl FugueSequencer {
             false
         });
 
-        // Deconflict same-sample NoteOff+NoteOn pairs for the same
-        // (channel, note). The classic offender is a DAW loop wrap:
-        // phase_lock_all emits note-offs for currently-held notes at
-        // sample 0, then the phase-locked fugue's beat-0 NoteOns land at
-        // sample 0 too. Our per-event left-skew of NoteOffs (one sample
-        // earlier, in `Fugue::process_buffer`) saturates at 0 and can't
-        // rescue this specific case. Shift the NoteOn forward one sample
-        // instead — the NoteOn is always safe to push because a buffer
-        // is never one sample long.
-        deconflict_same_sample_note_retriggers(&mut self.output_buffer, frames);
-
+        // The deconflict post-pass that used to run here (shifting
+        // NoteOns one sample forward when they collided with a
+        // phase_lock-emitted NoteOff at sample 0) is gone. The
+        // targeted fix in `send_note_offs_for_fugue_skipping_beat0_retriggers`
+        // eliminates the collision at source: phase_lock_all no
+        // longer emits NoteOffs for pitches the new iteration is
+        // about to retrigger, so no OFF/ON pair shares a sample on
+        // the critical path. Same-pitch retriggers mid-pattern are
+        // handled by TimedNote's own retrigger-eviction path inside
+        // `Fugue::process_event`. The Feature 28 regression tests
+        // cover both.
         self.last_beat = end_beat;
         self.output_buffer.drain(..)
     }
@@ -205,7 +205,32 @@ impl FugueSequencer {
         let output_buffer = &mut self.output_buffer;
         self.fugues.retain_mut(|f| {
             if !f.get_active_notes().is_empty() {
-                send_note_offs_for_fugue(f, output_buffer);
+                // Targeted cleanup: skip emitting NoteOffs for pitches
+                // that the new iteration's beat-0 event will retrigger
+                // anyway. Without this we emit NoteOff@0 for a pitch
+                // that's about to get a fresh NoteOn@0 from the same
+                // buffer — same-sample OFF/ON, which is what the
+                // deconflict post-pass used to rescue. Letting the
+                // retrigger fire cleanly (synth keeps its envelope,
+                // just re-triggers a new voice) is the musically
+                // correct outcome and eliminates the race at its
+                // source.
+                //
+                // Only applies when the new iteration actually starts
+                // from beat 0 — i.e., the phase-lock target phase is 0
+                // (to a tolerance). Otherwise the old pitch needs its
+                // NoteOff now, because the new iteration will skip
+                // past beat 0 without firing the matching NoteOn.
+                let dur = f.definition.duration_beats;
+                let phase = if dur > 0.0 { transport_beat.rem_euclid(dur) } else { 0.0 };
+                let new_iter_starts_at_beat_zero =
+                    phase.abs() < 1e-6 || (dur - phase).abs() < 1e-6;
+
+                send_note_offs_for_fugue_skipping_beat0_retriggers(
+                    f,
+                    output_buffer,
+                    new_iter_starts_at_beat_zero,
+                );
             }
             f.phase_lock(transport_beat)
         });
@@ -419,53 +444,6 @@ impl FugueSequencer {
     }
 }
 
-/// Shift every `NoteOn` that shares its `sample_offset` with a `NoteOff`
-/// on the same `(channel, note)` one sample forward, so the ordering the
-/// synth sees is unambiguously OFF → ON instead of two simultaneous
-/// events. Only touches true collisions — non-colliding events keep their
-/// original sample_offsets. No-op when the output buffer has no NoteOff,
-/// which is the common case.
-///
-/// Why this matters: CLAP event lists are stable-sorted by sample_offset,
-/// but several shipping synths collapse same-sample OFF+ON pairs for the
-/// same pitch regardless of list order, dropping the retrigger. The
-/// specific failure this catches is a DAW transport wrap that triggers
-/// `phase_lock_all` (emits NoteOffs at sample 0) in the same buffer that
-/// the phase-locked fugue emits its beat-0 NoteOns (also at sample 0).
-/// Our per-fugue left-skew clamps at sample 0 and can't help here.
-///
-/// Shift direction is +1 on the NoteOn rather than -1 on the NoteOff for
-/// the same reason: a NoteOff at sample 0 has nowhere earlier to go
-/// within this buffer. Capped at `frames - 1` in the extremely unlikely
-/// case that a NoteOn is already at the last sample of a `frames`-sized
-/// buffer (the NoteOff would have to be on the last sample too, which
-/// the phase_lock path never does).
-fn deconflict_same_sample_note_retriggers(
-    output_buffer: &mut [ProcessedEvent],
-    frames: u32,
-) {
-    use std::collections::HashSet;
-    let mut off_slots: HashSet<(u32, u8, u8)> = HashSet::new();
-    for ev in output_buffer.iter() {
-        if let ProcessedEvent::Instant { sample_offset, message: MidiMessage::Note(n) } = ev {
-            if !n.is_note_on {
-                off_slots.insert((*sample_offset, n.channel, n.note));
-            }
-        }
-    }
-    if off_slots.is_empty() {
-        return;
-    }
-    let max_sample = frames.saturating_sub(1);
-    for ev in output_buffer.iter_mut() {
-        if let ProcessedEvent::Instant { sample_offset, message: MidiMessage::Note(n) } = ev {
-            if n.is_note_on && off_slots.contains(&(*sample_offset, n.channel, n.note)) {
-                *sample_offset = (*sample_offset + 1).min(max_sample);
-            }
-        }
-    }
-}
-
 /// Transition a `waiting_for_start` fugue to active, placing its
 /// iteration boundaries on the song-grid `k · dur` from transport-0.
 /// Handles both start modes from `StartMode`:
@@ -532,6 +510,64 @@ fn place_on_song_grid(fugue: &mut Fugue, target: f64, dur: f64) {
 /// Send note-offs for all active notes in a fugue at sample offset 0
 fn send_note_offs_for_fugue(fugue: &mut Fugue, output_buffer: &mut Vec<ProcessedEvent>) {
     send_note_offs_for_fugue_at_offset(fugue, output_buffer, 0);
+}
+
+/// Same as [`send_note_offs_for_fugue`] but filters out held pitches
+/// that a beat-0 TimedNote / NoteOn in the fugue's definition will
+/// retrigger in the same buffer — called only by `phase_lock_all` to
+/// eliminate the OFF@0 / ON@0 collision at transport jumps.
+///
+/// When `new_iter_starts_at_beat_zero` is false (phase-locked mid-
+/// pattern), retriggers don't apply and every held note is released.
+fn send_note_offs_for_fugue_skipping_beat0_retriggers(
+    fugue: &mut Fugue,
+    output_buffer: &mut Vec<ProcessedEvent>,
+    new_iter_starts_at_beat_zero: bool,
+) {
+    // Scan the fugue's definition for beat-0 events whose (channel,
+    // note) matches any currently-held note. Those are the retriggers
+    // we can elide. Iterating until beat_offset > 0 is O(few events)
+    // because the definition is sorted by beat_offset.
+    let held = fugue.get_active_notes();
+    let mut retrigger_targets: [(u8, u8); 32] = [(0xFF, 0xFF); 32];
+    let mut retrigger_count = 0usize;
+    if new_iter_starts_at_beat_zero {
+        for ev in fugue.definition.events.iter() {
+            if ev.beat_offset > 0.0 {
+                break;
+            }
+            let pair = match ev.event {
+                FugueEvent::TimedNote { channel, note, .. } => Some((channel, note)),
+                FugueEvent::NoteOn { channel, note, .. } => Some((channel, note)),
+                _ => None,
+            };
+            if let Some((ch, n)) = pair {
+                if held.iter().any(|(hc, hn)| *hc == ch && *hn == n)
+                    && retrigger_count < retrigger_targets.len()
+                {
+                    retrigger_targets[retrigger_count] = (ch, n);
+                    retrigger_count += 1;
+                }
+            }
+        }
+    }
+
+    for (channel, note) in &held {
+        let will_retrigger = retrigger_targets[..retrigger_count]
+            .iter()
+            .any(|(c, n)| c == channel && n == note);
+        if will_retrigger {
+            // Elide: the new iteration's own NoteOn at sample 0 will
+            // retrigger the synth voice. Emitting a NoteOff first would
+            // just race that NoteOn in the same buffer.
+            continue;
+        }
+        let msg = MidiMessage::Note(NoteMessage::new(*channel, *note, 0, false));
+        output_buffer.push(ProcessedEvent::Instant { sample_offset: 0, message: msg });
+    }
+    fugue.clear_active_notes();
+    fugue.clear_pending_note_offs();
+    fugue.clear_cc_state();
 }
 
 /// Send note-offs for all active notes in a fugue at a specific sample offset
