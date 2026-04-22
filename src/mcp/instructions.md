@@ -103,9 +103,9 @@ When the user asks for a "filter sweep", default to CC 74. For "volume swell" pr
 - Per-note bend/pressure REQUIRE a concurrent notes fugue holding the target note on the same channel; otherwise the expression has nothing to modulate.
 
 ## Timing quick reference (4/4 time)
+- **All `beat` and `duration_beats` fields are in BEATS, not bars.** When the user says "16 bars" in 4/4 they mean `duration_beats: 64` — multiply bars × 4. 2 bars = 8 beats, 4 bars = 16, 8 bars = 32, 16 bars = 64. Silently treating "16 bars" as `duration_beats: 16` produces a 4-bar pattern that loops four times too fast.
 - 1 beat = a quarter note. 1 bar = 4 beats.
 - 16th note = 0.25 beats, 8th = 0.5, quarter = 1, half = 2, whole = 4.
-- A "2-bar phrase" in 4/4 → `duration_beats: 8`.
 - Triplet eighth = 1/3 beat ≈ 0.333.
 - Beat 0 is the downbeat; beats 1, 2, 3 are the "and" positions of a bar.
 

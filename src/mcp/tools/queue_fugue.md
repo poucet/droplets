@@ -36,6 +36,8 @@ Note values accept names (preferred) or numbers: `"C3"` (middle C = 60, DAW conv
 
 Defaults across the batch, per-fugue can override: `duration_beats`, `quantize` (`"immediate"|"beat"|"bar"|"bars:N"`), `loop_mode` (`"once"|"forever"|"N"` — default `"forever"`), `start_mode` (`"phase"|"boundary"` — default `"phase"`).
 
+**`duration_beats` is in BEATS, not bars.** In 4/4 (the default), multiply bars × 4: a 2-bar pattern is `duration_beats: 8`, 4 bars is `16`, 8 bars is `32`, 16 bars is `64`. Every `beat` field in notes and points uses the same unit — beat 4 is the *second* downbeat, not "4 bars in."
+
 `duration_beats` is auto-sized when not set: the smallest whole bar (4/4) that fits every note's end-beat and every CC/expression point. Values that are shorter than the content are extended to fit — silently truncating notes is almost always a bug, not intent. Set it explicitly when you want trailing silence in the loop, or a specific odd-length pattern.
 
 ### Song-grid alignment — `quantize` vs `duration_beats`
