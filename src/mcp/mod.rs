@@ -92,8 +92,9 @@ pub fn start_server(port: u16) {
 
 /// Run the MCP server (called from the spawned thread)
 async fn run_server(port: u16) {
-    let addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
-    log::info!("MCP server starting on http://{}/mcp", addr);
+    let v4_addr: SocketAddr = format!("127.0.0.1:{}", port).parse().unwrap();
+    let v6_addr: SocketAddr = format!("[::1]:{}", port).parse().unwrap();
+    log::info!("MCP server starting on http://{}/mcp (+ IPv6 loopback)", v4_addr);
 
     // Create session manager for stateful connections
     let session_manager = Arc::new(LocalSessionManager::default());
@@ -152,23 +153,61 @@ async fn run_server(port: u16) {
         // commands without a protocol change.
         .route("/ws/controller", axum::routing::any(handle_controller_ws));
 
-    log::info!("MCP server listening on http://{}/mcp", addr);
+    log::info!("MCP server listening on http://{}/mcp (+ IPv6 loopback)", v4_addr);
 
-    // Run the server
-    let listener = match tokio::net::TcpListener::bind(addr).await {
+    // Bind IPv4 loopback — required, the primary address and what
+    // the MCP config points at via `localhost:9999`.
+    let v4_listener = match tokio::net::TcpListener::bind(v4_addr).await {
         Ok(l) => {
-            log::info!("MCP: Successfully bound to {}", addr);
+            log::info!("MCP: Successfully bound to {}", v4_addr);
             l
-        },
+        }
         Err(e) => {
-            log::error!("Failed to bind MCP server on {}: {}", addr, e);
+            log::error!("Failed to bind MCP server on {}: {}", v4_addr, e);
             log::error!("Another instance may already be running, or the port is in use");
             return;
         }
     };
 
-    if let Err(e) = axum::serve(listener, app).await {
-        log::error!("MCP server error: {}", e);
+    // Bind IPv6 loopback alongside so clients that resolve `localhost`
+    // to `::1` first (macOS's default order) don't see Connection
+    // Refused. Optional — if this bind fails (e.g. IPv6 disabled on
+    // the host), we keep running on IPv4 only and log a warning.
+    let v6_listener = match tokio::net::TcpListener::bind(v6_addr).await {
+        Ok(l) => {
+            log::info!("MCP: Successfully bound to {}", v6_addr);
+            Some(l)
+        }
+        Err(e) => {
+            log::warn!(
+                "MCP: IPv6 bind on {} failed: {}. Continuing on IPv4 only — \
+                 clients that resolve localhost to ::1 without falling back to \
+                 127.0.0.1 may report 'Connection refused'.",
+                v6_addr, e
+            );
+            None
+        }
+    };
+
+    // Router is Clone — run one axum::serve per listener concurrently.
+    // tokio::join!-ing keeps both tasks alive for the lifetime of the
+    // server thread; if either stops with an error we log and move on.
+    let v4_app = app.clone();
+    let v4_fut = async move {
+        if let Err(e) = axum::serve(v4_listener, v4_app).await {
+            log::error!("MCP server error (IPv4): {}", e);
+        }
+    };
+    if let Some(v6_listener) = v6_listener {
+        let v6_app = app;
+        let v6_fut = async move {
+            if let Err(e) = axum::serve(v6_listener, v6_app).await {
+                log::error!("MCP server error (IPv6): {}", e);
+            }
+        };
+        tokio::join!(v4_fut, v6_fut);
+    } else {
+        v4_fut.await;
     }
 
     log::info!("MCP server stopped");
