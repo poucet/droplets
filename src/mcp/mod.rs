@@ -100,13 +100,20 @@ async fn run_server(port: u16) {
     let session_manager = Arc::new(LocalSessionManager::default());
     log::debug!("MCP: Created session manager");
 
-    // Create the streamable HTTP service
-    // Use stateless mode - each request creates a fresh service instance
+    // Create the streamable HTTP service.
+    //
+    // Stateful mode — GET /mcp opens the long-lived server→client SSE
+    // stream the MCP streamable-HTTP spec defines. Without this, the
+    // GET that bridges like `mcp-remote` issue during handshake gets a
+    // 405 from rmcp, and some clients interpret that as "this server
+    // doesn't speak streamable-HTTP at all" and fail the connection
+    // intermittently. Per-session state is cheap (just an SSE channel
+    // + session id) and rmcp's LocalSessionManager handles it.
     let config = StreamableHttpServerConfig {
-        stateful_mode: false,
+        stateful_mode: true,
         sse_keep_alive: Some(std::time::Duration::from_secs(30)),
     };
-    log::debug!("MCP: Created config with stateful_mode=false (stateless)");
+    log::debug!("MCP: Created config with stateful_mode=true");
 
     let mcp_service = StreamableHttpService::new(
         || {
