@@ -12,7 +12,9 @@
 use rmcp::schemars;
 use serde::Serialize;
 
+use super::compact::CompactFugue;
 use crate::fugue::FugueInfo;
+use crate::params::SlotInfo;
 
 /// Per-instance row returned by the `list_instances` MCP tool. Kept
 /// deliberately minimal — id + name — since this tool exists to enable
@@ -59,4 +61,58 @@ pub struct QueueFugueSummary {
     pub duration_beats: Option<f64>,
     pub quantize: String,
     pub loop_mode: String,
+}
+
+// ---------------------------------------------------------------------------
+// Object wrappers for tools that naturally return arrays or untyped values.
+//
+// Gemini's MCP validator rejects any `outputSchema` whose top-level `type`
+// isn't the string `"object"` — that's the JSON Schema shape used for
+// "structured content" in the MCP spec. rmcp's schemars derive produces
+// bare-array schemas for `Json<Vec<T>>` and a schema with no `type` for
+// `Json<serde_json::Value>`, both of which trip the validator.
+//
+// Fix: make the tool methods return an object-shaped wrapper. Each wrapper
+// is a single-field struct whose field carries the payload. Clients parse
+// `response.<field>` instead of the raw response, which is a minor ergonomic
+// cost but keeps the publish path honest — the schema we advertise matches
+// what the tool actually returns.
+// ---------------------------------------------------------------------------
+
+/// Response wrapper for `list_instances` — one object containing the array.
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct ListInstancesResponse {
+    pub instances: Vec<InstanceHandle>,
+}
+
+/// Response wrapper for `list_slots`.
+#[derive(Clone, Serialize, schemars::JsonSchema)]
+pub struct ListSlotsResponse {
+    pub slots: Vec<SlotInfo>,
+}
+
+/// Response wrapper for `list_fugues`.
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct ListFuguesResponse {
+    pub fugues: Vec<ListedFugue>,
+}
+
+/// Response shape for `get_fugue`: one `CompactFugue` (same lane-grouped
+/// form the LLM writes to `queue_fugue`) with the fugue's id stapled on
+/// so callers don't lose it on the round trip.
+///
+/// Single shape — no raw-event escape hatch. Compact is what a read-
+/// modify-write workflow needs; the raw event stream was a debugging
+/// mode that nobody outside the scheduler should be reasoning about,
+/// and keeping both made `get_fugue` return an untyped JSON blob.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct GetFugueResponse {
+    /// Fugue id as a string. u64 doesn't round-trip cleanly through JSON
+    /// numbers on the JS side, so stringify at the boundary.
+    pub id: String,
+    /// The fugue's content in the same lane-grouped form `queue_fugue`
+    /// accepts on input — read a fugue, mutate one lane, re-queue with
+    /// the same tag + `cancel_mode:"tag:…"` to replace it.
+    #[serde(flatten)]
+    pub fugue: CompactFugue,
 }

@@ -40,4 +40,7 @@ pub use request::{
     ImportFugueRequest, InstanceRequest, ListFuguesRequest, OptionalInstanceOnlyRequest,
     OptionalInstanceRequest, QueueFugueData, QueueFugueRequest, RenameInstanceRequest,
 };
-pub use response::{InstanceHandle, ListedFugue, QueueFugueSummary};
+pub use response::{
+    GetFugueResponse, InstanceHandle, ListFuguesResponse, ListInstancesResponse,
+    ListSlotsResponse, ListedFugue, QueueFugueSummary,
+};

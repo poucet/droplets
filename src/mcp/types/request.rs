@@ -89,13 +89,6 @@ pub struct GetFugueData {
     /// Fugue ID to fetch (returned by queue_fugue / list_fugues).
     #[schemars(description = "Fugue ID to fetch (the same id list_fugues and queue_fugue return).")]
     pub id: u64,
-
-    /// When true (default), return the compact lane-grouped view — same
-    /// shape the LLM writes on input to `queue_fugue`. When false, return
-    /// the raw event stream for debugging.
-    #[serde(default = "default_compact")]
-    #[schemars(description = "Return compact lane-grouped view (default true). Set false to get raw event stream for debugging.")]
-    pub compact: bool,
 }
 
 /// Request body for `import_fugue` — accepts a base64-encoded `.mid` blob
@@ -222,6 +215,3 @@ pub(super) fn default_cancel_mode() -> Option<String> {
     None
 }
 
-pub(super) fn default_compact() -> bool {
-    true
-}

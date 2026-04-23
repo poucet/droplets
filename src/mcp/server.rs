@@ -18,7 +18,8 @@ use rmcp::{
 use super::bridge::CcBridge;
 use super::types::{
     CancelFugueRequest, CancelFuguesByTagRequest, ClearFuguesRequest, GetFugueRequest,
-    GetSlotsRequest, ImportFugueRequest, InstanceHandle, ListFuguesRequest, ListedFugue,
+    GetFugueResponse, GetSlotsRequest, ImportFugueRequest, InstanceHandle, ListFuguesRequest,
+    ListFuguesResponse, ListInstancesResponse, ListSlotsResponse, ListedFugue,
     QueueFugueDefaults, QueueFugueRequest, QueueFugueSummary, RenameInstanceRequest,
     compact_to_definition, definition_to_compact, parse_loop_mode_str, parse_quantize_str,
 };
@@ -47,14 +48,14 @@ impl Default for DropletsMcp {
 #[tool_router]
 impl DropletsMcp {
     /// List all connected Droplets plugin instances.
-    #[tool(description = "List all connected Droplets plugin instances. Returns the names that can be used to target a specific instance when queueing fugues.")]
-    fn list_instances(&self) -> Json<Vec<InstanceHandle>> {
-        Json(
-            CcBridge::list_instances()
+    #[tool(description = "List all connected Droplets plugin instances. Returns `{ instances: [{ id, name }, …] }`. Use the names or ids to target a specific instance when queueing fugues.")]
+    fn list_instances(&self) -> Json<ListInstancesResponse> {
+        Json(ListInstancesResponse {
+            instances: CcBridge::list_instances()
                 .into_iter()
                 .map(|(id, name)| InstanceHandle { id, name })
                 .collect(),
-        )
+        })
     }
 
     /// Rename a plugin instance for easier reference.
@@ -69,13 +70,13 @@ impl DropletsMcp {
     }
 
     /// List all parameter slots for an instance with their names, CC mappings, and current values.
-    #[tool(description = "List all parameter slots for an instance with their names, CC mappings, and values. Shows which slots are mapped to MIDI CC and can output CC when set.")]
+    #[tool(description = "List all parameter slots for an instance with their names, CC mappings, and values. Returns `{ slots: [...] }`. Shows which slots are mapped to MIDI CC and can output CC when set.")]
     fn list_slots(
         &self,
         Parameters(req): Parameters<GetSlotsRequest>,
-    ) -> Result<Json<Vec<crate::params::SlotInfo>>, String> {
+    ) -> Result<Json<ListSlotsResponse>, String> {
         CcBridge::get_slots(&req.instance)
-            .map(Json)
+            .map(|slots| Json(ListSlotsResponse { slots }))
             .map_err(|e| e.to_string())
     }
 
@@ -123,11 +124,11 @@ impl DropletsMcp {
     }
 
     /// List all active and pending fugues across one or every instance.
-    #[tool(description = "List active and pending fugues. Omit `instance` to list across every connected Droplets instance; pass a name or id to scope to one. Each row carries its own `instance_id` + `instance_name`, so follow-up calls (cancel_fugue, get_fugue) don't need a second list_instances hop.")]
+    #[tool(description = "List active and pending fugues. Returns `{ fugues: [...] }`. Omit `instance` to list across every connected Droplets instance; pass a name or id to scope to one. Each row carries its own `instance_id` + `instance_name`, so follow-up calls (cancel_fugue, get_fugue) don't need a second list_instances hop.")]
     fn list_fugues(
         &self,
         Parameters(req): Parameters<ListFuguesRequest>,
-    ) -> Json<Vec<ListedFugue>> {
+    ) -> Json<ListFuguesResponse> {
         // Fan-out on None: walk every registered instance and concat their
         // infos with the instance metadata stapled on. A single-instance
         // scope uses the same code path, just with a one-element iterator,
@@ -140,52 +141,38 @@ impl DropletsMcp {
                 .into_iter()
                 .collect(),
         };
-        let mut rows = Vec::new();
+        let mut fugues = Vec::new();
         for (instance_id, instance_name) in targets {
             let infos = FugueBridge::get_fugue_info(&instance_id).unwrap_or_default();
             for info in infos {
-                rows.push(ListedFugue {
+                fugues.push(ListedFugue {
                     instance_id: instance_id.clone(),
                     instance_name: instance_name.clone(),
                     info,
                 });
             }
         }
-        Json(rows)
+        Json(ListFuguesResponse { fugues })
     }
 
     /// Fetch one fugue's current definition — notes, CC lanes, per-note
     /// expression lanes, loop/tag/quantize metadata. Enables a read-modify-write
     /// pattern: read a fugue, mutate one lane, re-queue with the same tag.
-    #[tool(description = "Fetch a single fugue's full content by ID. Returns the same compact lane-grouped shape the LLM writes to queue_fugue (notes + cc + pitch_bends + pressures), so you can read a fugue, mutate a lane, and re-queue with the same tag + cancel_mode:'tag:...' to replace it. Use `compact: false` to get the raw event stream instead (useful for debugging or inspecting server-side expansion of per-note expression).")]
+    #[tool(description = "Fetch a single fugue's full content by ID. Returns the fugue in the same compact lane-grouped form the LLM writes to queue_fugue (notes + cc + pitch_bends + pressures), with the `id` included — read a fugue, mutate one lane, and re-queue with the same tag + cancel_mode:'tag:...' to replace it.")]
     fn get_fugue(
         &self,
         Parameters(req): Parameters<GetFugueRequest>,
-    ) -> Result<Json<serde_json::Value>, String> {
-        // Compact/raw produce differently-shaped JSON, so the return type
-        // stays `Value`. A typed CompactFugueView would pin the schema
-        // tighter but the compact shape's lane sets vary per fugue —
-        // Value is the honest ceiling on what can be schema'd here.
+    ) -> Result<Json<GetFugueResponse>, String> {
         let def = FugueBridge::get_definition(&req.instance, req.data.id)
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!(
                 "No fugue with id {} on instance '{}'. Call list_fugues to see active IDs.",
                 req.data.id, req.instance
             ))?;
-        let value = if req.data.compact {
-            // Fold events back into the same CompactFugue shape the LLM
-            // writes on input, then drop the fugue's id onto the object
-            // so clients can cancel / replace it without a second call.
-            let compact = definition_to_compact(&def);
-            let mut v = serde_json::to_value(&compact).map_err(|e| e.to_string())?;
-            if let Some(obj) = v.as_object_mut() {
-                obj.insert("id".into(), def.id.to_string().into());
-            }
-            v
-        } else {
-            serde_json::to_value(&def).map_err(|e| e.to_string())?
-        };
-        Ok(Json(value))
+        Ok(Json(GetFugueResponse {
+            id: def.id.to_string(),
+            fugue: definition_to_compact(&def),
+        }))
     }
 
     /// Import a `.mid` file as one or more fugues queued on an instance.
