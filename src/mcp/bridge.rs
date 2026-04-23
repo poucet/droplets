@@ -230,7 +230,6 @@ impl CcBridge {
             },
         );
 
-        log::info!("CcBridge: Registered instance '{}'", id);
         consumer
     }
 
@@ -238,7 +237,6 @@ impl CcBridge {
     pub fn unregister(id: &str) {
         let mut reg = registry().write().unwrap();
         if reg.remove(id).is_some() {
-            log::info!("CcBridge: Unregistered instance '{}'", id);
         }
     }
 
@@ -393,7 +391,6 @@ impl CcBridge {
         if let Some(entry) = reg.get_mut(&id) {
             let old_name = entry.name.clone();
             entry.name = new_name.to_string();
-            log::info!("CcBridge: Renamed '{}' to '{}'", old_name, new_name);
             // Sync with FugueBridge
             crate::fugue::FugueBridge::update_name(&id, new_name);
             Ok(old_name)
@@ -486,10 +483,6 @@ impl CcBridge {
             producer.push(MidiMessage::Cc(msg)).map_err(|_| "Queue full")?;
 
             Self::log_cc_activity(&entry.name, &msg);
-
-            log::info!("CcBridge: Set slot {} = {:.2} -> CC{} = {} on '{}'", slot, value, cc, midi_value, entry.name);
-        } else {
-            log::info!("CcBridge: Set slot {} = {:.2} (unmapped) on '{}'", slot, value, entry.name);
         }
 
         Ok(())
@@ -504,7 +497,6 @@ impl CcBridge {
             .params
             .rename_slot(slot, name)
             .ok_or("Slot index out of range")?;
-        log::info!("CcBridge: Renamed slot {} from '{}' to '{}' on '{}'", slot, old_name, name, entry.name);
         Ok(old_name)
     }
 
@@ -514,7 +506,6 @@ impl CcBridge {
         let reg = registry().read().unwrap();
         let entry = Self::find_entry(&reg, instance)?;
         let idx = entry.params.add_slot(cc, name);
-        log::info!("CcBridge: Added slot {} (CC{}, '{}') on '{}'", idx, cc, name, entry.name);
         Ok(idx)
     }
 
@@ -525,7 +516,6 @@ impl CcBridge {
         if !entry.params.remove_slot(slot) {
             return Err("Slot index out of range");
         }
-        log::info!("CcBridge: Removed slot {} on '{}'", slot, entry.name);
         Ok(())
     }
 
@@ -546,7 +536,6 @@ impl CcBridge {
         }
 
         entry.params.start_learning(slot);
-        log::info!("CcBridge: Started learning for slot {} on '{}'", slot, entry.name);
         Ok(())
     }
 
@@ -555,7 +544,6 @@ impl CcBridge {
         let reg = registry().read().unwrap();
         let entry = Self::find_entry(&reg, instance)?;
         entry.params.cancel_learning();
-        log::info!("CcBridge: Cancelled learning on '{}'", entry.name);
         Ok(())
     }
 
@@ -567,7 +555,6 @@ impl CcBridge {
         let slot_ref = entry.params.get(slot).ok_or("Slot index out of range")?;
         slot_ref.set_cc(cc);
         slot_ref.set_channel(channel);
-        log::info!("CcBridge: Mapped slot {} to CC{} ch{} on '{}'", slot, cc, channel + 1, entry.name);
         Ok(())
     }
 
@@ -578,7 +565,6 @@ impl CcBridge {
 
         let slot_ref = entry.params.get(slot).ok_or("Slot index out of range")?;
         slot_ref.cc_number.store(255, std::sync::atomic::Ordering::Relaxed);
-        log::info!("CcBridge: Unmapped slot {} on '{}'", slot, entry.name);
         Ok(())
     }
 

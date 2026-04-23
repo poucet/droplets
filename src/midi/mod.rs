@@ -128,7 +128,6 @@ impl<'a> PluginAudioProcessor<'a, DropletShared<'a>, DropletMainThread<'a>>
         audio_config: PluginAudioConfiguration,
     ) -> Result<Self, PluginError> {
         let sample_rate = audio_config.sample_rate;
-        crate::logger::log_midi_processor_activation(sample_rate as f32);
 
         let midi_consumer = shared
             .midi_consumer

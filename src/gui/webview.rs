@@ -145,7 +145,6 @@ pub fn configure_webview<'a>(
                         .unwrap_or_else(|| own_instance_id.clone())
                 };
 
-                #[cfg(any(debug_assertions, feature = "dev-gui"))]
                 crate::logger::log_gui_event(
                     "protocol_request",
                     &format!("method={} uri={} path={:?}", method, uri, path),
@@ -194,7 +193,6 @@ pub fn configure_webview<'a>(
         builder.with_ipc_handler(move |request: wry::http::Request<String>| {
             let message = request.body().clone();
 
-            #[cfg(any(debug_assertions, feature = "dev-gui"))]
             crate::logger::log_ipc_message_received(&message);
 
             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&message) {
@@ -331,14 +329,7 @@ fn handle_start_drag(
         log::warn!("start_drag: failed to write temp .mid {}: {}", path.display(), e);
         return;
     }
-
-    log::info!(
-        "start_drag: wrote {} fugues ({} bytes) to {}",
-        selected.len(),
-        bytes.len(),
-        path.display()
-    );
-
+    
     // Drag, with file-manager reveal as fallback.
     match drag::start_file_drag(drag_state, path.clone()) {
         drag::DragStart::Started => {

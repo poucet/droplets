@@ -5,6 +5,7 @@
 use std::num::{NonZeroIsize, NonZeroU32};
 use std::ptr::NonNull;
 use std::sync::Arc;
+use log;
 
 use clack_extensions::gui::*;
 use clack_plugin::prelude::*;
@@ -150,7 +151,7 @@ impl<'a> PluginGuiImpl for DropletMainThread<'a> {
                 self.gui.web_view = Some(webview);
             }
             Err(e) => {
-                crate::logger::log_error(&format!("Failed to create WebView: {}", e));
+                log::error!("Failed to create WebView: {}", e);
                 return Err(PluginError::Message("Failed to create WebView"));
             }
         }

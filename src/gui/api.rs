@@ -518,8 +518,6 @@ pub fn export_fugue(instance: &str, req: ExportFugueRequest) -> ExportFugueRespo
         };
     }
 
-    log::info!("Exported fugue {} to {:?}", req.id, file_path);
-
     // Reveal in file manager
     if let Err(e) = settings::reveal_file(&file_path) {
         log::warn!("Failed to reveal exported file: {}", e);

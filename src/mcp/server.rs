@@ -347,7 +347,6 @@ impl ServerHandler for DropletsMcp {
         _request: Option<PaginatedRequestParam>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, McpError> {
-        log::debug!("MCP: list_tools called");
         let mut tools = self.tool_router.list_all();
 
         // Tool descriptions that outgrow a one-liner live as markdown files
@@ -386,7 +385,6 @@ impl ServerHandler for DropletsMcp {
             }
         }
 
-        log::info!("MCP: Returning {} tools", tools.len());
         Ok(ListToolsResult {
             tools,
             next_cursor: None,
@@ -398,7 +396,6 @@ impl ServerHandler for DropletsMcp {
         request: CallToolRequestParam,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        log::info!("MCP: call_tool '{}' with args: {:?}", request.name, request.arguments);
         let tool_context = ToolCallContext::new(self, request, context);
         self.tool_router.call(tool_context).await
     }

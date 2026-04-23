@@ -123,10 +123,6 @@ fn handle_instances() -> String {
 /// has been pushed yet.
 fn handle_get_project_layout() -> String {
     let layout = crate::mcp::CcBridge::get_project_layout().unwrap_or_default();
-    log::info!(
-        "routes /project_layout GET: returning {} tracks",
-        layout.tracks.len()
-    );
     serde_json::to_string(&layout)
         .unwrap_or_else(|_| serialize_error("serialize failed"))
 }

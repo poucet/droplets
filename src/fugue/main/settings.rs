@@ -108,7 +108,6 @@ pub fn load_settings() -> Settings {
             Ok(contents) => {
                 match serde_json::from_str::<Settings>(&contents) {
                     Ok(settings) => {
-                        log::info!("Loaded settings from {:?}", path);
                         return settings;
                     }
                     Err(e) => {
@@ -121,8 +120,6 @@ pub fn load_settings() -> Settings {
             }
         }
     }
-
-    log::info!("Using default settings");
     Settings::default()
 }
 
@@ -142,7 +139,6 @@ pub fn save_settings(settings: &Settings) -> Result<(), String> {
     std::fs::write(&path, contents)
         .map_err(|e| format!("Failed to write settings file: {}", e))?;
 
-    log::info!("Saved settings to {:?}", path);
     Ok(())
 }
 
@@ -189,7 +185,6 @@ pub fn ensure_export_dir() -> Result<PathBuf, String> {
     if !path.exists() {
         std::fs::create_dir_all(path)
             .map_err(|e| format!("Failed to create export directory: {}", e))?;
-        log::info!("Created export directory: {:?}", path);
     }
 
     Ok(path.clone())

@@ -86,7 +86,6 @@ impl FugueBridge {
             },
         );
 
-        log::info!("FugueBridge: Registered instance '{}'", id);
         (
             consumer,
             FugueInfoHandle {
@@ -101,7 +100,6 @@ impl FugueBridge {
     pub fn unregister(id: &str) {
         let mut reg = registry().write().unwrap();
         if reg.remove(id).is_some() {
-            log::info!("FugueBridge: Unregistered instance '{}'", id);
         }
     }
 
@@ -118,7 +116,6 @@ impl FugueBridge {
             .push(FugueCommand::Queue(definition))
             .map_err(|_| "Queue full - audio thread not consuming fast enough")?;
 
-        log::info!("FugueBridge: Queued fugue {} on '{}'", id, entry.name);
         Ok(id)
     }
 
@@ -142,7 +139,6 @@ impl FugueBridge {
         filter_info_cache(entry, |infos| infos.retain(|i| i.id != id));
         filter_definitions_cache(entry, |defs| defs.retain(|d| d.id != id));
 
-        log::info!("FugueBridge: Cancelled fugue {} on '{}'", id, entry.name);
         Ok(())
     }
 
@@ -165,7 +161,6 @@ impl FugueBridge {
             defs.retain(|d| d.tag.as_deref() != Some(tag))
         });
 
-        log::info!("FugueBridge: Cancelled fugues with tag '{}' on '{}'", tag, entry.name);
         Ok(())
     }
 
@@ -184,7 +179,6 @@ impl FugueBridge {
         filter_info_cache(entry, |infos| infos.clear());
         filter_definitions_cache(entry, |defs| defs.clear());
 
-        log::info!("FugueBridge: Cleared all fugues on '{}'", entry.name);
         Ok(())
     }
 

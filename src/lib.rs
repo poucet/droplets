@@ -94,11 +94,9 @@ impl DefaultPluginFactory for DropletPlugin {
 
     fn new_shared(host: HostSharedHandle) -> Result<Self::Shared<'_>, PluginError> {
         logger::init_logger();
-        logger::log_plugin_initialization("Droplets", "Creating shared instance");
 
         // GUI IPC channel
         let (sender, receiver) = crossbeam::channel::unbounded();
-        logger::log_ipc_channel_created();
 
         // Create shared params (Arc for MCP bridge access)
         let params = Arc::new(DropletParams::new());
@@ -107,7 +105,6 @@ impl DefaultPluginFactory for DropletPlugin {
         let instance_id = format!("droplets-{:08x}", fastrand::u32(..));
         let midi_consumer = CcBridge::register(&instance_id, Arc::clone(&params));
         let (fugue_consumer, fugue_info_handle) = FugueBridge::register(&instance_id, &instance_id);
-        log::info!("Registered MCP instance: {}", instance_id);
 
         // Start singleton servers (only first instance actually starts them)
         mcp::start_server(mcp::DEFAULT_MCP_PORT);
@@ -130,8 +127,7 @@ impl DefaultPluginFactory for DropletPlugin {
         _host: HostMainThreadHandle<'a>,
         shared: &'a Self::Shared<'a>,
     ) -> Result<Self::MainThread<'a>, PluginError> {
-        logger::log_plugin_initialization("Droplets", "Creating main thread instance");
-
+        
         Ok(Self::MainThread {
             shared,
             gui: DropletGui::new(),
@@ -163,7 +159,6 @@ impl Drop for DropletShared<'_> {
     fn drop(&mut self) {
         CcBridge::unregister(&self.instance_id);
         FugueBridge::unregister(&self.instance_id);
-        log::info!("Unregistered MCP instance: {}", self.instance_id);
     }
 }
 

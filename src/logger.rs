@@ -1,113 +1,66 @@
-use log::{debug, info, warn, error, LevelFilter};
+#[cfg(any(debug_assertions, feature = "dev-gui"))]
+use log::{error, LevelFilter};
+#[cfg(any(debug_assertions, feature = "dev-gui"))]
 use simplelog::*;
+#[cfg(any(debug_assertions, feature = "dev-gui"))]
 use std::fs::File;
 
+use log::debug;
+
+/// Initialize the file logger at `~/droplets_plugin.log`.
+///
+/// No-op in release builds without the `dev-gui` feature. Release
+/// plugins should not be writing a debug log — every `log::*!` call
+/// ends up holding `simplelog`'s internal writer Mutex while it
+/// formats and writes bytes to disk, and we call those from tokio
+/// async workers handling MCP requests. Under production load that's
+/// both wasteful and a source of hard-to-reproduce stalls.
+///
+/// Opt in with `cargo build --features dev-gui` (or just a debug
+/// build) when you actually need the log.
 pub fn init_logger() {
-    let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let log_path = format!("{}/droplets_plugin.log", home_dir);
+    #[cfg(any(debug_assertions, feature = "dev-gui"))]
+    {
+        let home_dir = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        let log_path = format!("{}/droplets_plugin.log", home_dir);
 
-    // rmcp::service logs a Debug line per tool call, which drowns out the
-    // lines we actually care about when debugging the fugue scheduler.
-    // Filter it at the logger level so it's never formatted or written.
-    let config = ConfigBuilder::new()
-        .add_filter_ignore_str("rmcp::service")
-        .build();
+        // Drop rmcp's log output entirely. The loud line is
+        // `Response(JsonRpcResponse { … })` which dumps the full ~16 KB
+        // `InitializeResult` (the server's instructions.md) on every
+        // handshake — wasteful on disk. Our wrapper in `src/mcp/mod.rs`
+        // already logs method / URI / status for request/response, which
+        // is what we actually want.
+        let config = ConfigBuilder::new()
+            .add_filter_ignore_str("rmcp")
+            .build();
 
-    let _ = WriteLogger::init(
-        LevelFilter::Debug,
-        config,
-        File::create(&log_path).unwrap_or_else(|_| File::create("/tmp/droplets_plugin.log").unwrap()),
-    );
+        let _ = WriteLogger::init(
+            LevelFilter::Debug,
+            config,
+            File::create(&log_path).unwrap_or_else(|_| File::create("/tmp/droplets_plugin.log").unwrap()),
+        );
 
-    // Set up custom panic hook to log panics instead of aborting
-    std::panic::set_hook(Box::new(|panic_info| {
-        let location = panic_info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())).unwrap_or_else(|| "unknown".to_string());
-        let message = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
-            s.to_string()
-        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
-            s.clone()
-        } else {
-            "unknown panic".to_string()
-        };
-        error!("PANIC at {}: {}", location, message);
-    }));
-
-    info!("Droplets plugin initialized, logging to: {}", log_path);
-    info!("=== Plugin session started ===");
-}
-
-pub fn log_info(message: &str) {
-    info!("{}", message);
-}
-
-pub fn log_warn(message: &str) {
-    warn!("{}", message);
-}
-
-pub fn log_error(message: &str) {
-    error!("{}", message);
-}
-
-pub fn log_debug(message: &str) {
-    debug!("{}", message);
-}
-
-pub fn log_plugin_initialization(plugin_name: &str, step: &str) {
-    info!("{} plugin: {}", plugin_name, step);
-}
-
-pub fn log_main_thread_tick() {
-    debug!("Main thread tick - processing IPC messages");
+        // Set up custom panic hook to log panics instead of aborting
+        std::panic::set_hook(Box::new(|panic_info| {
+            let location = panic_info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())).unwrap_or_else(|| "unknown".to_string());
+            let message = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            error!("PANIC at {}: {}", location, message);
+        }));
+    }
 }
 
 pub fn log_ipc_message_received(message: &str) {
+    #[cfg(any(debug_assertions, feature = "dev-gui"))]
     debug!("Received IPC message from web view: {}", message);
 }
 
-pub fn log_ipc_message_parsed(message: &serde_json::Value) {
-    debug!("Parsed IPC message, sending to channel: {:?}", message);
-}
-
-pub fn log_ipc_send_error(error: &str) {
-    warn!("Failed to send IPC message to channel: {}", error);
-}
-
-pub fn log_ipc_parse_error(message: &str) {
-    warn!("Failed to parse IPC message as JSON: {}", message);
-}
-
-pub fn log_ipc_messages_processed(count: usize) {
-    if count > 0 {
-        info!("Processed {} IPC messages", count);
-    }
-}
-
-pub fn log_ipc_message_processing(count: usize, message: &serde_json::Value) {
-    debug!("Processing IPC message #{}: {}", count, message);
-}
-
-pub fn log_ipc_channel_created() {
-    info!("Created IPC channel for GUI communication");
-}
-
-pub fn log_parameter_change(param_name: &str, value: f64) {
-    info!("Parameter changed: {} = {}", param_name, value);
-}
-
-pub fn log_midi_processor_activation(sample_rate: f32) {
-    info!("MIDI processor activated - sample_rate: {}", sample_rate);
-}
-
-pub fn log_droplet_creation(count: usize, radius: f32, azimuth: f32, elevation: f32) {
-    debug!("Created droplet #{} - radius: {:.3}, azimuth: {:.3}, elevation: {:.3}", count, radius, azimuth, elevation);
-}
-
-pub fn log_active_droplets_count(count: usize) {
-    if count > 0 {
-        debug!("Active droplets: {}", count);
-    }
-}
-
 pub fn log_gui_event(event: &str, details: &str) {
+    #[cfg(any(debug_assertions, feature = "dev-gui"))]
     debug!("GUI {}: {}", event, details);
 }

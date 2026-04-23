@@ -117,32 +117,18 @@ async fn run_server(port: u16) {
 
     let mcp_service = StreamableHttpService::new(
         || {
-            log::debug!("MCP: Creating new DropletsMcp service instance");
             Ok(DropletsMcp::new())
         },
         session_manager,
         config,
     );
-    log::debug!("MCP: Created StreamableHttpService");
 
     // Build the axum router with logging
     let app = Router::new()
         .route("/mcp", axum::routing::any(move |req: axum::http::Request<axum::body::Body>| {
             let service = mcp_service.clone();
             async move {
-                let method = req.method().clone();
-                let uri = req.uri().clone();
-                let headers = req.headers().clone();
-
-                log::info!("MCP request: {} {}", method, uri);
-                log::debug!("MCP request headers: {:?}", headers);
-
-                let response = service.handle(req).await;
-
-                log::info!("MCP response status: {}", response.status());
-                log::debug!("MCP response headers: {:?}", response.headers());
-
-                response
+                service.handle(req).await;
             }
         }))
         // Host controller extensions (Bitwig, Ableton) push project state here.
@@ -216,8 +202,6 @@ async fn run_server(port: u16) {
     } else {
         v4_fut.await;
     }
-
-    log::info!("MCP server stopped");
 }
 
 /// Check if the MCP server has been started
