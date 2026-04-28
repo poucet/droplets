@@ -128,7 +128,7 @@ async fn run_server(port: u16) {
         .route("/mcp", axum::routing::any(move |req: axum::http::Request<axum::body::Body>| {
             let service = mcp_service.clone();
             async move {
-                service.handle(req).await;
+                service.handle(req).await
             }
         }))
         // Host controller extensions (Bitwig, Ableton) push project state here.
