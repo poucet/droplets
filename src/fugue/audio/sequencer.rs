@@ -5,8 +5,11 @@
 use rtrb::Consumer;
 
 use super::super::command::FugueCommand;
+use super::super::types::{
+    CancelMode, FugueDefinition, FugueEvent, FugueInfo, ProcessedEvent, QuantizeExt,
+    StartMode,
+};
 use super::fugue::Fugue;
-use super::super::types::{CancelMode, FugueDefinition, FugueEvent, FugueInfo, ProcessedEvent, StartMode};
 use crate::mcp::{MidiMessage, NoteMessage};
 
 /// Buffer capacity for output MIDI messages per process cycle
@@ -328,9 +331,9 @@ impl FugueSequencer {
             // wait for the 16-bar loop to finish" escape hatch — the
             // caller explicitly asked for a right-now replacement and the
             // tag default would override their intent.
-            let tag_target = if matches!(fugue.definition.quantize, crate::fugue::QuantizeMode::Immediate) {
+            let tag_target = if matches!(fugue.definition.quantize, crate::fugue::QuantizeMode::None) {
                 None
-            } else if let CancelMode::CancelByTag(tag) = &fugue.definition.cancel_mode {
+            } else if let CancelMode::Tag(tag) = &fugue.definition.cancel_mode {
                 tag_loop_boundaries.get(tag).copied()
             } else {
                 None
@@ -416,10 +419,10 @@ impl FugueSequencer {
     fn apply_cancel_mode_at_offset(&mut self, cancel_mode: &CancelMode, sample_offset: u32) {
         match cancel_mode {
             CancelMode::None => {}
-            CancelMode::CancelByTag(tag) => {
+            CancelMode::Tag(tag) => {
                 self.cancel_fugues_by_tag_at_offset(tag, sample_offset);
             }
-            CancelMode::CancelAll => {
+            CancelMode::All => {
                 self.clear_all_fugues_at_offset(sample_offset);
             }
         }
@@ -670,7 +673,7 @@ mod daw_loop_tests {
     //! would fire the new iteration's beat-0 NoteOn. If the beat-0
     //! NoteOn goes missing or lands wrong, the test catches it.
     use super::*;
-    use crate::fugue::types::{FugueEvent, LoopMode, TimedFugueEvent};
+    use crate::fugue::types::{FugueEvent, LoopMode, TimedFugueEvent, TimedFugueEventExt};
     use rtrb::RingBuffer;
 
     const TEMPO: f64 = 120.0;
@@ -697,11 +700,11 @@ mod daw_loop_tests {
             ));
             events.push(TimedFugueEvent::new(
                 beat + dur,
-                FugueEvent::NoteOff { channel: 0, note: pitch },
+                FugueEvent::NoteOff { channel: 0, note: pitch, velocity: 0 },
             ));
         }
         events.sort_by(|a, b| a.beat_offset.partial_cmp(&b.beat_offset).unwrap());
-        FugueDefinition::new(events, duration_beats).with_loop_mode(LoopMode::Forever)
+        FugueDefinition::new(events, duration_beats).with_loop_mode(LoopMode::Loop)
     }
 
     /// Queue a fugue + build a sequencer, bypassing the full `FugueBridge`
@@ -1114,11 +1117,11 @@ mod daw_loop_tests {
     /// pattern-beat-0 at ~2 (phase preserved).
     #[test]
     fn quantize_immediate_drops_into_current_phase_and_replaces_tagged_loop() {
-        use crate::fugue::types::{CancelMode, QuantizeMode};
+        use crate::fugue::types::{CancelMode, LoopMode, QuantizeMode};
         let old_def = make_notes_fugue(&[(0.0, 60, 0.5)], 16.0)
-            .with_quantize(QuantizeMode::Immediate)
+            .with_quantize(QuantizeMode::None)
             .with_tag("pad")
-            .with_loop_mode(LoopMode::Forever);
+            .with_loop_mode(LoopMode::Loop);
         let (mut prod, mut seq) = empty_sequencer();
         prod.push(FugueCommand::Queue(old_def)).unwrap();
 
@@ -1127,10 +1130,10 @@ mod daw_loop_tests {
         assert!(mid > 1.5 && mid < 3.0, "warm-up should leave us mid-loop");
 
         let new_def = make_notes_fugue(&[(0.0, 72, 0.4), (2.0, 74, 0.4)], 4.0)
-            .with_quantize(QuantizeMode::Immediate)
+            .with_quantize(QuantizeMode::None)
             .with_tag("pad")
-            .with_cancel_mode(CancelMode::CancelByTag("pad".into()))
-            .with_loop_mode(LoopMode::Forever);
+            .with_cancel_mode(CancelMode::Tag("pad".into()))
+            .with_loop_mode(LoopMode::Loop);
         prod.push(FugueCommand::Queue(new_def)).unwrap();
 
         // Play through two iterations of the new 4-beat pattern.
@@ -1194,12 +1197,12 @@ mod daw_loop_tests {
     /// downstream synth releases the voice.
     #[test]
     fn quantize_immediate_emits_note_offs_for_held_notes_in_old_fugue() {
-        use crate::fugue::types::{CancelMode, QuantizeMode};
+        use crate::fugue::types::{CancelMode, LoopMode, QuantizeMode};
         // Old fugue: one long held note at pitch 60 spanning the full loop.
         let old_def = make_notes_fugue(&[(0.0, 60, 8.0)], 16.0)
-            .with_quantize(QuantizeMode::Immediate)
+            .with_quantize(QuantizeMode::None)
             .with_tag("pad")
-            .with_loop_mode(LoopMode::Forever);
+            .with_loop_mode(LoopMode::Loop);
         let (mut prod, mut seq) = empty_sequencer();
         prod.push(FugueCommand::Queue(old_def)).unwrap();
 
@@ -1208,10 +1211,10 @@ mod daw_loop_tests {
 
         // Immediate replacement on the same tag.
         let new_def = make_notes_fugue(&[(0.0, 72, 0.5)], 4.0)
-            .with_quantize(QuantizeMode::Immediate)
+            .with_quantize(QuantizeMode::None)
             .with_tag("pad")
-            .with_cancel_mode(CancelMode::CancelByTag("pad".into()))
-            .with_loop_mode(LoopMode::Forever);
+            .with_cancel_mode(CancelMode::Tag("pad".into()))
+            .with_loop_mode(LoopMode::Loop);
         prod.push(FugueCommand::Queue(new_def)).unwrap();
 
         // One buffer after the queue command is all that's needed to
@@ -1231,11 +1234,11 @@ mod daw_loop_tests {
     /// holds (we haven't regressed the default).
     #[test]
     fn tag_loop_alignment_still_applies_when_quantize_is_bar() {
-        use crate::fugue::types::{CancelMode, QuantizeMode};
+        use crate::fugue::types::{CancelMode, LoopMode, QuantizeMode};
         let old_def = make_notes_fugue(&[(0.0, 60, 0.5)], 16.0)
-            .with_quantize(QuantizeMode::Immediate)
+            .with_quantize(QuantizeMode::None)
             .with_tag("pad")
-            .with_loop_mode(LoopMode::Forever);
+            .with_loop_mode(LoopMode::Loop);
         let (mut prod, mut seq) = empty_sequencer();
         prod.push(FugueCommand::Queue(old_def)).unwrap();
         play_until(&mut seq, 0.0, 2.0);
@@ -1243,8 +1246,8 @@ mod daw_loop_tests {
         let new_def = make_notes_fugue(&[(0.0, 72, 0.5)], 4.0)
             .with_quantize(QuantizeMode::Bar)
             .with_tag("pad")
-            .with_cancel_mode(CancelMode::CancelByTag("pad".into()))
-            .with_loop_mode(LoopMode::Forever);
+            .with_cancel_mode(CancelMode::Tag("pad".into()))
+            .with_loop_mode(LoopMode::Loop);
         prod.push(FugueCommand::Queue(new_def)).unwrap();
 
         // Play past the full 16-beat loop — the new fugue should hold
@@ -1273,7 +1276,7 @@ mod timed_note_tests {
     //! and assert on the emitted `(sample_offset, channel, note, is_on)`
     //! tuples — same harness shape as `daw_loop_tests`.
     use super::*;
-    use crate::fugue::types::{FugueEvent, LoopMode, TimedFugueEvent};
+    use crate::fugue::types::{FugueEvent, LoopMode, TimedFugueEvent, TimedFugueEventExt};
     use rtrb::RingBuffer;
 
     const TEMPO: f64 = 120.0;
@@ -1309,7 +1312,7 @@ mod timed_note_tests {
             ));
         }
         events.sort_by(|a, b| a.beat_offset.partial_cmp(&b.beat_offset).unwrap());
-        FugueDefinition::new(events, duration_beats).with_loop_mode(LoopMode::Forever)
+        FugueDefinition::new(events, duration_beats).with_loop_mode(LoopMode::Loop)
     }
 
     fn sequencer_with_fugue(def: FugueDefinition) -> FugueSequencer {
@@ -1575,13 +1578,13 @@ mod timed_note_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::super::super::types::QuantizeMode;
+    use super::super::super::types::{QuantizeExt, QuantizeMode};
 
     #[test]
     fn test_quantize_immediate() {
-        // Immediate: always returns current beat (no grid)
-        assert_eq!(QuantizeMode::Immediate.next_grid_line(2.5, 4), 2.5);
-        assert!(QuantizeMode::Immediate.is_on_grid(2.5, 4));
+        // None / Immediate: always returns current beat (no grid)
+        assert_eq!(QuantizeMode::None.next_grid_line(2.5, 4), 2.5);
+        assert!(QuantizeMode::None.is_on_grid(2.5, 4));
     }
 
     #[test]
@@ -1618,13 +1621,13 @@ mod tests {
     #[test]
     fn test_quantize_at_beat_zero() {
         // All quantize modes should consider beat 0 as on-grid
-        assert!(QuantizeMode::Immediate.is_on_grid(0.0, 4));
+        assert!(QuantizeMode::None.is_on_grid(0.0, 4));
         assert!(QuantizeMode::Beat.is_on_grid(0.0, 4));
         assert!(QuantizeMode::Bar.is_on_grid(0.0, 4));
         assert!(QuantizeMode::Bars(4).is_on_grid(0.0, 4));
 
         // All should return 0.0 as the grid line when at beat 0
-        assert_eq!(QuantizeMode::Immediate.next_grid_line(0.0, 4), 0.0);
+        assert_eq!(QuantizeMode::None.next_grid_line(0.0, 4), 0.0);
         assert_eq!(QuantizeMode::Beat.next_grid_line(0.0, 4), 0.0);
         assert_eq!(QuantizeMode::Bar.next_grid_line(0.0, 4), 0.0);
         assert_eq!(QuantizeMode::Bars(4).next_grid_line(0.0, 4), 0.0);
@@ -1632,7 +1635,7 @@ mod tests {
 
     #[test]
     fn test_interval_beats() {
-        assert_eq!(QuantizeMode::Immediate.interval_beats(4), None);
+        assert_eq!(QuantizeMode::None.interval_beats(4), None);
         assert_eq!(QuantizeMode::Beat.interval_beats(4), Some(1.0));
         assert_eq!(QuantizeMode::Bar.interval_beats(4), Some(4.0));
         assert_eq!(QuantizeMode::Bars(2).interval_beats(4), Some(8.0));

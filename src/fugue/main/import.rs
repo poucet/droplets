@@ -39,7 +39,7 @@ use midly::{MetaMessage, MidiMessage, Smf, Timing, TrackEventKind};
 
 use super::super::types::{
     CancelMode, FugueDefinition, InterpolationMode, LoopMode, QuantizeMode, TimedFugueEvent,
-    generate_fugue_id,
+    TimedFugueEventExt, generate_fugue_id,
 };
 
 /// Caller-provided knobs controlling how the imported MIDI is turned into
@@ -71,7 +71,7 @@ pub struct ImportOptions {
 impl Default for ImportOptions {
     fn default() -> Self {
         Self {
-            loop_mode: LoopMode::Forever,
+            loop_mode: LoopMode::Loop,
             quantize: QuantizeMode::Bar,
             cancel_mode: CancelMode::None,
             tag_prefix: None,
@@ -608,7 +608,7 @@ mod tests {
 
         let imported = smf_to_fugues(&bytes, &ImportOptions::default()).unwrap();
         let cc_events: Vec<_> = imported[0].events.iter().filter_map(|e| match e.event {
-            FugueEvent::Cc { cc, value, .. } => Some((cc, value)),
+            FugueEvent::Cc { controller, value, .. } => Some((controller, value)),
             _ => None,
         }).collect();
         assert_eq!(cc_events, vec![(74, 0), (74, 64), (74, 127)]);
@@ -692,15 +692,15 @@ mod tests {
 
         let opts = ImportOptions {
             loop_mode: LoopMode::Once,
-            quantize: QuantizeMode::Immediate,
-            cancel_mode: CancelMode::CancelAll,
+            quantize: QuantizeMode::None,
+            cancel_mode: CancelMode::All,
             tag_prefix: None,
             strict: false,
         };
         let imported = smf_to_fugues(&bytes, &opts).unwrap();
         assert_eq!(imported[0].loop_mode, LoopMode::Once);
-        assert_eq!(imported[0].quantize, QuantizeMode::Immediate);
-        assert_eq!(imported[0].cancel_mode, CancelMode::CancelAll);
+        assert_eq!(imported[0].quantize, QuantizeMode::None);
+        assert_eq!(imported[0].cancel_mode, CancelMode::All);
     }
 
     /// End-to-end round-trip for the TimedNote representation: build a

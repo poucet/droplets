@@ -1,71 +1,47 @@
 //! Fugue types - all serializable types for fugue system
 //!
-//! These types are exported to TypeScript via ts-rs for frontend use.
+//! Uses canonical definitions from `simply-fugue` shared across the Simply ecosystem.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-/// How a fugue should loop
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(export)]
-#[serde(rename_all = "snake_case")]
-pub enum LoopMode {
-    /// Play once and finish
-    Once,
-    /// Play a specific number of times
-    Times(u32),
-    /// Loop forever until cancelled
-    Forever,
-}
+// Re-export canonical types from simply-fugue
+pub use simply_fugue::{
+    CancelTarget, CompiledFugue, CompositeFugue, FugueEvent, InterpolationMode, LoopMode,
+    QuantizeMode, TimedFugueEvent,
+};
 
-impl Default for LoopMode {
-    fn default() -> Self {
-        Self::Forever
-    }
-}
-
-/// Quantization interval for fugue playback
+/// What to cancel when a fugue starts.
 ///
-/// Defines a grid that the fugue aligns to. The fugue will start when the
-/// transport reaches a grid line (where current_beat % interval == 0).
-/// Beat 0 is always a valid grid line for all intervals.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(export)]
-#[serde(rename_all = "snake_case")]
-pub enum QuantizeMode {
-    /// No quantization - start immediately at current position
-    Immediate,
-    /// Quantize to beat boundaries (interval = 1 beat)
-    Beat,
-    /// Quantize to bar boundaries (interval = time_sig_numerator beats)
-    Bar,
-    /// Quantize to N-bar boundaries (interval = N * time_sig_numerator beats)
-    Bars(u32),
+/// Aliased directly to [`simply_fugue::CancelTarget`]: `None`, `Tag(String)`, `All`.
+pub type CancelMode = CancelTarget;
+
+/// Trait providing quantization helper methods on [`QuantizeMode`].
+pub trait QuantizeExt {
+    /// Get the quantization interval in beats
+    fn interval_beats(&self, time_sig_numerator: u32) -> Option<f64>;
+    /// Check if a given beat position is on a grid line
+    fn is_on_grid(&self, beat: f64, time_sig_numerator: u32) -> bool;
+    /// Get the next grid line at or after the given beat
+    fn next_grid_line(&self, beat: f64, time_sig_numerator: u32) -> f64;
 }
 
-impl QuantizeMode {
-    /// Get the quantization interval in beats
-    ///
-    /// Returns None for Immediate (no grid), otherwise returns the interval size.
-    pub fn interval_beats(&self, time_sig_numerator: u32) -> Option<f64> {
+impl QuantizeExt for QuantizeMode {
+    fn interval_beats(&self, time_sig_numerator: u32) -> Option<f64> {
         match self {
-            QuantizeMode::Immediate => None,
+            QuantizeMode::None => None,
             QuantizeMode::Beat => Some(1.0),
             QuantizeMode::Bar => Some(time_sig_numerator as f64),
             QuantizeMode::Bars(n) => Some(*n as f64 * time_sig_numerator as f64),
+            QuantizeMode::Eighth => Some(0.5),
+            QuantizeMode::Sixteenth => Some(0.25),
         }
     }
 
-    /// Check if a given beat position is on a grid line
-    ///
-    /// Uses a tolerance of ~3% of the interval (minimum 0.01 beats) to account
-    /// for floating point imprecision and DAW timing variations.
-    pub fn is_on_grid(&self, beat: f64, time_sig_numerator: u32) -> bool {
+    fn is_on_grid(&self, beat: f64, time_sig_numerator: u32) -> bool {
         match self.interval_beats(time_sig_numerator) {
-            None => true, // Immediate - always on grid
+            None => true, // None / Immediate - always on grid
             Some(interval) => {
-                // Use a tolerance proportional to the interval, but at least 0.01 beats
-                // This handles both small intervals (1 beat) and large ones (16+ beats)
                 let tolerance = (interval * 0.03).max(0.01);
                 let remainder = beat % interval;
                 remainder < tolerance || (interval - remainder) < tolerance
@@ -73,25 +49,18 @@ impl QuantizeMode {
         }
     }
 
-    /// Get the next grid line at or after the given beat
-    ///
-    /// If the beat is within tolerance of a grid line, snaps to that grid line.
-    /// Otherwise returns the next grid line.
-    pub fn next_grid_line(&self, beat: f64, time_sig_numerator: u32) -> f64 {
+    fn next_grid_line(&self, beat: f64, time_sig_numerator: u32) -> f64 {
         match self.interval_beats(time_sig_numerator) {
-            None => beat, // Immediate - current position is the grid line
+            None => beat, // None / Immediate - current position is the grid line
             Some(interval) => {
                 let tolerance = (interval * 0.03).max(0.01);
                 let remainder = beat % interval;
 
-                // If we're close to the current grid line, snap to it
                 if remainder < tolerance {
                     beat - remainder // Snap back to exact grid line
                 } else if (interval - remainder) < tolerance {
-                    // We're close to the next grid line, snap forward
                     beat + (interval - remainder)
                 } else {
-                    // We're between grid lines, go to next one
                     ((beat / interval).floor() + 1.0) * interval
                 }
             }
@@ -99,95 +68,14 @@ impl QuantizeMode {
     }
 }
 
-impl Default for QuantizeMode {
-    fn default() -> Self {
-        Self::Bar
-    }
+/// Trait providing curve application on [`InterpolationMode`].
+pub trait InterpolationExt {
+    /// Remap a normalized t ∈ [0,1] through this curve.
+    fn apply_curve(&self, t: f64) -> f64;
 }
 
-/// What to cancel when this fugue starts
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(export)]
-#[serde(rename_all = "snake_case")]
-pub enum CancelMode {
-    /// Don't cancel anything (layer with existing fugues)
-    None,
-    /// Cancel all fugues with matching tag
-    CancelByTag(String),
-    /// Cancel all active fugues
-    CancelAll,
-}
-
-impl Default for CancelMode {
-    fn default() -> Self {
-        Self::None
-    }
-}
-
-/// How a promoted fugue places itself on the song-grid when its quantize
-/// target isn't already aligned to its `duration_beats`.
-///
-/// Iteration boundaries always live at `k · duration_beats` from song-beat-0
-/// regardless of this mode — that's the "queue-time latency can't shift
-/// musical alignment" invariant. This mode only decides what happens
-/// *between* the queue moment and the next iteration boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(export)]
-#[serde(rename_all = "snake_case")]
-pub enum StartMode {
-    /// Fugue joins the implicit always-running grid at its current phase.
-    /// Example: `dur=16`, queued at transport 8 with `quantize:"bar"`.
-    /// Plays pattern-beat-8 → pattern-beat-16 from transport 8 → 16
-    /// (second half of the pattern sounds immediately), then
-    /// pattern-beat-0 at transport 16, 32, 48.
-    ///
-    /// Default — the more natural "queue and hear something now"
-    /// behaviour for live interaction.
-    Phase,
-    /// Fugue waits for the next iteration boundary (next multiple of
-    /// `duration_beats` from song-beat-0 ≥ target), then plays from
-    /// pattern-beat-0.
-    /// Example: same setup, silent from transport 8 → 16, then
-    /// pattern-beat-0 at transport 16, 32, 48.
-    ///
-    /// Use this when the start of the pattern is musically important
-    /// (e.g. a drum fill's downbeat) and you'd rather have a short
-    /// silence than a mid-pattern start.
-    Boundary,
-}
-
-impl Default for StartMode {
-    fn default() -> Self {
-        Self::Phase
-    }
-}
-
-/// Interpolation mode for continuous-signal ramps (CC, per-note expression).
-///
-/// New curves extend this enum and add one line to [`InterpolationMode::apply_curve`];
-/// every interpolator site routes through that function so new variants propagate
-/// automatically to CC audio-thread ramps and per-note server-side expansion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(export)]
-#[serde(rename_all = "snake_case")]
-pub enum InterpolationMode {
-    /// No interpolation - stepped/discrete values (hold start until t=1)
-    None,
-    /// Linear interpolation between points
-    #[default]
-    Linear,
-    /// Quadratic ease-in (t²). Starts slow, ends fast. Musical feel: accelerating.
-    Exp,
-    /// Quadratic ease-out (1-(1-t)²). Starts fast, ends slow. Musical feel: decelerating.
-    Log,
-    // Future: SCurve, Exp3 (t^3), parameterized curves.
-}
-
-impl InterpolationMode {
-    /// Remap a normalized t ∈ [0,1] through this curve. This is the single extension
-    /// point for new curve shapes — add an enum variant above and one arm here, and
-    /// both CC ramps and per-note expansion pick up the new curve automatically.
-    pub fn apply_curve(&self, t: f64) -> f64 {
+impl InterpolationExt for InterpolationMode {
+    fn apply_curve(&self, t: f64) -> f64 {
         let t = t.clamp(0.0, 1.0);
         match self {
             Self::None => if t >= 1.0 { 1.0 } else { 0.0 },
@@ -198,180 +86,161 @@ impl InterpolationMode {
     }
 }
 
-/// A single musical event in a fugue
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(export)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum FugueEvent {
-    /// MIDI Note On
-    NoteOn {
-        channel: u8,
-        note: u8,
-        velocity: u8,
-    },
-    /// MIDI Note Off
-    NoteOff {
-        channel: u8,
-        note: u8,
-    },
-    /// A note with its duration baked in. When the scheduler sees one
-    /// of these it emits a NoteOn at the event's `beat_offset` and
-    /// schedules the corresponding NoteOff internally — using a
-    /// fixed-capacity `PendingNoteOff` ring on the audio thread — to
-    /// fire exactly at `beat_offset + duration_beats`. This is the
-    /// form `emit_notes` produces for LLM-authored notes.
-    ///
-    /// Raw `NoteOn` / `NoteOff` variants stay for paths that need
-    /// point-in-time events: MIDI import with dangling / overlapping
-    /// notes, cancel / panic flushes, immediate-send MCP tools. A
-    /// fugue's event list can mix `TimedNote`s and raw on/off events.
-    ///
-    /// Invariants the audio thread enforces (specific to this variant
-    /// — raw NoteOn/NoteOff don't get these guarantees):
-    /// - Same-pitch retrigger: a new `TimedNote` for an `(channel,
-    ///   note)` that's still playing evicts the pending NoteOff and
-    ///   emits it one sample before the new NoteOn, so the synth
-    ///   never sees the same-sample OFF/ON collision.
-    /// - Loop-boundary: NoteOffs whose scheduled time falls exactly on
-    ///   the loop boundary fire at `loop_end_sample - 1`, one sample
-    ///   before the next iteration's beat-0 NoteOns.
-    /// - Zero-duration notes are skipped entirely — no NoteOn, no
-    ///   NoteOff, no ring slot consumed.
-    TimedNote {
-        channel: u8,
-        note: u8,
-        velocity: u8,
-        /// Duration in beats from the NoteOn. The NoteOff fires at
-        /// `beat_offset + duration_beats` where `beat_offset` is the
-        /// enclosing [`TimedFugueEvent`]'s offset.
-        duration_beats: f64,
-    },
-    /// MIDI Control Change.
-    /// `curve` (optional) controls interpolation for the ramp ARRIVING at this
-    /// event — the "curve to this point" convention. When `None`, the fugue-level
-    /// `cc_interpolation` is used instead.
-    Cc {
-        channel: u8,
-        cc: u8,
-        value: u8,
-        #[serde(default)]
-        curve: Option<InterpolationMode>,
-    },
-    /// Per-note pitch bend (MIDI 2.0)
-    PerNotePitchBend {
-        channel: u8,
-        note: u8,
-        /// Pitch bend in semitones (-64.0 to +64.0)
-        semitones: f32,
-    },
-    /// Per-note pressure/aftertouch (MIDI 2.0)
-    PerNotePressure {
-        channel: u8,
-        note: u8,
-        /// Pressure value 0.0-1.0
-        pressure: f32,
-    },
+/// Extension methods on [`FugueEvent`].
+pub trait FugueEventExt {
+    /// Create a Note On event
+    fn note_on(channel: u8, note: u8, velocity: u8) -> FugueEvent;
+    /// Create a Note Off event
+    fn note_off(channel: u8, note: u8) -> FugueEvent;
+    /// Create a CC event
+    fn cc(channel: u8, cc: u8, value: u8) -> FugueEvent;
+    /// Create a per-note pitch bend event
+    fn per_note_pitch_bend(channel: u8, note: u8, semitones: f32) -> FugueEvent;
+    /// Create a per-note pressure event
+    fn per_note_pressure(channel: u8, note: u8, pressure: f32) -> FugueEvent;
+    /// Create a TimedNote event
+    fn timed_note(channel: u8, note: u8, velocity: u8, duration_beats: f64) -> FugueEvent;
+    /// Get the channel for this event
+    fn channel(&self) -> u8;
+    /// Get the note number for note events, if applicable
+    fn note(&self) -> Option<u8>;
 }
 
-impl FugueEvent {
-    /// Create a Note On event
-    pub fn note_on(channel: u8, note: u8, velocity: u8) -> Self {
+impl FugueEventExt for FugueEvent {
+    fn note_on(channel: u8, note: u8, velocity: u8) -> FugueEvent {
         Self::NoteOn { channel, note, velocity }
     }
 
-    /// Create a Note Off event
-    pub fn note_off(channel: u8, note: u8) -> Self {
-        Self::NoteOff { channel, note }
+    fn note_off(channel: u8, note: u8) -> FugueEvent {
+        Self::NoteOff { channel, note, velocity: 0 }
     }
 
-    /// Create a CC event (no per-segment curve — uses fugue-level interpolation)
-    pub fn cc(channel: u8, cc: u8, value: u8) -> Self {
-        Self::Cc { channel, cc, value, curve: None }
+    fn cc(channel: u8, cc: u8, value: u8) -> FugueEvent {
+        Self::Cc { channel, controller: cc, value, interpolation: InterpolationMode::Linear }
     }
 
-    /// Create a per-note pitch bend event
-    pub fn per_note_pitch_bend(channel: u8, note: u8, semitones: f32) -> Self {
-        Self::PerNotePitchBend { channel, note, semitones }
+    fn per_note_pitch_bend(channel: u8, note: u8, semitones: f32) -> FugueEvent {
+        Self::PerNotePitchBend { channel, note, semitones, interpolation: InterpolationMode::Linear }
     }
 
-    /// Create a per-note pressure event
-    pub fn per_note_pressure(channel: u8, note: u8, pressure: f32) -> Self {
-        Self::PerNotePressure { channel, note, pressure }
+    fn per_note_pressure(channel: u8, note: u8, pressure: f32) -> FugueEvent {
+        Self::PerNotePressure { channel, note, pressure, interpolation: InterpolationMode::Linear }
     }
 
-    /// Create a TimedNote event (NoteOn with baked-in duration — the
-    /// scheduler synthesizes the NoteOff at `beat_offset + duration_beats`
-    /// via its pending-NoteOff ring).
-    pub fn timed_note(channel: u8, note: u8, velocity: u8, duration_beats: f64) -> Self {
+    fn timed_note(channel: u8, note: u8, velocity: u8, duration_beats: f64) -> FugueEvent {
         Self::TimedNote { channel, note, velocity, duration_beats }
     }
 
-    /// Get the channel for this event
-    pub fn channel(&self) -> u8 {
+    fn channel(&self) -> u8 {
         match self {
             Self::NoteOn { channel, .. } => *channel,
             Self::NoteOff { channel, .. } => *channel,
             Self::TimedNote { channel, .. } => *channel,
             Self::Cc { channel, .. } => *channel,
+            Self::Param { .. } => 0,
+            Self::PitchBend { channel, .. } => *channel,
+            Self::Pressure { channel, .. } => *channel,
+            Self::PolyPressure { channel, .. } => *channel,
             Self::PerNotePitchBend { channel, .. } => *channel,
             Self::PerNotePressure { channel, .. } => *channel,
         }
     }
 
-    /// Get the note number for note events, if applicable
-    pub fn note(&self) -> Option<u8> {
+    fn note(&self) -> Option<u8> {
         match self {
             Self::NoteOn { note, .. } => Some(*note),
             Self::NoteOff { note, .. } => Some(*note),
             Self::TimedNote { note, .. } => Some(*note),
+            Self::PolyPressure { note, .. } => Some(*note),
             Self::PerNotePitchBend { note, .. } => Some(*note),
             Self::PerNotePressure { note, .. } => Some(*note),
-            Self::Cc { .. } => None,
+            _ => None,
         }
     }
 }
 
-/// A fugue event with timing information
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(export)]
-pub struct TimedFugueEvent {
-    /// Beat offset relative to fugue start (0.0 = start of fugue)
-    pub beat_offset: f64,
-    /// The event to trigger
-    pub event: FugueEvent,
+/// Extension methods on [`TimedFugueEvent`].
+pub trait TimedFugueEventExt {
+    /// Create a new timed event
+    #[allow(clippy::new_ret_no_self)]
+    fn new(beat_offset: f64, event: FugueEvent) -> TimedFugueEvent;
+    /// Create a note on event at the given beat
+    fn note_on(beat: f64, channel: u8, note: u8, velocity: u8) -> TimedFugueEvent;
+    /// Create a note off event at the given beat
+    fn note_off(beat: f64, channel: u8, note: u8) -> TimedFugueEvent;
+    /// Create a CC event at the given beat
+    fn cc(beat: f64, channel: u8, cc: u8, value: u8) -> TimedFugueEvent;
+    /// Create a CC event with an explicit curve at the given beat
+    fn cc_with_curve(
+        beat: f64,
+        channel: u8,
+        cc: u8,
+        value: u8,
+        curve: InterpolationMode,
+    ) -> TimedFugueEvent;
+    /// Create a TimedNote event at the given beat
+    fn timed_note(beat: f64, channel: u8, note: u8, velocity: u8, duration_beats: f64) -> TimedFugueEvent;
 }
 
-impl TimedFugueEvent {
-    /// Create a new timed event
-    pub fn new(beat_offset: f64, event: FugueEvent) -> Self {
+impl TimedFugueEventExt for TimedFugueEvent {
+    fn new(beat_offset: f64, event: FugueEvent) -> TimedFugueEvent {
         Self { beat_offset, event }
     }
 
-    /// Create a note on event at the given beat
-    pub fn note_on(beat: f64, channel: u8, note: u8, velocity: u8) -> Self {
+    fn note_on(beat: f64, channel: u8, note: u8, velocity: u8) -> TimedFugueEvent {
         Self::new(beat, FugueEvent::note_on(channel, note, velocity))
     }
 
-    /// Create a note off event at the given beat
-    pub fn note_off(beat: f64, channel: u8, note: u8) -> Self {
+    fn note_off(beat: f64, channel: u8, note: u8) -> TimedFugueEvent {
         Self::new(beat, FugueEvent::note_off(channel, note))
     }
 
-    /// Create a CC event at the given beat
-    pub fn cc(beat: f64, channel: u8, cc: u8, value: u8) -> Self {
+    fn cc(beat: f64, channel: u8, cc: u8, value: u8) -> TimedFugueEvent {
         Self::new(beat, FugueEvent::cc(channel, cc, value))
     }
 
-    /// Create a TimedNote event (note with baked-in duration) at the
-    /// given onset beat. The scheduler emits the NoteOn at `beat` and
-    /// the corresponding NoteOff at `beat + duration_beats` via its
-    /// pending-NoteOff ring.
-    pub fn timed_note(beat: f64, channel: u8, note: u8, velocity: u8, duration_beats: f64) -> Self {
+    fn cc_with_curve(
+        beat: f64,
+        channel: u8,
+        cc: u8,
+        value: u8,
+        curve: InterpolationMode,
+    ) -> TimedFugueEvent {
+        Self::new(
+            beat,
+            FugueEvent::Cc {
+                channel,
+                controller: cc,
+                value,
+                interpolation: curve,
+            },
+        )
+    }
+
+    fn timed_note(beat: f64, channel: u8, note: u8, velocity: u8, duration_beats: f64) -> TimedFugueEvent {
         Self::new(beat, FugueEvent::timed_note(channel, note, velocity, duration_beats))
     }
 }
 
-/// A complete fugue definition ready for playback
+/// How a promoted fugue places itself on the song-grid when its quantize
+/// target isn't already aligned to its `duration_beats`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum StartMode {
+    /// Fugue joins the implicit always-running grid at its current phase.
+    Phase,
+    /// Fugue waits for the next iteration boundary, then plays from pattern-beat-0.
+    Boundary,
+}
+
+impl Default for StartMode {
+    fn default() -> Self {
+        Self::Phase
+    }
+}
+
+/// A complete fugue definition ready for playback in Droplets' sequencer.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(export)]
 pub struct FugueDefinition {
@@ -383,21 +252,24 @@ pub struct FugueDefinition {
     /// Optional tag for grouping/cancellation
     pub tag: Option<String>,
     /// Events sorted by beat_offset
+    #[ts(type = "Array<import('./TimedFugueEvent').TimedFugueEvent>")]
     pub events: Vec<TimedFugueEvent>,
     /// Total duration in beats
     pub duration_beats: f64,
     /// Looping behavior
+    #[ts(type = "import('./LoopMode').LoopMode")]
     pub loop_mode: LoopMode,
     /// When to start relative to transport
+    #[ts(type = "import('./QuantizeMode').QuantizeMode")]
     pub quantize: QuantizeMode,
     /// What to cancel when this starts
+    #[ts(type = "import('./CancelMode').CancelMode")]
     pub cancel_mode: CancelMode,
     /// Interpolation mode for CC automation
     #[serde(default)]
+    #[ts(type = "import('./InterpolationMode').InterpolationMode")]
     pub cc_interpolation: InterpolationMode,
-    /// How the fugue places itself when `target_beat` isn't aligned to
-    /// `duration_beats`. See [`StartMode`] for the full semantics;
-    /// defaults to [`StartMode::Phase`].
+    /// How the fugue places itself on the song-grid
     #[serde(default)]
     pub start_mode: StartMode,
 }
@@ -411,9 +283,9 @@ impl FugueDefinition {
             events,
             duration_beats,
             loop_mode: LoopMode::Once,
-            quantize: QuantizeMode::Immediate,
+            quantize: QuantizeMode::None,
             cancel_mode: CancelMode::None,
-            cc_interpolation: InterpolationMode::default(),
+            cc_interpolation: InterpolationMode::Linear,
             start_mode: StartMode::default(),
         }
     }
@@ -452,6 +324,23 @@ impl FugueDefinition {
     pub fn with_start_mode(mut self, mode: StartMode) -> Self {
         self.start_mode = mode;
         self
+    }
+}
+
+impl From<CompositeFugue> for FugueDefinition {
+    fn from(cf: CompositeFugue) -> Self {
+        let compiled = cf.compile();
+        Self {
+            id: generate_fugue_id(),
+            tag: cf.tag,
+            events: compiled.events,
+            duration_beats: compiled.duration_beats,
+            loop_mode: compiled.loop_mode,
+            quantize: QuantizeMode::Bar,
+            cancel_mode: cf.cancel.unwrap_or(CancelTarget::None),
+            cc_interpolation: InterpolationMode::Linear,
+            start_mode: StartMode::Phase,
+        }
     }
 }
 
@@ -529,13 +418,6 @@ impl Default for TransportState {
 use crate::mcp::MidiMessage;
 
 /// Event output from the fugue sequencer
-///
-/// This is an internal type used between the sequencer and MIDI processor.
-/// It allows the sequencer to describe CC ramps that the processor will interpolate.
-///
-/// `Copy` because every underlying variant field is Copy — keeping this
-/// POD means the audio-thread consumer can read events from the
-/// sequencer's buffer by value without the `.clone()` / borrow dance.
 #[derive(Debug, Clone, Copy)]
 pub enum ProcessedEvent {
     /// An instant MIDI event at a specific sample offset

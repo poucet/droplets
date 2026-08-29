@@ -50,7 +50,8 @@ pub fn parse_loop_mode_str(s: &str) -> Option<LoopMode> {
     match s.trim().to_lowercase().as_str() {
         "" => None,
         "once" => Some(LoopMode::Once),
-        "forever" => Some(LoopMode::Forever),
+        "forever" | "loop" => Some(LoopMode::Loop),
+        "ping_pong" | "pingpong" => Some(LoopMode::PingPong),
         other => other.parse::<u32>().ok().map(LoopMode::Times),
     }
 }
@@ -62,9 +63,11 @@ pub fn parse_quantize_str(s: &str) -> Option<QuantizeMode> {
     let lower = s.trim().to_lowercase();
     match lower.as_str() {
         "" => None,
-        "immediate" => Some(QuantizeMode::Immediate),
+        "immediate" | "none" => Some(QuantizeMode::None),
         "beat" => Some(QuantizeMode::Beat),
         "bar" => Some(QuantizeMode::Bar),
+        "eighth" => Some(QuantizeMode::Eighth),
+        "sixteenth" => Some(QuantizeMode::Sixteenth),
         _ => lower
             .strip_prefix("bars:")
             .and_then(|n| n.parse::<u32>().ok())
@@ -87,10 +90,10 @@ pub fn parse_start_mode_str(s: Option<&str>) -> StartMode {
 /// existing fugues).
 pub fn parse_cancel_mode_str(s: &str) -> CancelMode {
     match s.trim().to_lowercase().as_str() {
-        "all" => CancelMode::CancelAll,
+        "all" => CancelMode::All,
         s if s.starts_with("tag:") => {
             let tag = s.strip_prefix("tag:").unwrap_or("").to_string();
-            CancelMode::CancelByTag(tag)
+            CancelMode::Tag(tag)
         }
         _ => CancelMode::None,
     }
@@ -116,7 +119,8 @@ fn interp_tag(mode: InterpolationMode) -> &'static str {
 fn loop_mode_tag(mode: LoopMode) -> String {
     match mode {
         LoopMode::Once => "once".to_string(),
-        LoopMode::Forever => "forever".to_string(),
+        LoopMode::Loop => "forever".to_string(),
+        LoopMode::PingPong => "ping_pong".to_string(),
         LoopMode::Times(n) => n.to_string(),
     }
 }
@@ -124,9 +128,11 @@ fn loop_mode_tag(mode: LoopMode) -> String {
 /// Stable lowercase tag for a `QuantizeMode`, matching `parse_quantize_str`.
 fn quantize_tag(mode: QuantizeMode) -> String {
     match mode {
-        QuantizeMode::Immediate => "immediate".to_string(),
+        QuantizeMode::None => "immediate".to_string(),
         QuantizeMode::Beat => "beat".to_string(),
         QuantizeMode::Bar => "bar".to_string(),
+        QuantizeMode::Eighth => "eighth".to_string(),
+        QuantizeMode::Sixteenth => "sixteenth".to_string(),
         QuantizeMode::Bars(n) => format!("bars:{}", n),
     }
 }
@@ -143,8 +149,8 @@ fn start_mode_tag(mode: StartMode) -> &'static str {
 fn cancel_mode_tag(mode: &CancelMode) -> String {
     match mode {
         CancelMode::None => "none".to_string(),
-        CancelMode::CancelAll => "all".to_string(),
-        CancelMode::CancelByTag(tag) => format!("tag:{}", tag),
+        CancelMode::All => "all".to_string(),
+        CancelMode::Tag(tag) => format!("tag:{}", tag),
     }
 }
 
@@ -252,7 +258,7 @@ pub fn compact_to_definition(
     let loop_mode_str = compact.loop_mode.as_deref().unwrap_or(&defaults.loop_mode_str);
     let fugue_channel = compact.channel.unwrap_or(1).saturating_sub(1).min(15);
 
-    let loop_mode = parse_loop_mode_str(loop_mode_str).unwrap_or(LoopMode::Forever);
+    let loop_mode = parse_loop_mode_str(loop_mode_str).unwrap_or(LoopMode::Loop);
     let quantize = parse_quantize_str(quantize_str).unwrap_or(QuantizeMode::Bar);
     // If the LLM tagged the fugue but forgot to set cancel_mode, the
     // overwhelmingly common intent is "this tag replaces whatever's
@@ -267,7 +273,7 @@ pub fn compact_to_definition(
     let explicit_cancel = compact.cancel_mode.as_deref();
     let cancel_mode = match (explicit_cancel, compact.tag.as_deref()) {
         (Some(s), _) => parse_cancel_mode_str(s),
-        (None, Some(tag)) => CancelMode::CancelByTag(tag.to_string()),
+        (None, Some(tag)) => CancelMode::Tag(tag.to_string()),
         (None, None) => CancelMode::None,
     };
     let start_mode = parse_start_mode_str(
@@ -378,7 +384,7 @@ pub fn compact_to_definition(
 /// - If the fugue has more bent notes than free channels (15 max in a
 ///   single-channel base), leftover bent notes keep their original
 ///   channel and will cross-bend. Unlikely in practice; let it degrade.
-fn remap_mpe_channels(events: &mut Vec<TimedFugueEvent>) {
+fn remap_mpe_channels(events: &mut [TimedFugueEvent]) {
     use std::collections::{BTreeSet, BTreeMap};
 
     // 1. Collect bent (channel, note) keys.
@@ -397,7 +403,7 @@ fn remap_mpe_channels(events: &mut Vec<TimedFugueEvent>) {
     for e in events.iter() {
         let (ch, note) = match e.event {
             FugueEvent::NoteOn { channel, note, .. } => (channel, note),
-            FugueEvent::NoteOff { channel, note } => (channel, note),
+            FugueEvent::NoteOff { channel, note, .. } => (channel, note),
             FugueEvent::TimedNote { channel, note, .. } => (channel, note),
             _ => continue,
         };
@@ -435,7 +441,7 @@ fn remap_mpe_channels(events: &mut Vec<TimedFugueEvent>) {
                     *channel = new_ch;
                 }
             }
-            FugueEvent::NoteOff { channel, note } => {
+            FugueEvent::NoteOff { channel, note, .. } => {
                 if let Some(&new_ch) = remap.get(&(*channel, *note)) {
                     *channel = new_ch;
                 }
@@ -455,7 +461,7 @@ fn remap_mpe_channels(events: &mut Vec<TimedFugueEvent>) {
                     *channel = new_ch;
                 }
             }
-            FugueEvent::Cc { .. } => {}
+            _ => {}
         }
     }
 }
@@ -529,24 +535,24 @@ pub fn definition_to_compact(def: &FugueDefinition) -> CompactFugue {
             FugueEvent::NoteOn { channel, note, velocity } => {
                 open_notes.entry((channel, note)).or_default().push_back((beat, velocity));
             }
-            FugueEvent::NoteOff { channel, note } => {
+            FugueEvent::NoteOff { channel, note, .. } => {
                 if let Some(q) = open_notes.get_mut(&(channel, note)) {
                     if let Some((on_beat, vel)) = q.pop_front() {
                         push_compact_note(&mut notes, on_beat, beat, channel, note, vel);
                     }
                 }
             }
-            FugueEvent::Cc { channel, cc, value, curve } => {
-                let key = (channel, cc);
+            FugueEvent::Cc { channel, controller, value, interpolation } => {
+                let key = (channel, controller);
                 if !cc_lanes.contains_key(&key) {
                     cc_order.push(key);
                 }
                 cc_lanes
                     .entry(key)
                     .or_default()
-                    .push(point_with_curve(beat, value as f64, curve, def.cc_interpolation));
+                    .push(point_with_curve(beat, value as f64, Some(interpolation), def.cc_interpolation));
             }
-            FugueEvent::PerNotePitchBend { channel, note, semitones } => {
+            FugueEvent::PerNotePitchBend { channel, note, semitones, .. } => {
                 let key = (channel, note);
                 if !bend_lanes.contains_key(&key) {
                     bend_order.push(key);
@@ -556,7 +562,7 @@ pub fn definition_to_compact(def: &FugueDefinition) -> CompactFugue {
                     .or_default()
                     .push(Point { beat, value: semitones as f64, curve: None });
             }
-            FugueEvent::PerNotePressure { channel, note, pressure } => {
+            FugueEvent::PerNotePressure { channel, note, pressure, .. } => {
                 let key = (channel, note);
                 if !pressure_lanes.contains_key(&key) {
                     pressure_order.push(key);
@@ -566,6 +572,7 @@ pub fn definition_to_compact(def: &FugueDefinition) -> CompactFugue {
                     .or_default()
                     .push(Point { beat, value: pressure as f64, curve: None });
             }
+            _ => {}
         }
     }
 
@@ -1026,7 +1033,7 @@ mod tests {
             "notes": [[0, 36, 0.25]],
         }));
         let def = compact_to_definition(&input, &defaults_bar_forever());
-        assert_eq!(def.cancel_mode, CancelMode::CancelByTag("drums".into()));
+        assert_eq!(def.cancel_mode, CancelMode::Tag("drums".into()));
     }
 
     #[test]
@@ -1062,7 +1069,7 @@ mod tests {
             "notes": [[0, 36, 0.25]],
         }));
         let def = compact_to_definition(&input, &defaults_bar_forever());
-        assert_eq!(def.cancel_mode, CancelMode::CancelAll);
+        assert_eq!(def.cancel_mode, CancelMode::All);
     }
 
     #[test]

@@ -33,6 +33,7 @@ pub use main::{FugueBridge, FugueInfoHandle};
 // main-thread-only data, not part of the thread-boundary concern.
 pub use main::{export, import, settings};
 pub use types::{
-    CancelMode, FugueDefinition, FugueEvent, FugueInfo, InterpolationMode, LoopMode,
-    ProcessedEvent, QuantizeMode, StartMode, TimedFugueEvent, TransportState,
+    CancelMode, CancelTarget, CompiledFugue, CompositeFugue, FugueDefinition, FugueEvent,
+    FugueEventExt, FugueInfo, InterpolationExt, InterpolationMode, LoopMode, ProcessedEvent,
+    QuantizeExt, QuantizeMode, StartMode, TimedFugueEvent, TimedFugueEventExt, TransportState,
 };

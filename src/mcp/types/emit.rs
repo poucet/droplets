@@ -6,7 +6,9 @@
 //! `Composite` variant both use the same code paths, and so a Composite's
 //! four lanes can emit independently without borrow-checker gymnastics.
 
-use crate::fugue::{FugueEvent, InterpolationMode, TimedFugueEvent};
+use crate::fugue::{
+    FugueEvent, InterpolationExt, InterpolationMode, TimedFugueEvent, TimedFugueEventExt,
+};
 
 use super::compact::CompactNote;
 use super::conversion::parse_interpolation_mode;
@@ -125,9 +127,9 @@ pub fn emit_cc_lane(
             point.beat,
             FugueEvent::Cc {
                 channel: fugue_channel,
-                cc: cc_num,
+                controller: cc_num,
                 value,
-                curve: Some(resolved),
+                interpolation: resolved,
             },
         ));
     }
@@ -146,7 +148,12 @@ pub fn emit_per_note_pitch_bend(
         let semitones = (value as f32).clamp(-64.0, 64.0);
         events.push(TimedFugueEvent::new(
             beat,
-            FugueEvent::PerNotePitchBend { channel: fugue_channel, note: n, semitones },
+            FugueEvent::PerNotePitchBend {
+                channel: fugue_channel,
+                note: n,
+                semitones,
+                interpolation: default_mode,
+            },
         ));
     });
 }
@@ -164,7 +171,12 @@ pub fn emit_per_note_pressure(
         let pressure = (value as f32).clamp(0.0, 1.0);
         events.push(TimedFugueEvent::new(
             beat,
-            FugueEvent::PerNotePressure { channel: fugue_channel, note: n, pressure },
+            FugueEvent::PerNotePressure {
+                channel: fugue_channel,
+                note: n,
+                pressure,
+                interpolation: default_mode,
+            },
         ));
     });
 }
@@ -429,14 +441,14 @@ mod tests {
         emit_cc_lane(74, &points, InterpolationMode::Log, 0, &mut events);
         assert_eq!(events.len(), 2);
         match events[0].event {
-            FugueEvent::Cc { curve, .. } => {
-                assert_eq!(curve, Some(InterpolationMode::Log), "bare point uses lane default");
+            FugueEvent::Cc { interpolation, .. } => {
+                assert_eq!(interpolation, InterpolationMode::Log, "bare point uses lane default");
             }
             _ => panic!("expected Cc"),
         }
         match events[1].event {
-            FugueEvent::Cc { curve, .. } => {
-                assert_eq!(curve, Some(InterpolationMode::Exp), "per-point curve wins");
+            FugueEvent::Cc { interpolation, .. } => {
+                assert_eq!(interpolation, InterpolationMode::Exp, "per-point curve wins");
             }
             _ => panic!("expected Cc"),
         }
@@ -451,8 +463,8 @@ mod tests {
         let mut events = Vec::new();
         emit_cc_lane(200, &points, InterpolationMode::Linear, 0, &mut events);
         match events[0].event {
-            FugueEvent::Cc { cc, value, .. } => {
-                assert_eq!(cc, 127, "cc number clamped");
+            FugueEvent::Cc { controller, value, .. } => {
+                assert_eq!(controller, 127, "cc number clamped");
                 assert_eq!(value, 127, "value clamped");
             }
             _ => panic!("expected Cc"),

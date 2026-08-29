@@ -16,7 +16,10 @@ use clack_plugin::plugin::{PluginAudioProcessor, PluginError};
 use clack_plugin::process::{Audio, Events, PluginAudioConfiguration, Process, ProcessStatus};
 use rtrb::Consumer;
 
-use crate::fugue::{FugueInfoHandle, FugueSequencer, InterpolationMode, ProcessedEvent, TransportState};
+use crate::fugue::{
+    FugueInfoHandle, FugueSequencer, InterpolationExt, InterpolationMode, ProcessedEvent,
+    TransportState,
+};
 use crate::mcp::{CcMessage, MidiMessage, NoteMessage, PerNoteExpressionMessage, PerNoteExpressionType};
 use crate::{DropletMainThread, DropletShared};
 

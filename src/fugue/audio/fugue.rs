@@ -4,7 +4,8 @@
 //! active notes, CC state, and handling event emission with interpolation.
 
 use super::super::types::{
-    FugueDefinition, FugueEvent, FugueInfo, InterpolationMode, LoopMode, ProcessedEvent,
+    FugueDefinition, FugueEvent, FugueInfo, InterpolationExt, InterpolationMode, LoopMode,
+    ProcessedEvent, QuantizeExt,
 };
 use crate::mcp::{CcMessage, MidiMessage, NoteMessage, PerNoteExpressionMessage};
 
@@ -180,7 +181,7 @@ impl Fugue {
         match self.definition.loop_mode {
             LoopMode::Once => self.current_loop >= 1,
             LoopMode::Times(n) => self.current_loop >= n,
-            LoopMode::Forever => false,
+            LoopMode::Loop | LoopMode::PingPong => false,
         }
     }
 
@@ -225,7 +226,7 @@ impl Fugue {
         }
 
         match self.definition.loop_mode {
-            LoopMode::Forever => {}
+            LoopMode::Loop | LoopMode::PingPong => {}
             LoopMode::Once | LoopMode::Times(_) => {
                 // A mid-flight one-shot can't be meaningfully phase-locked —
                 // its events are in the past. Mark finished; caller drops.
@@ -272,7 +273,7 @@ impl Fugue {
             total_loops: match self.definition.loop_mode {
                 LoopMode::Once => Some(1),
                 LoopMode::Times(n) => Some(n),
-                LoopMode::Forever => None,
+                LoopMode::Loop | LoopMode::PingPong => None,
             },
             is_waiting: self.waiting_for_start,
             progress_beats: progress,
@@ -369,8 +370,8 @@ impl Fugue {
                 let beat_delta = event_absolute_beat - current_beat;
                 let raw_sample_offset = (beat_delta / beats_per_sample).floor().max(0.0) as u32;
 
-                // Clone event to avoid borrow issues
-                let event = timed_event.event;
+                // Clone event to avoid borrow conflict with &mut self
+                let event = timed_event.event.clone();
 
                 // No left-skew on raw NoteOff anymore: no production
                 // path produces raw `FugueEvent::NoteOff` in a fugue's
@@ -467,7 +468,7 @@ impl Fugue {
                 let msg = MidiMessage::Note(NoteMessage::new(*channel, *note, *velocity, true));
                 events.push(ProcessedEvent::Instant { sample_offset, message: msg });
             }
-            FugueEvent::NoteOff { channel, note } => {
+            FugueEvent::NoteOff { channel, note, .. } => {
                 self.set_note_inactive(*channel, *note);
                 let msg = MidiMessage::Note(NoteMessage::new(*channel, *note, 0, false));
                 events.push(ProcessedEvent::Instant { sample_offset, message: msg });
@@ -531,21 +532,22 @@ impl Fugue {
                     }
                 }
             }
-            FugueEvent::Cc { channel, cc, value, curve } => {
-                self.process_cc_event(*channel, *cc, *value, *curve, beat_offset, sample_offset, events);
+            FugueEvent::Cc { channel, controller, value, interpolation } => {
+                self.process_cc_event(*channel, *controller, *value, Some(*interpolation), beat_offset, sample_offset, events);
             }
-            FugueEvent::PerNotePitchBend { channel, note, semitones } => {
+            FugueEvent::PerNotePitchBend { channel, note, semitones, .. } => {
                 let msg = MidiMessage::PerNoteExpression(
                     PerNoteExpressionMessage::pitch_bend_semitones(*channel, *note, *semitones),
                 );
                 events.push(ProcessedEvent::Instant { sample_offset, message: msg });
             }
-            FugueEvent::PerNotePressure { channel, note, pressure } => {
+            FugueEvent::PerNotePressure { channel, note, pressure, .. } => {
                 let msg = MidiMessage::PerNoteExpression(
                     PerNoteExpressionMessage::pressure_normalized(*channel, *note, *pressure),
                 );
                 events.push(ProcessedEvent::Instant { sample_offset, message: msg });
             }
+            _ => {}
         }
     }
 
@@ -647,8 +649,8 @@ impl Fugue {
     fn find_previous_cc_beat(&self, channel: u8, cc: u8, current_beat_offset: f64) -> f64 {
         for i in (0..self.next_event_index).rev() {
             let event = &self.definition.events[i];
-            if let FugueEvent::Cc { channel: ch, cc: c, .. } = event.event {
-                if ch == channel && c == cc && event.beat_offset < current_beat_offset {
+            if let FugueEvent::Cc { channel: ch, controller: c, .. } = &event.event {
+                if *ch == channel && *c == cc && event.beat_offset < current_beat_offset {
                     return event.beat_offset;
                 }
             }
