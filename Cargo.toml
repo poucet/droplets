@@ -39,7 +39,7 @@ clack-plugin = { git = "https://github.com/prokopyl/clack.git" }
 clap-wrapper = { git = "https://github.com/blepfx/clap-wrapper-rs" }
 
 # Shared musical vocabulary across Simply ecosystem
-simply-fugue = { path = "../music-rs/crates/simply-fugue" }
+simply-fugue = { git = "https://github.com/poucet/music-rs" }
 
 # GUI dependencies
 wry = "0.51.2"
